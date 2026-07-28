@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using EverythingBox.Server;
 using EverythingBox.Server.Abstractions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,6 +24,14 @@ public sealed class SourceRouter
     /// server with a message that didn't even name the offending plugin. Keep the first
     /// registration, log the conflict, and drop the duplicate — consistent with every other
     /// plugin failure mode being contained rather than fatal.
+    ///
+    /// <see cref="IMediaSource.Key"/> is itself plugin-authored code, read here for the first
+    /// time outside <see cref="Plugins.PluginRegistry"/>'s own validation — it can throw, or
+    /// return null despite the interface's non-nullable annotation (runtime doesn't enforce
+    /// those). Since Program.cs resolves this constructor eagerly at startup, an unguarded read
+    /// here crashed the whole server the same way the duplicate-key case used to. A source whose
+    /// Key is unusable simply cannot be routed to, so it is dropped — logged, not fatal — the
+    /// same as every other plugin failure mode.
     /// </summary>
     public SourceRouter(IEnumerable<IMediaSource> sources, ILogger<SourceRouter>? log = null)
     {
@@ -31,17 +40,38 @@ public sealed class SourceRouter
 
         foreach (var source in sources)
         {
-            if (_sources.TryGetValue(source.Key, out var existing))
+            string? key;
+            try
+            {
+                key = source.Key;
+            }
+            catch (Exception ex)
+            {
+                log.LogError(ex,
+                    "Source '{Source}' threw while reading its Key — it cannot be routed to and is dropped. " +
+                    "Every other source is unaffected.", PluginDiagnostics.SafeLabel(source));
+                continue;
+            }
+
+            if (key is null)
+            {
+                log.LogError(
+                    "Source '{Source}' returned a null Key — it cannot be routed to and is dropped. " +
+                    "Every other source is unaffected.", source.GetType().FullName ?? "<unknown source>");
+                continue;
+            }
+
+            if (_sources.TryGetValue(key, out var existing))
             {
                 log.LogError(
                     "Two sources registered the same key '{Key}' — '{Kept}' was registered first and is kept; " +
                     "the later registration from '{Dropped}' is dropped. Source keys must be unique across every " +
                     "installed plugin; rename one of them.",
-                    source.Key, existing.GetType().FullName, source.GetType().FullName);
+                    key, existing.GetType().FullName, source.GetType().FullName);
                 continue;
             }
 
-            _sources.Add(source.Key, source);
+            _sources.Add(key, source);
         }
     }
 

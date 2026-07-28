@@ -2,6 +2,19 @@ using EverythingBox.Server.Abstractions;
 
 namespace TestPlugin.Good;
 
+/// <summary>Sets a process-wide env var when disposed — a test running in a different
+/// AssemblyLoadContext than this plugin can't hold a reference to this instance, but env
+/// vars are process state, visible regardless of which ALC set them. Proves C4: the host
+/// must actually dispose whatever ProxyResponse a source hands it.</summary>
+file sealed class DisposalTrackingStream(byte[] buffer) : MemoryStream(buffer)
+{
+    public override async ValueTask DisposeAsync()
+    {
+        await base.DisposeAsync();
+        Environment.SetEnvironmentVariable("EBS_TEST_PROXY_BODY_DISPOSED", "1");
+    }
+}
+
 public sealed class GoodSource(string? warmUpMarkerPath = null) : IMediaSource
 {
     public string Key => "good";
@@ -35,6 +48,16 @@ public sealed class GoodSource(string? warmUpMarkerPath = null) : IMediaSource
 
     public Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
     {
+        if (itemId == "disposal-tracked")
+        {
+            var trackedBytes = "TRACKED-BODY"u8.ToArray();
+            return Task.FromResult<ProxyResponse?>(
+                new ProxyResponse(new DisposalTrackingStream(trackedBytes), "application/octet-stream")
+                {
+                    ContentLength = trackedBytes.Length,
+                });
+        }
+
         if (itemId != "proxied") return Task.FromResult<ProxyResponse?>(null);
 
         var bytes = "PROXIED-BODY"u8.ToArray();

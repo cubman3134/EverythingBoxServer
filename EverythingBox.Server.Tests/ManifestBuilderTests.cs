@@ -21,6 +21,28 @@ file sealed class ThrowingCatalogsSource : IMediaSource
         => Task.FromResult<SourceStream?>(null);
 }
 
+/// <summary>MediaTypes containing a null ELEMENT (as opposed to a null Type string,
+/// which the post-loop filter/group-by tolerate fine) — the likelier plugin mistake.
+/// Proves C3: the combined mediaTypes list used to be filtered/grouped AFTER the
+/// per-source try closed, so a null element here NREs /manifest.json for every source,
+/// not just this one.</summary>
+file sealed class NullMediaTypeElementSource : IMediaSource
+{
+    public string Key => "nullmediatype";
+    public IReadOnlyList<CatalogDescriptor> Catalogs { get; } = [];
+    public IReadOnlyList<MediaTypeDescriptor> MediaTypes { get; } =
+        [null!, new MediaTypeDescriptor("game", "#7A5BD0", "\U0001F579", "game", "poster")];
+
+    public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult<SourceStream?>(null);
+}
+
 public class ManifestBuilderTests
 {
     private static readonly ManifestOptions Options = new(
@@ -103,5 +125,19 @@ public class ManifestBuilderTests
 
         var catalog = json.GetProperty("catalogs").EnumerateArray().Single();
         Assert.Equal("alpha:a", catalog.GetProperty("id").GetString());
+    }
+
+    // C3: a null element in MediaTypes (not just a throwing getter) used to NRE the
+    // combined list's post-loop filter/group-by, 500ing /manifest.json entirely — the
+    // exact headline symptom the containment work was meant to eliminate, in the file
+    // it was meant to fix. It must be discarded per-source, and the healthy media type
+    // from the SAME source must still be declared.
+    [Fact]
+    public void A_null_MediaTypes_element_is_discarded_but_the_healthy_one_still_declares()
+    {
+        var json = Build(new NullMediaTypeElementSource());
+
+        var declared = json.GetProperty("mediaTypes").EnumerateArray().ToList();
+        Assert.Equal("game", Assert.Single(declared).GetProperty("type").GetString());
     }
 }

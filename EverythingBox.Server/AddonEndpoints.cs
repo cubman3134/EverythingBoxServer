@@ -26,19 +26,20 @@ public static class AddonEndpoints
                 if (!router.TryResolve(id, out var source, out var payload))
                     return Results.Json(Empty());
 
-                SourceCatalog? catalog;
+                // ToWire (and the source.Key it prefixes ids with) MUST stay inside this try:
+                // both enumerate/read plugin-authored data (catalog.Items, Key) that can throw
+                // on its own even when DetailAsync itself succeeded.
                 try
                 {
-                    catalog = await source.DetailAsync(payload, new SourceContext(), ct);
+                    var catalog = await source.DetailAsync(payload, new SourceContext(), ct);
+                    return Results.Json(ToWire(catalog, source.Key));
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     loggers.CreateLogger("Detail").LogError(ex,
-                        "detail {Type}/{Id}: source '{Source}' threw during DetailAsync — returning empty", type, id, source.Key);
+                        "detail {Type}/{Id}: source '{Source}' threw — returning empty", type, id, PluginDiagnostics.SafeLabel(source));
                     return Results.Json(Empty());
                 }
-
-                return Results.Json(ToWire(catalog, source.Key));
             });
 
         // The sources here carry no rich metadata; a valid-but-blank panel is correct.
@@ -51,19 +52,20 @@ public static class AddonEndpoints
         if (!router.TryResolve(catalogId, out var source, out var payload))
             return Results.Json(Empty());
 
-        SourceCatalog? catalog;
+        // ToWire (and the source.Key it prefixes ids with) MUST stay inside this try: both
+        // enumerate/read plugin-authored data (catalog.Items, Key) that can throw on its own
+        // even when SearchAsync itself succeeded.
         try
         {
-            catalog = await source.SearchAsync(payload, query, new SourceContext(), ct);
+            var catalog = await source.SearchAsync(payload, query, new SourceContext(), ct);
+            return Results.Json(ToWire(catalog, source.Key));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             loggers.CreateLogger("Catalog").LogError(ex,
-                "catalog {CatalogId}: source '{Source}' threw during SearchAsync — returning empty catalog", catalogId, source.Key);
+                "catalog {CatalogId}: source '{Source}' threw — returning empty catalog", catalogId, PluginDiagnostics.SafeLabel(source));
             return Results.Json(Empty());
         }
-
-        return Results.Json(ToWire(catalog, source.Key));
     }
 
     /// <summary>
@@ -132,7 +134,7 @@ public static class AddonEndpoints
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     log.LogError(ex, "stream {Type}/{Id}: source '{Source}' threw during ResolveAsync — returning no streams",
-                        type, id, source.Key);
+                        type, id, PluginDiagnostics.SafeLabel(source));
                     return Results.Json(NoStreams());
                 }
 
@@ -146,7 +148,7 @@ public static class AddonEndpoints
                 if (!SafeUrlGuard.IsClientSafe(stream.Url))
                 {
                     log.LogWarning("stream {Type}/{Id}: source '{Source}' returned a url the client cannot play — refusing",
-                        type, id, source.Key);
+                        type, id, PluginDiagnostics.SafeLabel(source));
                     return Results.Json(NoStreams());
                 }
 
@@ -177,7 +179,7 @@ public static class AddonEndpoints
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     loggers.CreateLogger("Proxy").LogError(ex,
-                        "proxy {SourceKey}/{Id}: source '{Source}' threw during OpenAsync — returning 404", sourceKey, id, source.Key);
+                        "proxy {SourceKey}/{Id}: source '{Source}' threw during OpenAsync — returning 404", sourceKey, id, PluginDiagnostics.SafeLabel(source));
                     http.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
                 }
@@ -188,13 +190,24 @@ public static class AddonEndpoints
                     return;
                 }
 
-                http.Response.StatusCode = upstream.StatusCode;
-                http.Response.ContentType = upstream.ContentType;
-                if (upstream.ContentLength is { } length) http.Response.ContentLength = length;
-                if (upstream.AcceptRanges is { } accept) http.Response.Headers.AcceptRanges = accept;
-                if (upstream.ContentRange is { } contentRange) http.Response.Headers.ContentRange = contentRange;
+                // Whatever a source hands us here (LocalFolderSource.OpenAsync returns a
+                // File.OpenRead stream, for one) must be released on every exit path: the
+                // success path, an exception mid-copy, and a client disconnect. Without this
+                // finally, every /proxy/... request leaked a file handle/lock until finalization.
+                try
+                {
+                    http.Response.StatusCode = upstream.StatusCode;
+                    http.Response.ContentType = upstream.ContentType;
+                    if (upstream.ContentLength is { } length) http.Response.ContentLength = length;
+                    if (upstream.AcceptRanges is { } accept) http.Response.Headers.AcceptRanges = accept;
+                    if (upstream.ContentRange is { } contentRange) http.Response.Headers.ContentRange = contentRange;
 
-                await upstream.Body.CopyToAsync(http.Response.Body, ct);
+                    await upstream.Body.CopyToAsync(http.Response.Body, ct);
+                }
+                finally
+                {
+                    await upstream.DisposeAsync();
+                }
             });
     }
 
@@ -218,9 +231,13 @@ public static class AddonEndpoints
     private static object Empty() => new { title = "", hasMore = false, items = Array.Empty<object>() };
 
     /// <summary>Prefixes every item id with its owner on the way out, so whatever the
-    /// client sends back routes home. A plugin-returned null catalog, or a catalog with
-    /// a null Items list (e.g. `new SourceCatalog("t", null!)`), is "nothing found" —
-    /// same as the router finding no owning source — not a crash.</summary>
+    /// client sends back routes home. A plugin-returned null catalog, a catalog with a
+    /// null Items list (e.g. `new SourceCatalog("t", null!)`), or a null ELEMENT inside
+    /// an otherwise-real Items list — the likelier plugin mistake — is "nothing found"
+    /// (the element is simply skipped) — same as the router finding no owning source —
+    /// not a crash. Callers MUST call this from inside their per-source try/catch: the
+    /// enumeration below (Items itself, or a throwing GetEnumerator on a custom list) is
+    /// plugin-authored code and can throw independently of whatever produced the catalog.</summary>
     private static object ToWire(SourceCatalog? catalog, string sourceKey)
     {
         if (catalog is null) return Empty();
@@ -230,15 +247,17 @@ public static class AddonEndpoints
         {
             title = catalog.Title,
             hasMore = catalog.HasMore,
-            items = items.Select(i => new
-            {
-                id = SourceRouter.Prefix(sourceKey, i.Id),
-                title = i.Title,
-                subtitle = i.Subtitle,
-                type = i.MediaType,
-                thumbnailUrl = i.ThumbnailUrl,
-                expandable = i.Expandable,
-            }).ToArray(),
+            items = items
+                .Where(i => i is not null)
+                .Select(i => new
+                {
+                    id = SourceRouter.Prefix(sourceKey, i.Id),
+                    title = i.Title,
+                    subtitle = i.Subtitle,
+                    type = i.MediaType,
+                    thumbnailUrl = i.ThumbnailUrl,
+                    expandable = i.Expandable,
+                }).ToArray(),
         };
     }
 }

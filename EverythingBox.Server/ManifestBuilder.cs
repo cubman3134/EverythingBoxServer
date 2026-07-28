@@ -31,7 +31,10 @@ public sealed class ManifestBuilder(ILogger<ManifestBuilder>? log = null)
     /// own try: on failure it is logged and simply omitted from the manifest — everything else
     /// still comes back. Reading Catalogs/MediaTypes into a list INSIDE the try is deliberate:
     /// both are lazy-evaluable, so a throw during enumeration must happen before this method
-    /// decides whether to keep or drop the source's contribution.
+    /// decides whether to keep or drop the source's contribution. A null ELEMENT in MediaTypes
+    /// (as opposed to a null Type string, which the post-loop filter/group-by tolerate fine) is
+    /// discarded here too, inside the same try — the combined list is filtered again after the
+    /// loop, and a null element would NRE there for every source, not just the one that misbehaved.
     /// </summary>
     public object Build(ManifestOptions options, IEnumerable<IMediaSource> sources)
     {
@@ -48,13 +51,13 @@ public sealed class ManifestBuilder(ILogger<ManifestBuilder>? log = null)
                 sourceCatalogs = source.Catalogs
                     .Select(c => (object)new { id = SourceRouter.Prefix(key, c.Id), name = c.Name, type = c.MediaType })
                     .ToList();
-                sourceMediaTypes = source.MediaTypes.ToList();
+                sourceMediaTypes = source.MediaTypes.Where(t => t is not null).ToList();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _log.LogError(ex,
                     "Source '{Source}' threw while building the manifest — omitting it. Every other source is unaffected.",
-                    SafeLabel(source));
+                    PluginDiagnostics.SafeLabel(source));
                 continue;
             }
 
@@ -89,11 +92,4 @@ public sealed class ManifestBuilder(ILogger<ManifestBuilder>? log = null)
         };
     }
 
-    /// <summary>Key itself is plugin-authored and can throw too — fall back to the runtime
-    /// type so the log line still identifies which source misbehaved.</summary>
-    private static string SafeLabel(IMediaSource source)
-    {
-        try { return source.Key; }
-        catch { return source.GetType().FullName ?? "<unknown source>"; }
-    }
 }

@@ -116,4 +116,77 @@ public class AddonStreamTests
         var response = await _factory.CreateClient().GetAsync("/proxy/throwing/anything/file.bin");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
+
+    // C4 (regression): the proxy route stopped disposing the ProxyResponse a source hands
+    // it. LocalFolderSource.OpenAsync returns a File.OpenRead stream, so this leaked a file
+    // handle and a Windows file lock on every /proxy/... request. GoodSource's
+    // "disposal-tracked" item returns a stream that records its own disposal via a
+    // process-wide env var (the only channel that survives crossing this fixture's
+    // AssemblyLoadContext boundary back to the test) so this can be proven over a REAL
+    // request, not just the unit-level DisposeAsync try/finally test.
+    [Fact]
+    public async Task Proxy_disposes_the_sources_ProxyResponse_after_the_response_completes()
+    {
+        Environment.SetEnvironmentVariable("EBS_TEST_PROXY_BODY_DISPOSED", null);
+        try
+        {
+            var response = await _factory.CreateClient().GetAsync("/proxy/good/disposal-tracked/file.bin");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("TRACKED-BODY", await response.Content.ReadAsStringAsync());
+
+            Assert.Equal("1", Environment.GetEnvironmentVariable("EBS_TEST_PROXY_BODY_DISPOSED"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("EBS_TEST_PROXY_BODY_DISPOSED", null);
+        }
+    }
+
+    // I1: the proxy catch block's own log call reads source.Key too — if OpenAsync throws
+    // AND Key is the broken member, naive logging throws again from inside the catch and
+    // 500s the request even though OpenAsync's failure was already meant to be handled.
+    [Fact]
+    public async Task Proxy_from_a_source_whose_OpenAsync_and_Key_both_throw_is_404_not_500()
+    {
+        var client = _factory.CreateClient();
+        // Forces the host (and SourceRouter, which reads every source's Key exactly once
+        // while building the routing table) to finish starting up BEFORE the flag arms —
+        // otherwise arming first can make Key throw during startup itself, which — after
+        // the I2 fix — drops the source instead of reproducing "worked at startup, throws
+        // now" for THIS test.
+        await client.GetAsync("/health");
+
+        Environment.SetEnvironmentVariable("EBS_TEST_KEY_ARMED", "1");
+        try
+        {
+            var response = await client.GetAsync("/proxy/keyarmablemethodsthrow/anything/file.bin");
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("EBS_TEST_KEY_ARMED", null);
+        }
+    }
+
+    // I1: same for the stream catch block.
+    [Fact]
+    public async Task Stream_from_a_source_whose_ResolveAsync_and_Key_both_throw_is_empty_not_500()
+    {
+        var client = _factory.CreateClient();
+        await client.GetAsync("/health"); // see comment above: must outlive startup unarmed
+
+        Environment.SetEnvironmentVariable("EBS_TEST_KEY_ARMED", "1");
+        try
+        {
+            var response = await client.GetAsync("/stream/movie/keyarmablemethodsthrow:anything.json");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Empty(json.GetProperty("streams").EnumerateArray());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("EBS_TEST_KEY_ARMED", null);
+        }
+    }
 }
