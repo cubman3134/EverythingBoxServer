@@ -41,11 +41,38 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
         {
             if (!Directory.Exists(folder)) continue;
 
-            foreach (var path in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
+            // EnumerateFiles is lazy — an inaccessible or vanished subdirectory can throw
+            // partway through the walk, after some files were already yielded. The enumerator's
+            // position isn't safe to resume after that, but the failure is scoped to this one
+            // configured folder: catch around each step so a single locked-down subtree here
+            // stops only THIS folder's remaining walk, not the whole catalog or the other
+            // configured folders.
+            using var files = Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).GetEnumerator();
+            while (true)
             {
+                string path;
+                try
+                {
+                    if (!files.MoveNext()) break;
+                    path = files.Current;
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or DirectoryNotFoundException)
+                {
+                    break;
+                }
+
                 ct.ThrowIfCancellationRequested();
 
                 if (!MediaExtensions.ContainsKey(Path.GetExtension(path))) continue;
+
+                // Enumeration follows directory junctions/symlinks just as transparently as
+                // File.Exists/File.OpenRead did before ResolvePath was hardened — a junction
+                // planted inside a configured folder can make a file physically outside every
+                // configured folder show up here with its real title and size, even though
+                // OpenAsync would later refuse to serve it. Apply the same resolved-path
+                // containment check used to open an id to every path listing considers, so
+                // metadata for something we'd never serve never reaches the catalog either.
+                if (!IsContained(path)) continue;
 
                 var title = Path.GetFileNameWithoutExtension(path);
                 if (!string.IsNullOrWhiteSpace(query) &&
@@ -122,17 +149,44 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
     {
         if (DecodeId(itemId) is not { } decoded) return null;
 
-        var full = Path.GetFullPath(decoded);
+        string full;
+        try
+        {
+            // A string that decodes cleanly from base64 is not necessarily a path
+            // Path.GetFullPath will accept — an id is client-controlled all the way down, and
+            // this class only ever returns null for a bad one, never throws. Two demonstrated
+            // cases: "" ("The path is empty"), and a string with an embedded NUL ("Null
+            // character in path"). Catch what GetFullPath documents itself as throwing, not
+            // Exception broadly, so an unrelated bug still surfaces instead of being swallowed.
+            full = Path.GetFullPath(decoded);
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException)
+        {
+            return null;
+        }
+
         if (!File.Exists(full)) return null;
 
+        return IsContained(full) ? full : null;
+    }
+
+    /// <summary>True if `full` — a path already confirmed to exist — actually resolves, after
+    /// following every reparse point in its ancestor chain, to somewhere inside a configured
+    /// folder (also resolved the same way). Shared by ResolvePath (a decoded client id, before
+    /// serving it) and SearchAsync (every enumerated path, before listing it) — opening and
+    /// listing need the identical containment discipline, and a second, slightly different copy
+    /// of this check is exactly how the listing side previously fell behind.</summary>
+    private bool IsContained(string full)
+    {
         // Path.GetFullPath only does LEXICAL normalization (collapses "..", ".", relative
         // segments) — it does not follow reparse points. A junction or symlink planted inside a
-        // configured folder can point anywhere: File.Exists/File.OpenRead transparently follow
-        // it, so the file that actually gets served can live entirely outside every configured
-        // folder even though the lexical path looks contained. We have to resolve the candidate
-        // to where it *really* is — walking every directory in its ancestor chain, since the
-        // leaf file or any directory above it can be the link — and compare THAT against the
-        // configured roots (also resolved, so a legitimately-linked root still works).
+        // configured folder can point anywhere: File.Exists/File.OpenRead/Directory.EnumerateFiles
+        // all transparently follow it, so the file actually being served (or listed) can live
+        // entirely outside every configured folder even though the lexical path looks contained.
+        // We have to resolve the candidate to where it *really* is — walking every directory in
+        // its ancestor chain, since the leaf or any directory above it can be the link — and
+        // compare THAT against the configured roots (also resolved, so a legitimately-linked
+        // root still works).
         var resolvedFull = ResolveReal(full);
 
         foreach (var folder in config.Folders)
@@ -145,9 +199,9 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
 
             if (resolvedFull.StartsWith(resolvedRoot + Path.DirectorySeparatorChar, PathComparison) ||
                 resolvedFull.Equals(resolvedRoot, PathComparison))
-                return full;
+                return true;
         }
-        return null;
+        return false;
     }
 
     /// <summary>Resolves a path to where it actually points on disk, the way the filesystem would

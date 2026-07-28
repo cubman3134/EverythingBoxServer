@@ -145,4 +145,58 @@ public class SampleSourceTests : IDisposable
         Assert.NotNull(proxy);
         Assert.Equal(1, proxy!.ContentLength);
     }
+
+    [Fact]
+    public async Task An_id_decoding_to_an_empty_path_returns_null_rather_than_throwing()
+    {
+        // "" is valid base64url payload (decodes cleanly) but Path.GetFullPath("") throws
+        // ArgumentException. Every other malformed-id case returns null; this one must too.
+        var empty = LocalFolderSource.EncodeId("");
+        Assert.Null(await NewSource().OpenAsync(empty, null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task An_id_decoding_to_a_path_with_an_embedded_NUL_returns_null_rather_than_throwing()
+    {
+        // Decodes fine as base64/UTF-8, but Path.GetFullPath rejects the embedded NUL with
+        // ArgumentException ("Null character in path"). Same requirement: return null, don't throw.
+        var withNul = LocalFolderSource.EncodeId("foo\0bar.mkv");
+        Assert.Null(await NewSource().OpenAsync(withNul, null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SearchAsync_does_not_list_a_file_reached_through_a_junction_that_escapes_the_configured_folder()
+    {
+        // Same unprivileged-on-Windows-only rationale as the OpenAsync junction test above.
+        if (!OperatingSystem.IsWindows()) return;
+
+        var outsideDir = Path.Combine(Path.GetTempPath(), "ebs-junction-target-" + Guid.NewGuid().ToString("N"));
+        var linkPath = Path.Combine(_root, "link-out-search");
+        Directory.CreateDirectory(outsideDir);
+        var secretFile = Path.Combine(outsideDir, "secret.mkv");
+        await File.WriteAllTextAsync(secretFile, "SECRET-DATA");
+
+        try
+        {
+            var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe",
+                $"/c mklink /J \"{linkPath}\" \"{outsideDir}\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            mklink!.WaitForExit();
+            Assert.Equal(0, mklink.ExitCode);
+
+            var catalog = await NewSource().SearchAsync("files", null, new SourceContext(), CancellationToken.None);
+
+            Assert.DoesNotContain(catalog.Items, i => i.Title == "secret");
+        }
+        finally
+        {
+            // Remove the junction itself (not its target) so the outside directory's contents
+            // survive for cleanup, then delete both.
+            try { Directory.Delete(linkPath); } catch { /* best effort */ }
+            try { Directory.Delete(outsideDir, recursive: true); } catch { /* best effort */ }
+        }
+    }
 }

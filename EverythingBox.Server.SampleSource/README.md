@@ -42,5 +42,21 @@ In `everythingbox-server.json`:
   through `File.ResolveLinkTarget`/`Directory.ResolveLinkTarget` and checks containment against
   the *resolved* location, resolving the configured roots the same way. Omit this and you
   reintroduce the hole.
+- **The same discipline applies to *listing*, not just opening.** `Directory.EnumerateFiles`
+  follows junctions exactly as transparently as `File.Exists`/`File.OpenRead` did — a junction
+  planted inside a configured folder makes `SearchAsync` enumerate a file physically outside every
+  configured folder, with its real title and size, even if `ResolvePath` would later correctly
+  refuse to open it. A source that only guards its open path still leaks that file's metadata into
+  the catalog and advertises an item it can never actually serve. `SearchAsync` runs every
+  enumerated path through the same resolved-path containment check `ResolvePath` uses (factored
+  out as `IsContained`, not duplicated) and silently skips anything that fails it, the same way it
+  skips a non-media extension. Guard the open path without also guarding the list path and you've
+  fixed only half of it.
+- Also note what a decoded id can do to a filesystem call that isn't gated by `File.Exists`
+  first: `Path.GetFullPath` throws `ArgumentException` on some byte sequences that decode from
+  base64 just fine (an empty string, one with an embedded NUL). Every other malformed-id case
+  here returns `null` rather than throwing; a client-controlled string reaching any filesystem API
+  needs the same guard around whatever that API documents itself as throwing — not a bare `catch
+  (Exception)`, which would also hide a real bug.
 - `ResolveAsync` returns a relative `proxy/...` path, and `OpenAsync` supplies the bytes.
   Return an absolute `https://` URL instead when the client can fetch it directly.
