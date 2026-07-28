@@ -49,10 +49,19 @@ public static class AddonEndpoints
     /// value, which would turn an encoded '&' inside a title into a parameter separator
     /// and truncate the query.
     /// </summary>
-    private static string? ParseSearch(string extra, HttpContext http)
+    private static string? ParseSearch(string extra, HttpContext http) =>
+        ParseSearchCore(extra, http.Features.Get<IHttpRequestFeature>()?.RawTarget);
+
+    /// <summary>
+    /// Pure core of <see cref="ParseSearch"/>, split out so it can be unit-tested without
+    /// a real request pipeline. Prefers <paramref name="rawTarget"/> (the wire-exact request
+    /// target, which still has percent-encoding intact) over <paramref name="extra"/> (the
+    /// already-decoded route value) when available.
+    /// </summary>
+    internal static string? ParseSearchCore(string extra, string? rawTarget)
     {
         var raw = extra;
-        if (http.Features.Get<IHttpRequestFeature>()?.RawTarget is { Length: > 0 } target)
+        if (rawTarget is { Length: > 0 } target)
         {
             var segment = target;
 

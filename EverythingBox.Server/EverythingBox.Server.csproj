@@ -18,4 +18,8 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="EverythingBox.Server.Tests" />
+  </ItemGroup>
+
 </Project>

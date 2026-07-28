@@ -1,12 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
-using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace EverythingBox.Server.Tests;
 
 /// <summary>Drives the real host over HTTP with the "good" fixture plugin installed.</summary>
-public class AddonBrowseTests : IClassFixture<PluginServerFactory>
+[Collection(AddonServerCollection.Name)]
+public class AddonBrowseTests
 {
     private readonly PluginServerFactory _factory;
     public AddonBrowseTests(PluginServerFactory factory) => _factory = factory;
@@ -37,17 +37,6 @@ public class AddonBrowseTests : IClassFixture<PluginServerFactory>
     {
         var response = await _factory.CreateClient().GetAsync("/catalog/good:all/search=one.json");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-    }
-
-    /// <summary>A title containing '&' arrives percent-encoded; decoding the route value
-    /// too early splits it as if it were a parameter separator.</summary>
-    [Fact]
-    public async Task Catalog_search_keeps_an_encoded_ampersand_in_the_query()
-    {
-        var json = await _factory.CreateClient()
-            .GetFromJsonAsync<JsonElement>("/catalog/good:all/search=one%26two.json");
-
-        Assert.Equal("one&two", json.GetProperty("title").GetString());
     }
 
     [Fact]

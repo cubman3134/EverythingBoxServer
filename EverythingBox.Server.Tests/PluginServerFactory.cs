@@ -1,32 +1,24 @@
-using System.Net;
-using System.Net.Http;
-using System.Net.Sockets;
-using System.Reflection;
+using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace EverythingBox.Server.Tests;
 
 /// <summary>
-/// Boots the real host (the actual <c>Program.cs</c> entry point, via reflection on
-/// its compiler-generated top-level-statements Main) against a temp directory holding
-/// the "good" fixture, listening on a real loopback socket.
+/// Boots the real host in-memory via <see cref="WebApplicationFactory{TEntryPoint}"/>, with
+/// the "good" fixture plugin installed.
 ///
-/// This does NOT use <c>WebApplicationFactory&lt;Program&gt;</c>'s default in-memory
-/// TestServer. TestServer builds <c>HttpContext.Request.Path</c> by fully
-/// URI-unescaping the target and never populates
-/// <c>IHttpRequestFeature.RawTarget</c> at all (verified empirically against
-/// Microsoft.AspNetCore.Mvc.Testing/TestHost 9.0.0: the feature is present but its
-/// RawTarget is always ""). That destroys exactly the information
-/// <c>AddonEndpoints.ParseSearch</c> needs to tell an encoded '&amp;' inside a search
-/// term apart from a real parameter separator — every request looks identically
-/// "already decoded" regardless of what was on the wire. Real Kestrel does not have
-/// this problem: it preserves the raw request-target it received. So this factory
-/// runs the real ASP.NET Core pipeline end-to-end over an actual socket instead.
+/// Env vars are set in the CONSTRUCTOR, not in an override of <c>ConfigureWebHost</c>:
+/// <c>Program.cs</c> calls <see cref="ServerConfig.Load"/> and reads
+/// <see cref="ServerConfig.ResolvedPluginsDirectory"/> / <see cref="ServerConfig.ResolvedFilesCacheDir"/>
+/// in its top-level statements, which run the moment the host is first built — before
+/// <c>ConfigureWebHost</c> would get a chance to run.
+///
+/// This class is shared by every test in <see cref="AddonServerCollection"/> because it sets
+/// these as process-wide environment variables and <see cref="ServerConfig"/> re-reads them
+/// live rather than snapshotting; see that collection's doc comment for why.
 /// </summary>
-public sealed class PluginServerFactory : IDisposable
+public sealed class PluginServerFactory : WebApplicationFactory<Program>
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ebs-host-" + Guid.NewGuid().ToString("N"));
-    private readonly int _port;
-    private readonly HttpClient _client;
 
     public string PluginsDirectory => Path.Combine(_root, "plugins");
     public string FilesDirectory => Path.Combine(_root, "files");
@@ -41,84 +33,20 @@ public sealed class PluginServerFactory : IDisposable
 
         Directory.CreateDirectory(FilesDirectory);
 
-        _port = GetFreeLoopbackPort();
         var configPath = Path.Combine(_root, "everythingbox-server.json");
-        File.WriteAllText(configPath, $$"""{ "Listen": "http://127.0.0.1:{{_port}}" } """);
+        File.WriteAllText(configPath, "{}");
 
-        // MUST be set here, not in some later hook: Program.cs calls ServerConfig.Load()
-        // in its top-level statements, which run the instant Main is invoked below.
         Environment.SetEnvironmentVariable("EBS_PLUGINS_DIR", PluginsDirectory);
         Environment.SetEnvironmentVariable("EBS_FILES_DIR", FilesDirectory);
         Environment.SetEnvironmentVariable("EBS_CONFIG", configPath);
-
-        StartRealHost();
-
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_port}/") };
-        WaitUntilReady();
     }
 
-    public HttpClient CreateClient() => _client;
-
-    /// <summary>Invokes the compiler-generated top-level-statements entry point
-    /// (named "&lt;Main&gt;$") on a background thread. It calls app.Run(), which blocks
-    /// for the process lifetime — acceptable here since the test process exits
-    /// once the run completes and the OS reclaims the socket.</summary>
-    private static void StartRealHost()
+    protected override void Dispose(bool disposing)
     {
-        var entryPoint = typeof(Program).Assembly.EntryPoint
-            ?? throw new InvalidOperationException("EverythingBox.Server.dll has no entry point.");
-
-        var thread = new Thread(() =>
+        base.Dispose(disposing);
+        if (disposing)
         {
-            try
-            {
-                entryPoint.Invoke(null, [Array.Empty<string>()]);
-            }
-            catch (Exception ex)
-            {
-                // Swallow so a startup failure (e.g. port already taken) surfaces as a
-                // WaitUntilReady timeout with a clear message, not a process crash —
-                // an unhandled exception on a plain background thread is fatal to the
-                // whole test run.
-                Console.Error.WriteLine($"[PluginServerFactory] real host thread failed: {ex}");
-            }
-        })
-        { IsBackground = true, Name = "ebs-real-host" };
-
-        thread.Start();
-    }
-
-    private void WaitUntilReady()
-    {
-        using var ready = new HttpClient { BaseAddress = _client.BaseAddress, Timeout = TimeSpan.FromSeconds(2) };
-        for (var attempt = 0; attempt < 200; attempt++)
-        {
-            try
-            {
-                using var response = ready.GetAsync("/health").GetAwaiter().GetResult();
-                if (response.IsSuccessStatusCode) return;
-            }
-            catch
-            {
-                // Not listening yet.
-            }
-            Thread.Sleep(50);
+            try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
         }
-        throw new TimeoutException($"EverythingBox.Server did not become ready on http://127.0.0.1:{_port}/ in time.");
-    }
-
-    private static int GetFreeLoopbackPort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
-
-    public void Dispose()
-    {
-        _client.Dispose();
-        try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 }

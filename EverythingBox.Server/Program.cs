@@ -48,7 +48,7 @@ var prefix = string.IsNullOrEmpty(token) ? "" : "/" + token;
 if (string.IsNullOrEmpty(token))
     log.LogWarning("No access token set. Fine on a trusted LAN — do NOT port-forward this without one.");
 else
-    log.LogInformation("Access token set; the addon is served under /{Prefix}/…", token);
+    log.LogInformation("Access token set; the addon is served under a token-prefixed path.");
 
 app.Use(async (ctx, next) =>
 {
