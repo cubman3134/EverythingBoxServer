@@ -33,6 +33,17 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
     public IReadOnlyList<CatalogDescriptor> Catalogs { get; } =
         [new CatalogDescriptor("files", "Local Files", "movie")];
 
+    // ReparsePoint here means a junction/symlink is never descended into, so it can't leak files
+    // from outside a configured folder or loop back on an ancestor; it doesn't apply to the root
+    // passed to EnumerateFiles, so a configured folder that is itself a reparse point still works.
+    // IgnoreInaccessible skips an unreadable subdirectory instead of aborting the whole walk.
+    private static readonly EnumerationOptions WalkOptions = new()
+    {
+        RecurseSubdirectories = true,
+        AttributesToSkip = FileAttributes.ReparsePoint | FileAttributes.Hidden | FileAttributes.System,
+        IgnoreInaccessible = true,
+    };
+
     public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
     {
         var items = new List<CatalogItem>();
@@ -41,37 +52,14 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
         {
             if (!Directory.Exists(folder)) continue;
 
-            // EnumerateFiles is lazy — an inaccessible or vanished subdirectory can throw
-            // partway through the walk, after some files were already yielded. The enumerator's
-            // position isn't safe to resume after that, but the failure is scoped to this one
-            // configured folder: catch around each step so a single locked-down subtree here
-            // stops only THIS folder's remaining walk, not the whole catalog or the other
-            // configured folders.
-            using var files = Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).GetEnumerator();
-            while (true)
+            foreach (var path in Directory.EnumerateFiles(folder, "*", WalkOptions))
             {
-                string path;
-                try
-                {
-                    if (!files.MoveNext()) break;
-                    path = files.Current;
-                }
-                catch (Exception ex) when (ex is UnauthorizedAccessException or DirectoryNotFoundException)
-                {
-                    break;
-                }
-
                 ct.ThrowIfCancellationRequested();
 
                 if (!MediaExtensions.ContainsKey(Path.GetExtension(path))) continue;
 
-                // Enumeration follows directory junctions/symlinks just as transparently as
-                // File.Exists/File.OpenRead did before ResolvePath was hardened — a junction
-                // planted inside a configured folder can make a file physically outside every
-                // configured folder show up here with its real title and size, even though
-                // OpenAsync would later refuse to serve it. Apply the same resolved-path
-                // containment check used to open an id to every path listing considers, so
-                // metadata for something we'd never serve never reaches the catalog either.
+                // Defence in depth, and the reason SearchAsync and ResolvePath share one
+                // containment check instead of two that can quietly drift apart.
                 if (!IsContained(path)) continue;
 
                 var title = Path.GetFileNameWithoutExtension(path);

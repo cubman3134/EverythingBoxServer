@@ -74,7 +74,12 @@ public class SampleSourceTests : IDisposable
         try
         {
             var outside = LocalFolderSource.EncodeId(elsewhere);
-            Assert.Null(await NewSource().OpenAsync(outside, null, CancellationToken.None));
+
+            // Dispose defensively: if this guard ever regresses and a stream comes back, an
+            // undisposed FileStream would hold `elsewhere` open, and the File.Delete below would
+            // throw — masking the real assertion failure instead of reporting it.
+            await using var proxy = await NewSource().OpenAsync(outside, null, CancellationToken.None);
+            Assert.Null(proxy);
         }
         finally
         {
@@ -197,6 +202,133 @@ public class SampleSourceTests : IDisposable
             // survive for cleanup, then delete both.
             try { Directory.Delete(linkPath); } catch { /* best effort */ }
             try { Directory.Delete(outsideDir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task A_junction_cycle_does_not_crash_the_catalog()
+    {
+        // Same unprivileged-on-Windows-only rationale as the other junction tests.
+        if (!OperatingSystem.IsWindows()) return;
+
+        // A junction inside the configured folder pointing back at one of its own ancestors (the
+        // folder itself) makes a naive recursive walk descend into itself forever. The old
+        // hand-rolled walk followed it until it hit Windows' path-length ceiling and threw an
+        // unhandled FileNotFoundException out of SearchAsync, killing the listing for every
+        // configured folder, not just this one.
+        var cycleLink = Path.Combine(_root, "cycle");
+
+        var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe",
+            $"/c mklink /J \"{cycleLink}\" \"{_root}\"")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
+        mklink!.WaitForExit();
+        Assert.Equal(0, mklink.ExitCode);
+
+        try
+        {
+            var catalog = await NewSource().SearchAsync("files", null, new SourceContext(), CancellationToken.None);
+
+            var titles = catalog.Items.Select(i => i.Title).OrderBy(t => t).ToArray();
+            Assert.Equal(["Sintel", "The Matrix (1999)"], titles);
+        }
+        finally
+        {
+            try { Directory.Delete(cycleLink); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task An_unreadable_subdirectory_does_not_empty_the_rest_of_the_listing()
+    {
+        // icacls and the deny ACE below are Windows-specific.
+        if (!OperatingSystem.IsWindows()) return;
+
+        var lockedDir = Path.Combine(_root, "locked");
+        Directory.CreateDirectory(lockedDir);
+        await File.WriteAllTextAsync(Path.Combine(lockedDir, "Hidden.mp4"), "x");
+
+        var siblingDir = Path.Combine(_root, "sibling");
+        Directory.CreateDirectory(siblingDir);
+        await File.WriteAllTextAsync(Path.Combine(siblingDir, "Sibling.mp4"), "x");
+
+        var currentUser = $"{Environment.UserDomainName}\\{Environment.UserName}";
+
+        var deny = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("icacls.exe",
+            $"\"{lockedDir}\" /deny \"{currentUser}:(OI)(CI)(RX)\"")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
+        deny!.WaitForExit();
+        Assert.Equal(0, deny.ExitCode);
+
+        try
+        {
+            // The locked subdirectory must be skipped, not treated as a reason to abandon the
+            // whole configured folder: its readable sibling directory and the folder's own
+            // top-level files must still show up.
+            var catalog = await NewSource().SearchAsync("files", null, new SourceContext(), CancellationToken.None);
+            var titles = catalog.Items.Select(i => i.Title).OrderBy(t => t).ToArray();
+
+            Assert.Equal(["Sibling", "Sintel", "The Matrix (1999)"], titles);
+        }
+        finally
+        {
+            // Restore access before Dispose() tries to recursively delete _root — otherwise the
+            // deny ACE survives on disk as an undeletable leftover directory.
+            var restore = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("icacls.exe",
+                $"\"{lockedDir}\" /remove:d \"{currentUser}\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            restore!.WaitForExit();
+        }
+    }
+
+    [Fact]
+    public async Task A_configured_root_that_is_itself_a_junction_still_lists_and_opens_its_files()
+    {
+        // Same unprivileged-on-Windows-only rationale as the other junction tests.
+        if (!OperatingSystem.IsWindows()) return;
+
+        // AttributesToSkip on EnumerationOptions applies to entries found DURING enumeration, not
+        // to the root passed to EnumerateFiles — a configured folder that is itself a reparse
+        // point (a legitimate setup: e.g. a drive-letter junction to another volume) must still
+        // work, not be silently skipped.
+        var realDir = Path.Combine(Path.GetTempPath(), "ebs-real-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(realDir);
+        await File.WriteAllTextAsync(Path.Combine(realDir, "Real.mp4"), "x");
+
+        var junctionRoot = Path.Combine(Path.GetTempPath(), "ebs-root-junction-" + Guid.NewGuid().ToString("N"));
+
+        var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe",
+            $"/c mklink /J \"{junctionRoot}\" \"{realDir}\"")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
+        mklink!.WaitForExit();
+        Assert.Equal(0, mklink.ExitCode);
+
+        try
+        {
+            var source = new LocalFolderSource(new LocalFolderConfig { Folders = [junctionRoot] });
+            var catalog = await source.SearchAsync("files", null, new SourceContext(), CancellationToken.None);
+            var item = Assert.Single(catalog.Items);
+            Assert.Equal("Real", item.Title);
+
+            await using var proxy = await source.OpenAsync(item.Id, null, CancellationToken.None);
+            Assert.NotNull(proxy);
+            Assert.Equal(1, proxy!.ContentLength);
+        }
+        finally
+        {
+            try { Directory.Delete(junctionRoot); } catch { /* best effort */ }
+            try { Directory.Delete(realDir, recursive: true); } catch { /* best effort */ }
         }
     }
 }
