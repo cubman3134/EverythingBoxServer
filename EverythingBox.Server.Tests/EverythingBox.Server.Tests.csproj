@@ -30,6 +30,7 @@
     <ProjectReference Include="..\tests\TestPlugin.Good\TestPlugin.Good.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\tests\TestPlugin.Bad\TestPlugin.Bad.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\tests\TestPlugin.Dup\TestPlugin.Dup.csproj" ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\EverythingBox.Server.SampleSource\EverythingBox.Server.SampleSource.csproj" />
   </ItemGroup>
 
   <!-- Stage each fixture's FULL build output directory, not just its named DLL. A
