@@ -10,7 +10,7 @@ public sealed record BuiltFile(string ServedName, string Path, string ContentTyp
 /// </summary>
 public sealed class FileCache
 {
-    private readonly ConcurrentDictionary<string, Task<BuiltFile?>> _builds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Lazy<Task<BuiltFile?>>> _builds = new(StringComparer.OrdinalIgnoreCase);
 
     public FileCache(string root)
     {
@@ -27,18 +27,24 @@ public sealed class FileCache
     {
         ValidateName(servedName);
 
-        var task = _builds.GetOrAdd(servedName, name => RunAsync(name, build, ct));
+        // GetOrAdd's factory is NOT run under a lock — it can execute concurrently on many
+        // threads, and only the dictionary insert is atomic. Wrapping the build in
+        // Lazy<Task<...>>(ExecutionAndPublication) means several Lazy wrapper objects may be
+        // constructed under contention, but only the one that wins the insert is ever
+        // evaluated, so .Value — and therefore the build itself — runs exactly once.
+        var lazy = _builds.GetOrAdd(servedName, name => new Lazy<Task<BuiltFile?>>(
+            () => RunAsync(name, build, ct), LazyThreadSafetyMode.ExecutionAndPublication));
         try
         {
-            return await task;
+            return await lazy.Value;
         }
         catch
         {
-            // Evict only AFTER the entry is certainly present, and only this exact task —
+            // Evict only AFTER the entry is certainly present, and only this exact Lazy —
             // GetOrAdd runs its factory before inserting, so evicting from inside the build
             // races the insertion and leaves the faulted task cached forever. Matching on the
-            // task value means a concurrent successful rebuild is never removed by a late failure.
-            _builds.TryRemove(new KeyValuePair<string, Task<BuiltFile?>>(servedName, task));
+            // Lazy value means a concurrent successful rebuild is never removed by a late failure.
+            _builds.TryRemove(new KeyValuePair<string, Lazy<Task<BuiltFile?>>>(servedName, lazy));
             throw;
         }
     }

@@ -64,6 +64,45 @@ public class FileCacheTests : IDisposable
         Assert.All(results, r => Assert.Equal(results[0]!.Path, r!.Path));
     }
 
+    // Concurrent_requests_for_the_same_file_build_once dispatches its racers with a plain
+    // LINQ .Select — with no Task.Run, each GetOrBuildAsync call's synchronous prefix (which
+    // includes ConcurrentDictionary.GetOrAdd invoking its value factory) runs to completion
+    // on the single calling thread before the next racer's call even begins. Only one thread
+    // ever touches the builder, so that test cannot detect GetOrAdd's factory running
+    // concurrently on real threads — which is exactly what happens under real request
+    // contention. This test dispatches each racer on its own thread-pool thread and holds
+    // them at a barrier so they all call GetOrBuildAsync at (as close as possible to) the
+    // same instant, to actually exercise that race.
+    [Fact]
+    public async Task Genuinely_concurrent_callers_on_separate_threads_build_once()
+    {
+        var cache = NewCache();
+        var builds = 0;
+        const int callerCount = 16;
+        using var barrier = new Barrier(callerCount);
+
+        Task<BuiltFile?> Build(string name, CancellationToken ct)
+        {
+            Interlocked.Increment(ref builds);
+            return WriteAsync(name, "racy", ct);
+        }
+
+        var racers = Enumerable.Range(0, callerCount)
+            .Select(_ => Task.Run(() =>
+            {
+                // Every caller waits here so they enter GetOrBuildAsync — and therefore
+                // GetOrAdd's factory — as close to simultaneously as the OS scheduler allows.
+                barrier.SignalAndWait();
+                return cache.GetOrBuildAsync("race.txt", Build, CancellationToken.None);
+            }))
+            .ToArray();
+
+        var results = await Task.WhenAll(racers);
+
+        Assert.Equal(1, builds);
+        Assert.All(results, r => Assert.Equal(results[0]!.Path, r!.Path));
+    }
+
     [Fact]
     public async Task A_failed_build_is_not_cached()
     {
