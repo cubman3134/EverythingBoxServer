@@ -11,7 +11,11 @@ public interface IPlugin
 
     string DisplayName { get; }
 
-    /// <summary>Set this to <see cref="ServerApi.Version"/>.</summary>
+    /// <summary>Set this to <c>new Version(ServerApi.VersionString)</c> — do NOT reference
+    /// a host-resolved <see cref="Version"/> instance here. <see cref="ServerApi.VersionString"/>
+    /// is a compile-time constant, so writing it this way bakes the version your plugin was
+    /// built against into your plugin's own assembly. The host checks this against what it
+    /// can support and refuses to load a plugin it cannot satisfy.</summary>
     Version ApiVersion { get; }
 
     void Configure(IPluginRegistry registry, IPluginContext context);

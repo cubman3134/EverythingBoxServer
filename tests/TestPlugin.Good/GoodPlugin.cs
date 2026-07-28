@@ -2,10 +2,18 @@ using EverythingBox.Server.Abstractions;
 
 namespace TestPlugin.Good;
 
-public sealed class GoodSource : IMediaSource
+public sealed class GoodSource(string? warmUpMarkerPath = null) : IMediaSource
 {
     public string Key => "good";
     public IReadOnlyList<CatalogDescriptor> Catalogs { get; } = [new CatalogDescriptor("all", "All", "movie")];
+
+    // F6: proves the host actually calls WarmUpAsync at startup — writes a marker file a
+    // test can observe from outside this plugin's own AssemblyLoadContext.
+    public Task<WarmUpResult> WarmUpAsync(CancellationToken ct)
+    {
+        if (warmUpMarkerPath is not null) File.WriteAllText(warmUpMarkerPath, "warmed");
+        return Task.FromResult(WarmUpResult.Ready);
+    }
 
     public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
         // Title echoes the query so a test can assert exactly what arrived.
@@ -45,8 +53,8 @@ public sealed class GoodPlugin : IPlugin
 {
     public string Key => "good";
     public string DisplayName => "Good Test Plugin";
-    public Version ApiVersion => ServerApi.Version;
+    public Version ApiVersion => new(ServerApi.VersionString);
 
     public void Configure(IPluginRegistry registry, IPluginContext context)
-        => registry.AddSource(new GoodSource());
+        => registry.AddSource(new GoodSource(Path.Combine(context.CacheDirectory, "warmup.marker")));
 }

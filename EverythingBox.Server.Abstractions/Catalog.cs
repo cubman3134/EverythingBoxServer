@@ -61,8 +61,18 @@ public sealed class ProxyResponse(Stream body, string contentType) : IAsyncDispo
 
     public async ValueTask DisposeAsync()
     {
-        await Body.DisposeAsync();
-        Owner?.Dispose();
+        // Body is a network stream that can throw on dispose (e.g. a broken connection).
+        // Without try/finally, that throw would skip disposing Owner entirely — and Owner
+        // is typically an HttpResponseMessage holding the underlying connection, so it
+        // would leak rather than just fail to dispose cleanly.
+        try
+        {
+            await Body.DisposeAsync();
+        }
+        finally
+        {
+            Owner?.Dispose();
+        }
     }
 }
 

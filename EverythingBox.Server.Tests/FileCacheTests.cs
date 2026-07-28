@@ -125,6 +125,31 @@ public class FileCacheTests : IDisposable
         Assert.Equal("second", await File.ReadAllTextAsync(recovered!.Path));
     }
 
+    // F7: a null result is a transient miss, not a permanent one. Before the fix, eviction
+    // happened only in the catch block, so a build that legitimately returns null got cached
+    // forever and every later call saw null without the builder running again.
+    [Fact]
+    public async Task A_null_result_is_not_cached_and_a_later_call_can_still_succeed()
+    {
+        var cache = NewCache();
+        var attempts = 0;
+
+        Task<BuiltFile?> MissThenHit(string name, CancellationToken ct)
+        {
+            attempts++;
+            return attempts == 1
+                ? Task.FromResult<BuiltFile?>(null)
+                : WriteAsync(name, "second", ct);
+        }
+
+        var first = await cache.GetOrBuildAsync("d.txt", MissThenHit, CancellationToken.None);
+        Assert.Null(first);
+
+        var second = await cache.GetOrBuildAsync("d.txt", MissThenHit, CancellationToken.None);
+        Assert.Equal("second", await File.ReadAllTextAsync(second!.Path));
+        Assert.Equal(2, attempts);
+    }
+
     [Theory]
     [InlineData("../escape.txt")]
     [InlineData("sub/dir.txt")]

@@ -28,8 +28,12 @@ public interface IMediaSource
     Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
         => Task.FromResult<ProxyResponse?>(null);
 
-    /// <summary>Optional. Cache expensive state at startup; config decides whether
-    /// failure is fatal.</summary>
+    /// <summary>Optional. The host calls this once for every registered source at startup,
+    /// before it starts taking traffic, so a source can cache expensive state up front. This
+    /// is a single best-effort attempt, not a retry loop and not a startup gate: a thrown
+    /// exception or a <see cref="WarmUpStatus.Failed"/> result is logged as a warning and the
+    /// server starts anyway — no source can block another's warm-up or the server's
+    /// availability by failing here.</summary>
     Task<WarmUpResult> WarmUpAsync(CancellationToken ct)
         => Task.FromResult(WarmUpResult.NotApplicable);
 }

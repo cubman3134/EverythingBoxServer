@@ -8,7 +8,7 @@ public sealed class DupPluginA : IPlugin
 {
     public string Key => "dup";
     public string DisplayName => "Dup Plugin A";
-    public Version ApiVersion => ServerApi.Version;
+    public Version ApiVersion => new(ServerApi.VersionString);
 
     public void Configure(IPluginRegistry registry, IPluginContext context) { }
 }
@@ -17,7 +17,7 @@ public sealed class DupPluginB : IPlugin
 {
     public string Key => "dup";
     public string DisplayName => "Dup Plugin B";
-    public Version ApiVersion => ServerApi.Version;
+    public Version ApiVersion => new(ServerApi.VersionString);
 
     public void Configure(IPluginRegistry registry, IPluginContext context) { }
 }

@@ -36,7 +36,17 @@ public sealed class FileCache
             () => RunAsync(name, build, ct), LazyThreadSafetyMode.ExecutionAndPublication));
         try
         {
-            return await lazy.Value;
+            var result = await lazy.Value;
+
+            // A null result is a transient miss (the builder had nothing to build this time),
+            // not a permanent one — eviction previously happened only in the catch block below,
+            // so a legitimate null became cached forever and every later retry got null back
+            // without the builder ever running again. Evict exactly like a failure does: only
+            // this exact Lazy, only after the entry is certainly present.
+            if (result is null)
+                _builds.TryRemove(new KeyValuePair<string, Lazy<Task<BuiltFile?>>>(servedName, lazy));
+
+            return result;
         }
         catch
         {

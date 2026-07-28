@@ -185,10 +185,27 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
 
         foreach (var folder in config.Folders)
         {
+            if (string.IsNullOrWhiteSpace(folder)) continue;
+
             // Trim trailing separators before combining with GetFullPath's own separator, or a
             // folder configured with one (e.g. "D:\Media\Movies\") doubles up and no genuinely
             // contained file's path ever matches — silently refusing everything inside it.
-            var root = Path.GetFullPath(folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            string root;
+            try
+            {
+                // Same rationale as ResolvePath's own try/catch below: a configured folder is
+                // operator-entered config, not guaranteed to be a path GetFullPath accepts (a
+                // blank entry throws ArgumentException; an embedded NUL, PathTooLongException).
+                // This class's contract is "return null for a bad id, never throw" — an
+                // unusable configured folder must be skipped, not turn every lookup into a
+                // crash for every OTHER, valid configured folder.
+                root = Path.GetFullPath(folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            }
+            catch (Exception ex) when (ex is ArgumentException or PathTooLongException)
+            {
+                continue;
+            }
+
             var resolvedRoot = ResolveReal(root);
 
             if (resolvedFull.StartsWith(resolvedRoot + Path.DirectorySeparatorChar, PathComparison) ||

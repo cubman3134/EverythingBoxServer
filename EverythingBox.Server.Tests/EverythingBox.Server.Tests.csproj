@@ -30,6 +30,7 @@
     <ProjectReference Include="..\tests\TestPlugin.Good\TestPlugin.Good.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\tests\TestPlugin.Bad\TestPlugin.Bad.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\tests\TestPlugin.Dup\TestPlugin.Dup.csproj" ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\tests\TestPlugin.Throwing\TestPlugin.Throwing.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\EverythingBox.Server.SampleSource\EverythingBox.Server.SampleSource.csproj" />
   </ItemGroup>
 
@@ -42,10 +43,12 @@
       <GoodPluginOut Include="..\tests\TestPlugin.Good\bin\$(Configuration)\net9.0\**\*.*" />
       <BadPluginOut Include="..\tests\TestPlugin.Bad\bin\$(Configuration)\net9.0\**\*.*" />
       <DupPluginOut Include="..\tests\TestPlugin.Dup\bin\$(Configuration)\net9.0\**\*.*" />
+      <ThrowingPluginOut Include="..\tests\TestPlugin.Throwing\bin\$(Configuration)\net9.0\**\*.*" />
     </ItemGroup>
     <Copy SourceFiles="@(GoodPluginOut)" DestinationFolder="$(OutDir)testplugins\good\%(RecursiveDir)" />
     <Copy SourceFiles="@(BadPluginOut)" DestinationFolder="$(OutDir)testplugins\bad\%(RecursiveDir)" />
     <Copy SourceFiles="@(DupPluginOut)" DestinationFolder="$(OutDir)testplugins\dup\%(RecursiveDir)" />
+    <Copy SourceFiles="@(ThrowingPluginOut)" DestinationFolder="$(OutDir)testplugins\throwing\%(RecursiveDir)" />
   </Target>
 
 </Project>

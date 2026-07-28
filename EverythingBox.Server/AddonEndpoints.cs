@@ -12,21 +12,32 @@ public static class AddonEndpoints
             Results.Json(builder.Build(config.Manifest.ToOptions(), router.Sources)));
 
         app.MapGet($"{prefix}/catalog/{{catalogId}}.json",
-            (string catalogId, SourceRouter router, CancellationToken ct) =>
-                CatalogAsync(catalogId, null, router, ct));
+            (string catalogId, SourceRouter router, ILoggerFactory loggers, CancellationToken ct) =>
+                CatalogAsync(catalogId, null, router, loggers, ct));
 
         // The extras segment is e.g. "search=batman&page=2".
         app.MapGet($"{prefix}/catalog/{{catalogId}}/{{extra}}.json",
-            (string catalogId, string extra, HttpContext http, SourceRouter router, CancellationToken ct) =>
-                CatalogAsync(catalogId, ParseSearch(extra, http), router, ct));
+            (string catalogId, string extra, HttpContext http, SourceRouter router, ILoggerFactory loggers, CancellationToken ct) =>
+                CatalogAsync(catalogId, ParseSearch(extra, http), router, loggers, ct));
 
         app.MapGet($"{prefix}/detail/{{type}}/{{id}}.json",
-            async (string type, string id, SourceRouter router, CancellationToken ct) =>
+            async (string type, string id, SourceRouter router, ILoggerFactory loggers, CancellationToken ct) =>
             {
                 if (!router.TryResolve(id, out var source, out var payload))
                     return Results.Json(Empty());
 
-                var catalog = await source.DetailAsync(payload, new SourceContext(), ct);
+                SourceCatalog? catalog;
+                try
+                {
+                    catalog = await source.DetailAsync(payload, new SourceContext(), ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    loggers.CreateLogger("Detail").LogError(ex,
+                        "detail {Type}/{Id}: source '{Source}' threw during DetailAsync — returning empty", type, id, source.Key);
+                    return Results.Json(Empty());
+                }
+
                 return Results.Json(ToWire(catalog, source.Key));
             });
 
@@ -35,12 +46,23 @@ public static class AddonEndpoints
     }
 
     private static async Task<IResult> CatalogAsync(
-        string catalogId, string? query, SourceRouter router, CancellationToken ct)
+        string catalogId, string? query, SourceRouter router, ILoggerFactory loggers, CancellationToken ct)
     {
         if (!router.TryResolve(catalogId, out var source, out var payload))
             return Results.Json(Empty());
 
-        var catalog = await source.SearchAsync(payload, query, new SourceContext(), ct);
+        SourceCatalog? catalog;
+        try
+        {
+            catalog = await source.SearchAsync(payload, query, new SourceContext(), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            loggers.CreateLogger("Catalog").LogError(ex,
+                "catalog {CatalogId}: source '{Source}' threw during SearchAsync — returning empty catalog", catalogId, source.Key);
+            return Results.Json(Empty());
+        }
+
         return Results.Json(ToWire(catalog, source.Key));
     }
 
@@ -101,7 +123,18 @@ public static class AddonEndpoints
                 }
 
                 var context = new SourceContext { ClientCanCurl = dl == "curl" };
-                var stream = await source.ResolveAsync(payload, n ?? 0, context, ct);
+
+                SourceStream? stream;
+                try
+                {
+                    stream = await source.ResolveAsync(payload, n ?? 0, context, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    log.LogError(ex, "stream {Type}/{Id}: source '{Source}' threw during ResolveAsync — returning no streams",
+                        type, id, source.Key);
+                    return Results.Json(NoStreams());
+                }
 
                 if (stream is null) return Results.Json(NoStreams());
 
@@ -126,7 +159,7 @@ public static class AddonEndpoints
         // filename so the client sees the extension; only {id} is load-bearing.
         app.MapGet($"{prefix}/proxy/{{sourceKey}}/{{id}}/{{name}}",
             async (string sourceKey, string id, string name, HttpContext http,
-                   SourceRouter router, CancellationToken ct) =>
+                   SourceRouter router, ILoggerFactory loggers, CancellationToken ct) =>
             {
                 if (!router.TryResolve(SourceRouter.Prefix(sourceKey, id), out var source, out var payload))
                 {
@@ -135,7 +168,19 @@ public static class AddonEndpoints
                 }
 
                 var range = http.Request.Headers.Range.ToString();
-                await using var upstream = await source.OpenAsync(payload, string.IsNullOrEmpty(range) ? null : range, ct);
+
+                ProxyResponse? upstream;
+                try
+                {
+                    upstream = await source.OpenAsync(payload, string.IsNullOrEmpty(range) ? null : range, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    loggers.CreateLogger("Proxy").LogError(ex,
+                        "proxy {SourceKey}/{Id}: source '{Source}' threw during OpenAsync — returning 404", sourceKey, id, source.Key);
+                    http.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
 
                 if (upstream is null)
                 {
@@ -173,19 +218,27 @@ public static class AddonEndpoints
     private static object Empty() => new { title = "", hasMore = false, items = Array.Empty<object>() };
 
     /// <summary>Prefixes every item id with its owner on the way out, so whatever the
-    /// client sends back routes home.</summary>
-    private static object ToWire(SourceCatalog catalog, string sourceKey) => new
+    /// client sends back routes home. A plugin-returned null catalog, or a catalog with
+    /// a null Items list (e.g. `new SourceCatalog("t", null!)`), is "nothing found" —
+    /// same as the router finding no owning source — not a crash.</summary>
+    private static object ToWire(SourceCatalog? catalog, string sourceKey)
     {
-        title = catalog.Title,
-        hasMore = catalog.HasMore,
-        items = catalog.Items.Select(i => new
+        if (catalog is null) return Empty();
+
+        var items = catalog.Items ?? [];
+        return new
         {
-            id = SourceRouter.Prefix(sourceKey, i.Id),
-            title = i.Title,
-            subtitle = i.Subtitle,
-            type = i.MediaType,
-            thumbnailUrl = i.ThumbnailUrl,
-            expandable = i.Expandable,
-        }).ToArray(),
-    };
+            title = catalog.Title,
+            hasMore = catalog.HasMore,
+            items = items.Select(i => new
+            {
+                id = SourceRouter.Prefix(sourceKey, i.Id),
+                title = i.Title,
+                subtitle = i.Subtitle,
+                type = i.MediaType,
+                thumbnailUrl = i.ThumbnailUrl,
+                expandable = i.Expandable,
+            }).ToArray(),
+        };
+    }
 }

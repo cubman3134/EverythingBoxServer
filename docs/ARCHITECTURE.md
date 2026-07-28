@@ -29,8 +29,8 @@ tests/TestPlugin.Good, TestPlugin.Bad, TestPlugin.Dup
 ```
 
 Plugins reference **Abstractions only**. The host is free to change without breaking
-them, as long as the `IPlugin`/`IMediaSource` contract and `ServerApi.Version` stay
-compatible.
+them, as long as the `IPlugin`/`IMediaSource` contract and `ServerApi.VersionString`
+stay compatible.
 
 ## Plugin contract
 
@@ -41,7 +41,7 @@ public interface IPlugin
 {
     string Key { get; }              // namespaces this plugin's ids and config section; must not contain ':'
     string DisplayName { get; }
-    Version ApiVersion { get; }      // set to ServerApi.Version; checked against the host's, mismatch = refuse to load
+    Version ApiVersion { get; }      // set to new Version(ServerApi.VersionString); checked against the host's, mismatch = refuse to load
     void Configure(IPluginRegistry registry, IPluginContext context);
 }
 
@@ -84,8 +84,9 @@ public interface IMediaSource
     Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
         => Task.FromResult<ProxyResponse?>(null);
 
-    // Optional. Declared for a plugin to cache expensive state at startup — see
-    // "Not yet wired up" below; the host does not call this today.
+    // Optional. The host calls this once per registered source at startup, before it takes
+    // traffic — a single best-effort attempt, not a retry loop or a startup gate. A throw
+    // or a Failed result is a logged warning; the server starts regardless.
     Task<WarmUpResult> WarmUpAsync(CancellationToken ct)
         => Task.FromResult(WarmUpResult.NotApplicable);
 }
@@ -159,10 +160,14 @@ Failures are contained — logged and skipped, never a crash of the whole proces
 | Assembly is not a loadable managed DLL | Skip that file, keep scanning the folder |
 | Plugin type has no public parameterless constructor | Log, skip that type |
 | Plugin key invalid (empty or contains `:`) | Log, skip the plugin |
-| `ApiVersion` incompatible with `ServerApi.Version` | Log, skip the plugin, server starts |
+| `ApiVersion` incompatible with `ServerApi.Current` | Log, skip the plugin, server starts |
 | Plugin key already used by another loaded plugin | Log, skip the later one |
 | `Configure` throws | Log, skip the plugin, server starts |
-| `SearchAsync`/`DetailAsync`/`ResolveAsync` throws | **Not caught by the host** — propagates as an unhandled exception on that request |
+| Two sources (from different plugins) register the same key | Log, keep the first, drop the later one |
+| `Catalogs`/`MediaTypes` throws while building the manifest | Log, omit that source from the manifest; every other source still appears |
+| `SearchAsync`/`DetailAsync`/`ResolveAsync`/`OpenAsync` throws | Log, return the route's normal "nothing found" shape (empty catalog / empty streams / 404) |
+| A source returns a null `SourceCatalog`, or one with null `Items` | Treated as "nothing found", not a crash |
+| `WarmUpAsync` throws or returns `Failed` | Log a warning; does not block the server or another source's warm-up |
 | No source claims a requested id | Empty catalog / empty streams response |
 | `ResolveAsync` returns `null` | Empty streams response |
 | Resolved URL is not client-safe | Refuse, log, return empty streams |
@@ -235,9 +240,7 @@ explicitly noted.
   decoupled from any one indexer.
 - **A richer `IPluginContext`**, likely an `IServerServices Server` member, so a plugin
   can call back into shared pipeline services instead of implementing resolution itself.
-- **`WarmUpAsync` actually being called.** The method exists on `IMediaSource` today
-  with a default no-op implementation, and `MediaSourceContractTests` covers that
-  default — but nothing in `PluginHost` or `Program.cs` invokes it. A plugin that
-  implements it currently has no effect.
-- **Retrying a source whose search throws**, instead of the exception propagating
-  unhandled as it does today.
+- **Retrying a source whose search throws**, or a required-source / retry-until-deadline
+  policy for `WarmUpAsync`. Today `WarmUpAsync` is a single best-effort call at startup
+  (see the failure-containment table above) and a throwing `SearchAsync`/`ResolveAsync`/etc.
+  simply degrades that one request to its route's empty shape — there is no retry.

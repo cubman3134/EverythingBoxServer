@@ -55,4 +55,57 @@ public class AddonBrowseTests
         var json = await _factory.CreateClient().GetFromJsonAsync<JsonElement>("/health");
         Assert.True(json.GetProperty("ok").GetBoolean());
     }
+
+    // F1: the "throwing" fixture plugin is installed alongside "good" specifically so these
+    // tests can prove request-time containment over real HTTP, not just at the unit level.
+
+    [Fact]
+    public async Task Manifest_still_lists_the_healthy_plugin_even_though_another_plugins_Catalogs_getter_throws()
+    {
+        var json = await _factory.CreateClient().GetFromJsonAsync<JsonElement>("/manifest.json");
+
+        var catalogs = json.GetProperty("catalogs").EnumerateArray().ToList();
+        var catalog = Assert.Single(catalogs);
+        Assert.Equal("good:all", catalog.GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task Catalog_from_a_source_whose_SearchAsync_throws_is_empty_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/catalog/throwing:anything.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(json.GetProperty("items").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Detail_from_a_source_whose_DetailAsync_throws_is_empty_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/detail/movie/throwing:anything.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(json.GetProperty("items").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Catalog_from_a_source_returning_a_null_SourceCatalog_is_empty_not_a_crash()
+    {
+        var response = await _factory.CreateClient().GetAsync("/catalog/nullish:anything.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(json.GetProperty("items").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Detail_from_a_source_returning_a_catalog_with_null_Items_is_empty_not_a_crash()
+    {
+        var response = await _factory.CreateClient().GetAsync("/detail/movie/nullish:anything.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(json.GetProperty("items").EnumerateArray());
+    }
 }

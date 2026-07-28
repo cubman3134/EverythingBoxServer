@@ -7,7 +7,7 @@ public sealed class SamplePlugin : IPlugin
 {
     public string Key => "local";
     public string DisplayName => "Local Folder";
-    public Version ApiVersion => ServerApi.Version;
+    public Version ApiVersion => new(ServerApi.VersionString);
 
     public void Configure(IPluginRegistry registry, IPluginContext context)
     {

@@ -25,11 +25,13 @@ public sealed class PluginServerFactory : WebApplicationFactory<Program>
 
     public PluginServerFactory()
     {
-        var staged = Path.Combine(AppContext.BaseDirectory, "testplugins", "good");
-        var dest = Path.Combine(PluginsDirectory, "good");
-        Directory.CreateDirectory(dest);
-        foreach (var file in Directory.GetFiles(staged))
-            File.Copy(file, Path.Combine(dest, Path.GetFileName(file)));
+        StagePlugin("good");
+        // A source that throws on every request-time member — Catalogs, SearchAsync,
+        // DetailAsync, ResolveAsync, OpenAsync. Installed alongside "good" (never alone)
+        // so HTTP-level tests can prove containment (F1): the "good" source's routes must
+        // keep working, and /manifest.json must still list "good"'s catalog, even though
+        // this source blows up on everything it touches.
+        StagePlugin("throwing");
 
         Directory.CreateDirectory(FilesDirectory);
 
@@ -39,6 +41,15 @@ public sealed class PluginServerFactory : WebApplicationFactory<Program>
         Environment.SetEnvironmentVariable("EBS_PLUGINS_DIR", PluginsDirectory);
         Environment.SetEnvironmentVariable("EBS_FILES_DIR", FilesDirectory);
         Environment.SetEnvironmentVariable("EBS_CONFIG", configPath);
+    }
+
+    private void StagePlugin(string fixtureName)
+    {
+        var staged = Path.Combine(AppContext.BaseDirectory, "testplugins", fixtureName);
+        var dest = Path.Combine(PluginsDirectory, fixtureName);
+        Directory.CreateDirectory(dest);
+        foreach (var file in Directory.GetFiles(staged))
+            File.Copy(file, Path.Combine(dest, Path.GetFileName(file)));
     }
 
     protected override void Dispose(bool disposing)

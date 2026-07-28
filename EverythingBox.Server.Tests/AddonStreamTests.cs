@@ -96,4 +96,24 @@ public class AddonStreamTests
         var response = await _factory.CreateClient().GetAsync("/proxy/good/not-proxied/file.bin");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
+
+    // F1: the "throwing" fixture plugin is installed alongside "good" specifically so these
+    // tests can prove request-time containment over real HTTP.
+
+    [Fact]
+    public async Task Stream_from_a_source_whose_ResolveAsync_throws_is_empty_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/stream/movie/throwing:anything.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(json.GetProperty("streams").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Proxy_from_a_source_whose_OpenAsync_throws_is_404_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/proxy/throwing/anything/file.bin");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
 }

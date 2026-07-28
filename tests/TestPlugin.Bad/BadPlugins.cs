@@ -7,7 +7,7 @@ public sealed class FutureApiPlugin : IPlugin
 {
     public string Key => "future";
     public string DisplayName => "Future API Plugin";
-    public Version ApiVersion => new(ServerApi.Version.Major + 1, 0);
+    public Version ApiVersion => new(new Version(ServerApi.VersionString).Major + 1, 0);
 
     public void Configure(IPluginRegistry registry, IPluginContext context)
         => throw new InvalidOperationException("must never be called — the version gate runs first");
@@ -18,7 +18,7 @@ public sealed class ThrowingPlugin : IPlugin
 {
     public string Key => "throwing";
     public string DisplayName => "Throwing Plugin";
-    public Version ApiVersion => ServerApi.Version;
+    public Version ApiVersion => new(ServerApi.VersionString);
 
     public void Configure(IPluginRegistry registry, IPluginContext context)
         => throw new InvalidOperationException("boom");

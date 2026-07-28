@@ -87,6 +87,23 @@ public class SampleSourceTests : IDisposable
         }
     }
 
+    // F8: IsContained ran Path.GetFullPath on every configured folder with no guard, unlike
+    // ResolvePath's own decoded-id handling. A blank entry in Folders — an operator typo, an
+    // empty line in config — must not throw out of every lookup against every OTHER, valid
+    // configured folder; this class's contract is "return null for a bad id, never throw".
+    [Fact]
+    public async Task A_blank_entry_in_Folders_is_skipped_rather_than_throwing()
+    {
+        var source = new LocalFolderSource(new LocalFolderConfig { Folders = ["", _root] });
+
+        var catalog = await source.SearchAsync("files", "sintel", new SourceContext(), CancellationToken.None);
+        var item = Assert.Single(catalog.Items);
+
+        await using var proxy = await source.OpenAsync(item.Id, null, CancellationToken.None);
+        Assert.NotNull(proxy);
+        Assert.Equal(1, proxy!.ContentLength);
+    }
+
     [Fact]
     public async Task An_unconfigured_source_is_empty_rather_than_broken()
     {
@@ -101,6 +118,12 @@ public class SampleSourceTests : IDisposable
         // Directory junctions on Windows do not require elevation (unlike file symlinks), so this
         // test can run in ordinary CI. There is no equivalent unprivileged repro on non-Windows
         // filesystems here, so skip rather than fail elsewhere.
+        //
+        // NOTE (F5): this is a SILENT skip — xunit 2.9.3 (the version pinned in this project's
+        // .csproj) has no Assert.Skip; that only exists in xunit v3. A skipped test here reports
+        // as PASSED, indistinguishable from one that actually ran. CI now runs a windows-latest
+        // leg specifically so this containment logic — closed after four rounds of review — is
+        // actually exercised somewhere, not just present in source.
         if (!OperatingSystem.IsWindows()) return;
 
         var outsideDir = Path.Combine(Path.GetTempPath(), "ebs-junction-target-" + Guid.NewGuid().ToString("N"));
@@ -173,6 +196,8 @@ public class SampleSourceTests : IDisposable
     public async Task SearchAsync_does_not_list_a_file_reached_through_a_junction_that_escapes_the_configured_folder()
     {
         // Same unprivileged-on-Windows-only rationale as the OpenAsync junction test above.
+        // NOTE (F5): silent skip on non-Windows — see that test's comment; xunit 2.9.3 has no
+        // Assert.Skip, and CI now covers this on a windows-latest leg.
         if (!OperatingSystem.IsWindows()) return;
 
         var outsideDir = Path.Combine(Path.GetTempPath(), "ebs-junction-target-" + Guid.NewGuid().ToString("N"));
@@ -209,6 +234,8 @@ public class SampleSourceTests : IDisposable
     public async Task A_junction_cycle_does_not_crash_the_catalog()
     {
         // Same unprivileged-on-Windows-only rationale as the other junction tests.
+        // NOTE (F5): silent skip on non-Windows — see the first junction test's comment; xunit
+        // 2.9.3 has no Assert.Skip, and CI now covers this on a windows-latest leg.
         if (!OperatingSystem.IsWindows()) return;
 
         // A junction inside the configured folder pointing back at one of its own ancestors (the
@@ -244,6 +271,10 @@ public class SampleSourceTests : IDisposable
     public async Task An_unreadable_subdirectory_does_not_empty_the_rest_of_the_listing()
     {
         // icacls and the deny ACE below are Windows-specific.
+        // NOTE (F5): silent skip on non-Windows — see the first junction test's comment; xunit
+        // 2.9.3 has no Assert.Skip, and CI now covers this on a windows-latest leg. A Unix
+        // equivalent would need a chmod-based unreadable directory instead of icacls — left as
+        // a follow-up rather than done here, since it can't be validated without a Linux runner.
         if (!OperatingSystem.IsWindows()) return;
 
         var lockedDir = Path.Combine(_root, "locked");
@@ -293,6 +324,8 @@ public class SampleSourceTests : IDisposable
     public async Task A_configured_root_that_is_itself_a_junction_still_lists_and_opens_its_files()
     {
         // Same unprivileged-on-Windows-only rationale as the other junction tests.
+        // NOTE (F5): silent skip on non-Windows — see the first junction test's comment; xunit
+        // 2.9.3 has no Assert.Skip, and CI now covers this on a windows-latest leg.
         if (!OperatingSystem.IsWindows()) return;
 
         // AttributesToSkip on EnumerationOptions applies to entries found DURING enumeration, not

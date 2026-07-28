@@ -4,6 +4,23 @@ using EverythingBox.Server.Abstractions;
 
 namespace EverythingBox.Server.Tests;
 
+/// <summary>Every member reached during manifest-building is plugin-authored code and
+/// can throw — this double proves the Catalogs getter specifically.</summary>
+file sealed class ThrowingCatalogsSource : IMediaSource
+{
+    public string Key => "throwing";
+    public IReadOnlyList<CatalogDescriptor> Catalogs => throw new InvalidOperationException("Catalogs boom");
+
+    public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult<SourceStream?>(null);
+}
+
 public class ManifestBuilderTests
 {
     private static readonly ManifestOptions Options = new(
@@ -72,5 +89,19 @@ public class ManifestBuilderTests
         var ids = json.GetProperty("catalogs").EnumerateArray()
             .Select(c => c.GetProperty("id").GetString()).ToArray();
         Assert.Equal(["alpha:a", "alpha:b", "beta:c"], ids);
+    }
+
+    // F1: a plugin's Catalogs getter is untrusted code and can throw on any request. One
+    // misbehaving source must not turn /manifest.json into a 500 for every other, healthy
+    // source — it must simply be omitted while everything else still comes back.
+    [Fact]
+    public void A_source_whose_Catalogs_getter_throws_is_omitted_but_others_still_appear()
+    {
+        var json = Build(
+            new FakeSource("alpha", [new CatalogDescriptor("a", "A", "movie")]),
+            new ThrowingCatalogsSource());
+
+        var catalog = json.GetProperty("catalogs").EnumerateArray().Single();
+        Assert.Equal("alpha:a", catalog.GetProperty("id").GetString());
     }
 }

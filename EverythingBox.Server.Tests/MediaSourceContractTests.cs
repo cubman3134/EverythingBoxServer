@@ -23,6 +23,19 @@ file sealed class MinimalSource : IMediaSource
         => Task.FromResult<SourceStream?>(new SourceStream("https://example.test/a.mkv", "video/x-matroska"));
 }
 
+/// <summary>Throws from DisposeAsync — stands in for a network stream on a broken
+/// connection, which is the realistic case F9 guards against.</summary>
+file sealed class ThrowingDisposeStream : MemoryStream
+{
+    public override ValueTask DisposeAsync() => throw new InvalidOperationException("Body.DisposeAsync boom");
+}
+
+file sealed class RecordingDisposable : IDisposable
+{
+    public bool Disposed { get; private set; }
+    public void Dispose() => Disposed = true;
+}
+
 public class MediaSourceContractTests
 {
     [Fact]
@@ -53,5 +66,20 @@ public class MediaSourceContractTests
         var s = SourceStream.FromNotice("caching, retry shortly");
         Assert.Equal("", s.Url);
         Assert.Equal("caching, retry shortly", s.Notice);
+    }
+
+    // F9: DisposeAsync used to dispose Body then Owner with no try/finally. Body is a
+    // network stream that can plausibly throw on dispose (a broken connection); without
+    // try/finally that throw skips disposing Owner — typically an HttpResponseMessage
+    // holding the underlying connection — and it leaks.
+    [Fact]
+    public async Task DisposeAsync_still_disposes_Owner_when_Body_DisposeAsync_throws()
+    {
+        var owner = new RecordingDisposable();
+        var proxy = new ProxyResponse(new ThrowingDisposeStream(), "application/octet-stream") { Owner = owner };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await proxy.DisposeAsync());
+
+        Assert.True(owner.Disposed, "Owner must still be disposed even though Body.DisposeAsync threw.");
     }
 }

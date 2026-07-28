@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- Private=false: the host supplies Abstractions. Copying it here would load a
+       SECOND copy in the plugin's context and every cast would fail. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\EverythingBox.Server.Abstractions\EverythingBox.Server.Abstractions.csproj"
+                      Private="false" />
+  </ItemGroup>
+
+</Project>

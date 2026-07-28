@@ -125,7 +125,7 @@ public sealed class PluginHost(ILogger<PluginHost> log)
             {
                 log.LogError(
                     "Plugin '{Key}' targets API {PluginVersion}, this server provides {ServerVersion} — skipping. Update the plugin.",
-                    key, apiVersion, ServerApi.Version);
+                    key, apiVersion, ServerApi.Current);
                 return null;
             }
 

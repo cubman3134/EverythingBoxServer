@@ -25,7 +25,7 @@ public sealed class MyPlugin : IPlugin
 {
     public string Key => "myplugin";           // namespaces this plugin's ids and config section
     public string DisplayName => "My Plugin";
-    public Version ApiVersion => ServerApi.Version;
+    public Version ApiVersion => new(ServerApi.VersionString);
 
     public void Configure(IPluginRegistry registry, IPluginContext context)
     {
