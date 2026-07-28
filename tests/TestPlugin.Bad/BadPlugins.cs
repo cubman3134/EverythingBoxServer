@@ -23,3 +23,15 @@ public sealed class ThrowingPlugin : IPlugin
     public void Configure(IPluginRegistry registry, IPluginContext context)
         => throw new InvalidOperationException("boom");
 }
+
+/// <summary>Valid key, but the ApiVersion getter itself throws — any property on
+/// IPlugin is plugin-authored code and can fail, not just Configure.</summary>
+public sealed class ThrowingApiVersionPlugin : IPlugin
+{
+    public string Key => "throwing-api-version";
+    public string DisplayName => "Throwing ApiVersion Plugin";
+    public Version ApiVersion => throw new InvalidOperationException("boom");
+
+    public void Configure(IPluginRegistry registry, IPluginContext context)
+        => throw new InvalidOperationException("must never be called — the key/api-version guard runs first");
+}

@@ -30,15 +30,23 @@
                       ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\tests\TestPlugin.Bad\TestPlugin.Bad.csproj"
                       ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\tests\TestPlugin.Dup\TestPlugin.Dup.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
 
+  <!-- Stage each fixture's FULL build output directory, not just its named DLL. A
+       regression that makes a fixture privately copy Abstractions.dll (e.g. flipping
+       Private="true") must actually land next to the plugin here — copying only the
+       one named DLL would silently hide that hazard from the tests. -->
   <Target Name="StageTestPlugins" AfterTargets="Build">
     <ItemGroup>
-      <GoodPluginOut Include="..\tests\TestPlugin.Good\bin\$(Configuration)\net9.0\TestPlugin.Good.dll" />
-      <BadPluginOut Include="..\tests\TestPlugin.Bad\bin\$(Configuration)\net9.0\TestPlugin.Bad.dll" />
+      <GoodPluginOut Include="..\tests\TestPlugin.Good\bin\$(Configuration)\net9.0\**\*.*" />
+      <BadPluginOut Include="..\tests\TestPlugin.Bad\bin\$(Configuration)\net9.0\**\*.*" />
+      <DupPluginOut Include="..\tests\TestPlugin.Dup\bin\$(Configuration)\net9.0\**\*.*" />
     </ItemGroup>
-    <Copy SourceFiles="@(GoodPluginOut)" DestinationFolder="$(OutDir)testplugins\good\" />
-    <Copy SourceFiles="@(BadPluginOut)" DestinationFolder="$(OutDir)testplugins\bad\" />
+    <Copy SourceFiles="@(GoodPluginOut)" DestinationFolder="$(OutDir)testplugins\good\%(RecursiveDir)" />
+    <Copy SourceFiles="@(BadPluginOut)" DestinationFolder="$(OutDir)testplugins\bad\%(RecursiveDir)" />
+    <Copy SourceFiles="@(DupPluginOut)" DestinationFolder="$(OutDir)testplugins\dup\%(RecursiveDir)" />
   </Target>
 
 </Project>

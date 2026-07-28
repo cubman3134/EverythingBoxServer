@@ -62,11 +62,37 @@ public class PluginHostTests
     }
 
     [Fact]
-    public void Skips_a_plugin_whose_api_version_is_incompatible_and_one_that_throws()
+    public void Skips_every_bad_plugin_without_crashing_the_load()
     {
-        // The bad fixture holds both; neither survives, and Load still returns.
+        // The bad fixture holds an incompatible-API-version plugin, one that throws
+        // while registering, and one whose ApiVersion getter itself throws. None
+        // survive, and Load still returns normally.
         var loaded = NewHost().Load(IsolatedRoot("bad"), _ => new StubContext());
         Assert.Empty(loaded);
+    }
+
+    [Fact]
+    public void Second_plugin_with_a_duplicate_key_is_skipped()
+    {
+        // Two plugin types in the same fixture assembly declare the same key. Only
+        // one may register, and Load must still return normally rather than throw.
+        var loaded = NewHost().Load(IsolatedRoot("dup"), _ => new StubContext());
+
+        var plugin = Assert.Single(loaded);
+        Assert.Equal("dup", plugin.Key);
+    }
+
+    [Fact]
+    public void An_unloadable_dll_is_skipped_without_throwing()
+    {
+        // A .dll that is not a managed assembly at all must hit the BadImageFormatException
+        // catch in Instantiate and be skipped, not crash Load.
+        var root = Path.Combine(Path.GetTempPath(), "ebs-badimage-" + Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(root, "garbage");
+        Directory.CreateDirectory(dir);
+        File.WriteAllBytes(Path.Combine(dir, "not-a-real-assembly.dll"), [0x00, 0x01, 0x02, 0x03, 0x04]);
+
+        Assert.Empty(NewHost().Load(root, _ => new StubContext()));
     }
 
     [Fact]

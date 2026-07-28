@@ -100,6 +100,9 @@ public sealed class PluginHost(ILogger<PluginHost> log)
         }
     }
 
+    /// <summary>Every member of <paramref name="plugin"/> is plugin-authored code and
+    /// can throw — the whole body below the key check is one try block so nothing it
+    /// touches (ApiVersion, DisplayName, Configure) can escape and take the host down.</summary>
     private LoadedPlugin? TryConfigure(
         IPlugin plugin, string directory, Func<IPlugin, IPluginContext> contextFactory, HashSet<string> seenKeys)
     {
@@ -115,34 +118,44 @@ public sealed class PluginHost(ILogger<PluginHost> log)
             return null;
         }
 
-        if (!ServerApi.IsCompatible(plugin.ApiVersion))
-        {
-            log.LogError(
-                "Plugin '{Key}' targets API {PluginVersion}, this server provides {ServerVersion} — skipping. Update the plugin.",
-                key, plugin.ApiVersion, ServerApi.Version);
-            return null;
-        }
-
-        if (!seenKeys.Add(key))
-        {
-            log.LogError("Plugin key '{Key}' is already loaded — skipping the copy in {Directory}.", key, directory);
-            return null;
-        }
-
-        var registry = new PluginRegistry();
         try
         {
-            plugin.Configure(registry, contextFactory(plugin));
+            if (!ServerApi.IsCompatible(plugin.ApiVersion))
+            {
+                log.LogError(
+                    "Plugin '{Key}' targets API {PluginVersion}, this server provides {ServerVersion} — skipping. Update the plugin.",
+                    key, plugin.ApiVersion, ServerApi.Version);
+                return null;
+            }
+
+            if (!seenKeys.Add(key))
+            {
+                log.LogError("Plugin key '{Key}' is already loaded — skipping the copy in {Directory}.", key, directory);
+                return null;
+            }
+
+            var registry = new PluginRegistry();
+            try
+            {
+                plugin.Configure(registry, contextFactory(plugin));
+            }
+            catch (Exception ex)
+            {
+                log.LogError(ex, "Plugin '{Key}' threw while registering — skipping it. The server is still starting.", key);
+                seenKeys.Remove(key);
+                return null;
+            }
+
+            var displayName = plugin.DisplayName;
+            log.LogInformation("Plugin '{Key}' ({Name}) registered {Sources} source(s).",
+                key, displayName, registry.Sources.Count);
+            return new LoadedPlugin(key, displayName, registry.Sources);
         }
         catch (Exception ex)
         {
-            log.LogError(ex, "Plugin '{Key}' threw while registering — skipping it. The server is still starting.", key);
             seenKeys.Remove(key);
+            log.LogError(ex, "Plugin '{Key}' threw while loading — skipping it. The server is still starting.", key);
             return null;
         }
-
-        log.LogInformation("Plugin '{Key}' ({Name}) registered {Sources} source(s).",
-            key, plugin.DisplayName, registry.Sources.Count);
-        return new LoadedPlugin(key, plugin.DisplayName, registry.Sources);
     }
 }
