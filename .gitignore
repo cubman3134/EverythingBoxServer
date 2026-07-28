@@ -8,3 +8,4 @@ plugins/
 everythingbox-server.json
 *.bak
 TestResults/
+.superpowers/
