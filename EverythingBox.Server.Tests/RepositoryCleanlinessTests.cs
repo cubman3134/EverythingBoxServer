@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace EverythingBox.Server.Tests;
@@ -33,7 +34,7 @@ public class RepositoryCleanlinessTests
     private static string RepositoryRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, ".git")))
+        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, ".git")) && !File.Exists(Path.Combine(dir.FullName, ".git")))
             dir = dir.Parent;
 
         Assert.NotNull(dir);
@@ -54,17 +55,53 @@ public class RepositoryCleanlinessTests
             // This test file necessarily contains the denylist itself.
             if (relative.EndsWith(nameof(RepositoryCleanlinessTests) + ".cs", StringComparison.Ordinal)) continue;
 
-            string text;
-            try { text = File.ReadAllText(path); }
-            catch (IOException) { continue; }
-
-            foreach (var term in Denylist)
-                if (text.Contains(term, StringComparison.OrdinalIgnoreCase))
-                    offences.Add($"{relative}: '{term}'");
+            foreach (var term in FindDenylistedTermsInFile(path))
+                offences.Add($"{relative}: '{term}'");
         }
 
         Assert.True(offences.Count == 0,
             "This repository must not name a content source:\n  " + string.Join("\n  ", offences));
+    }
+
+    /// <summary>
+    /// File.ReadAllText trusts BOM sniffing and falls back to UTF-8, which misreads a
+    /// BOM-less UTF-16LE file as UTF-8 — interleaving nulls and breaking the substring
+    /// match, so a denylisted term in such a file would pass silently. Decode the raw
+    /// bytes both ways instead of trusting one encoding; this is a guard, not a parser,
+    /// so over-matching is the safe direction.
+    /// </summary>
+    private static List<string> FindDenylistedTermsInFile(string path)
+    {
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(path); }
+        catch (IOException) { return []; }
+
+        var asUtf8 = Encoding.UTF8.GetString(bytes);
+        var asUtf16Le = Encoding.Unicode.GetString(bytes);
+
+        return Denylist.Where(term =>
+            asUtf8.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            asUtf16Le.Contains(term, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    [Fact]
+    public void A_BOM_less_UTF16_file_containing_a_denylisted_term_is_still_caught()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        try
+        {
+            // Encoding.Unicode.GetBytes never writes a BOM (that only comes from
+            // GetPreamble/StreamWriter) — this reproduces the case that ReadAllText misreads.
+            File.WriteAllBytes(path, Encoding.Unicode.GetBytes($"prefix {Denylist[0]} suffix"));
+
+            var found = FindDenylistedTermsInFile(path);
+
+            Assert.Contains(Denylist[0], found);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]
@@ -82,7 +119,9 @@ public class RepositoryCleanlinessTests
         // reads stdout — a git error left `found` empty and the assertion vacuously green.
         var found = Git(root,
             $"log --all --format=%H -G\"{pattern}\" -i -- . \":(exclude)*RepositoryCleanlinessTests.cs\"");
-        var messages = Git(root, $"log --all --format=%H%n%B --grep=\"{pattern}\" -i");
+        // --grep defaults to POSIX basic regex, where '|' is a literal pipe, not alternation —
+        // the multi-term pattern above would silently match nothing without -E/--extended-regexp.
+        var messages = Git(root, $"log --all --format=%H%n%B --grep=\"{pattern}\" -i -E");
 
         Assert.True(string.IsNullOrWhiteSpace(found),
             $"A content source appears in these commits' changes:\n{found}\n" +
