@@ -23,6 +23,7 @@ public class RepositoryCleanlinessTests
         "getcomics", "libgen", "library genesis", "mangadex",
         "lolroms", "blueroms", "archive.org", "internet archive",
         "flaresolverr", "allarr", "cinemeta", "1337x", "nyaa",
+        "internetarchive",
     ];
 
     // .superpowers is gitignored planning scratch (task briefs/reports) that legitimately
@@ -52,16 +53,27 @@ public class RepositoryCleanlinessTests
             var relative = Path.GetRelativePath(root, path);
             if (relative.Split(Path.DirectorySeparatorChar).Any(SkipDirectories.Contains)) continue;
 
-            // This test file necessarily contains the denylist itself.
-            if (relative.EndsWith(nameof(RepositoryCleanlinessTests) + ".cs", StringComparison.Ordinal)) continue;
+            // This test file necessarily contains the denylist itself. Compare the file
+            // name exactly (not a suffix match) — a suffix match would also exempt e.g.
+            // "MyRepositoryCleanlinessTests.cs".
+            if (Path.GetFileName(relative) == nameof(RepositoryCleanlinessTests) + ".cs") continue;
 
             foreach (var term in FindDenylistedTermsInFile(path))
                 offences.Add($"{relative}: '{term}'");
+
+            // Contents aren't the whole story — a file organized under a denylisted
+            // directory/file name (e.g. Providers/<Source>/<Source>Provider.cs) can have
+            // entirely generic contents and still identify the source. Check the path itself.
+            foreach (var term in FindDenylistedTermsInPath(relative))
+                offences.Add($"{relative}: '{term}' (in path)");
         }
 
         Assert.True(offences.Count == 0,
             "This repository must not name a content source:\n  " + string.Join("\n  ", offences));
     }
+
+    private static List<string> FindDenylistedTermsInPath(string relativePath)
+        => Denylist.Where(term => relativePath.Contains(term, StringComparison.OrdinalIgnoreCase)).ToList();
 
     /// <summary>
     /// File.ReadAllText trusts BOM sniffing and falls back to UTF-8, which misreads a
@@ -104,6 +116,10 @@ public class RepositoryCleanlinessTests
         }
     }
 
+    // IMPORTANT: this test only sees what `git log --all` can see. A shallow clone
+    // (`--depth=1`, e.g. `actions/checkout` without `fetch-depth: 0`) has no history to
+    // search, so every check below passes vacuously on a clone that cannot prove
+    // anything. CI must fetch full history or this gate is decorative.
     [Fact]
     public void No_content_source_appears_anywhere_in_history()
     {
@@ -129,6 +145,37 @@ public class RepositoryCleanlinessTests
 
         Assert.True(string.IsNullOrWhiteSpace(messages),
             $"A content source appears in these commit messages:\n{messages}");
+    }
+
+    [Fact]
+    public void No_content_source_appears_in_a_path_that_ever_existed_in_history()
+    {
+        var root = RepositoryRoot();
+
+        // -G/--grep above match line content and commit messages, never the
+        // `diff --git a/... b/...` header, so a file whose entire identity is its path
+        // (e.g. Providers/<Source>/<Source>Provider.cs with wholly generic contents)
+        // is invisible to both. --name-only over every commit on every ref lists every
+        // path that has ever existed, added or removed, so this catches that case —
+        // including a path that was later renamed or deleted, since deletion in a public
+        // repo does not unpublish history.
+        var allPaths = Git(root, "log --all --name-only --format=")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        var offences = new List<string>();
+        foreach (var path in allPaths)
+        {
+            if (Path.GetFileName(path) == nameof(RepositoryCleanlinessTests) + ".cs") continue;
+
+            foreach (var term in Denylist.Where(t => path.Contains(t, StringComparison.OrdinalIgnoreCase)))
+                offences.Add($"{path}: '{term}'");
+        }
+
+        Assert.True(offences.Count == 0,
+            "A content source appears in a file or directory name that existed in history:\n  " +
+            string.Join("\n  ", offences) +
+            "\nHistory is public. Rewriting it is the only fix — a later rename or deletion does not unpublish it.");
     }
 
     private static string Git(string workingDirectory, string arguments)
