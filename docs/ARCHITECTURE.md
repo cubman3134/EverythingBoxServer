@@ -1,42 +1,36 @@
 # Architecture
 
-EverythingBoxServer is an engine plus a plugin host. The engine knows how to search,
-rank, resolve and serve media. It does not know where any media comes from — that
-arrives as plugins.
+EverythingBoxServer is a plugin host. It knows how to load a plugin, route a request to
+the source that owns it, and serve the addon protocol EverythingBox speaks. It does not
+know where any media comes from — that arrives entirely as plugins.
 
 ## Projects
 
 ```
 EverythingBox.Server.Abstractions/   the only assembly plugins reference
-  Models/          MediaRequest+subtypes, TorrentResult, ReleaseInfo, DebridResult, …
-  ITorrentProvider, IMediaSource, IMetadataSource, IPlugin, IPluginContext,
-  IPluginRegistry, IServerServices
-  IDebridService, IDownloadClient, IReleaseParser, ITorrentRanker,
-  ITorrentDownloader, INestedArchiveReader, IFeedCookieSource, IResolverCache
-
-EverythingBox.Server.Core/           the pipeline and infrastructure integrations
-  TorrentGrabber, GrabberBuilder, GrabberOptions
-  Parsing/DefaultReleaseParser        Ranking/DefaultTorrentRanker, RankingOptions
-  Selection/MediaFileMatcher          Torrents/TorrentInfo (bencode)
-  Debrid/{RealDebrid, TorBox, MagnetResolver}
-  Download/{QBittorrent, Transmission}
-  Providers/{DirectProviderBase, ExampleDirectProvider, Torznab/}
-  Scraping/{RemoteZip, ArchiveReader, ArchiveNormalizer, ResolverCache, CurlTransport}
-  Consoles/ConsoleCatalog             console names, aliases and ROM extensions
-  Http/RetryHandler
+  IPlugin, IPluginRegistry, IPluginContext         (Abstractions/IPlugin.cs)
+  IMediaSource                                     (Abstractions/IMediaSource.cs)
+  CatalogDescriptor, MediaTypeDescriptor, CatalogItem, SourceCatalog,
+  SourceStream, SourceContext, ProxyResponse, WarmUpResult             (Abstractions/Catalog.cs)
+  ServerApi                                        (Abstractions/ServerApi.cs)
 
 EverythingBox.Server/                the host
-  Program.cs, PluginHost, ManifestBuilder, SourceRouter, TorrentStreamResolver,
-  DebridPicker, DirectDownloader, FileCache, SafeUrlGuard, ServerConfig
-  Sources/{IndexerSearchSource, MetadataBackedVideoSource}
+  Program.cs                          composition root and route mounting
+  Plugins/PluginHost, PluginRegistry, PluginContext, PluginLoadContext
+  Routing/SourceRouter
+  AddonEndpoints                      manifest/catalog/detail/meta/stream/proxy/files routes
+  ManifestBuilder, SafeUrlGuard, FileCache, ServerConfig
 
 EverythingBox.Server.SampleSource/   a complete example plugin: a local folder
-EverythingBox.Server.Console/        REPL harness for driving the pipeline
-EverythingBox.Server.Tests/
+EverythingBox.Server.Tests/          xUnit tests for the host and Abstractions
+tests/TestPlugin.Good, TestPlugin.Bad, TestPlugin.Dup
+                                      fixture plugins PluginHostTests loads to exercise
+                                      the success/failure/duplicate-key paths
 ```
 
-Plugins reference **Abstractions only**. Core and the host are free to change without
-breaking them.
+Plugins reference **Abstractions only**. The host is free to change without breaking
+them, as long as the `IPlugin`/`IMediaSource` contract and `ServerApi.Version` stay
+compatible.
 
 ## Plugin contract
 
@@ -45,177 +39,205 @@ breaking them.
 ```csharp
 public interface IPlugin
 {
-    string Key { get; }              // namespaces this plugin's ids and config section
+    string Key { get; }              // namespaces this plugin's ids and config section; must not contain ':'
     string DisplayName { get; }
-    Version ApiVersion { get; }      // checked against the host's; mismatch = refuse to load
+    Version ApiVersion { get; }      // set to ServerApi.Version; checked against the host's, mismatch = refuse to load
     void Configure(IPluginRegistry registry, IPluginContext context);
 }
 
 public interface IPluginRegistry
 {
-    void AddIndexer(ITorrentProvider provider);
     void AddSource(IMediaSource source);
-    void AddMetadata(IMetadataSource metadata);
 }
 
 public interface IPluginContext
 {
     ILoggerFactory Loggers { get; }
-    HttpClient Http { get; }              // shared, already wrapped in RetryHandler
-    T? GetConfig<T>() where T : class;    // this plugin's own config section
-    string CacheDirectory { get; }        // plugin-private, server-managed
-    IServerServices Server { get; }       // grabber, debrid, downloader, file cache
+    HttpClient Http { get; }              // shared; the host owns its lifetime, plugins must not dispose it
+    string CacheDirectory { get; }        // plugin-private, created before Configure runs
+    T? GetConfig<T>() where T : class;    // this plugin's own config section, or null if absent
 }
 ```
 
-### Tier 1 — indexers
+There is one registration tier today: `IMediaSource`. A source owns its own catalogs,
+its own search, and its own stream resolution end to end — there is no separate
+"indexer" tier and no shared pipeline a source plugs into.
 
-An indexer implements `ITorrentProvider` and nothing else. The host feeds it into
-`TorrentGrabber`, so it inherits dedupe, release parsing, ranking, cached-first ordering,
-debrid resolution, single-file extraction and the BitTorrent fallback automatically.
-
-`DirectProviderBase` reduces a typical HTTP indexer to three methods: build the query,
-build the URL, parse the response. `ExampleDirectProvider` is a copy-me stub.
-
-### Tier 2 — sources
-
-A source that doesn't fit the torrent pipeline — a direct-download site, a
-chapter-structured library, a local folder — implements `IMediaSource` and owns its own
-flow end to end.
+### `IMediaSource`
 
 ```csharp
 public interface IMediaSource
 {
-    string Key { get; }
-    IReadOnlyList<CatalogDescriptor> Catalogs { get; }   // id, display name, media type
+    string Key { get; }                                   // namespaces every id this source emits; must not contain ':'
+    IReadOnlyList<CatalogDescriptor> Catalogs { get; }
+    IReadOnlyList<MediaTypeDescriptor> MediaTypes => [];   // optional; presentation for a media type the client doesn't know natively
 
     Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct);
+
+    // Expand one item — a series into episodes, a volume into chapters.
     Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct);
+
+    // index selects the N-th best source, so a user who rejects a result gets the next one.
     Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct);
 
-    // Optional. Implement only when the client cannot fetch the URL itself —
-    // an authenticated host, or one that rejects the client's TLS fingerprint.
+    // Optional. Implement only when the client cannot fetch the URL itself.
     Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
         => Task.FromResult<ProxyResponse?>(null);
 
-    // Optional. Cache expensive state at startup; config decides whether failure is fatal.
+    // Optional. Declared for a plugin to cache expensive state at startup — see
+    // "Not yet wired up" below; the host does not call this today.
     Task<WarmUpResult> WarmUpAsync(CancellationToken ct)
         => Task.FromResult(WarmUpResult.NotApplicable);
 }
 ```
 
-`DetailAsync` powers expandable items — a series into episodes, a volume into chapters.
+`SourceContext` currently carries one thing: `ClientCanCurl`, whether the requesting
+client can fetch a URL itself rather than needing it proxied.
 
-`SourceContext` carries what the request knows: the caller's own debrid credentials when
-they supplied them, whether the client can fetch a URL itself via curl, and the
-cancellation budget.
-
-Implementing `OpenAsync` gets the source a host-owned `/proxy/{source}/{enc}/{name}`
-route that forwards range headers and delegates the fetch back to the plugin. The host
-does not need to know why a given source requires proxying.
-
-### Metadata
-
-`IMetadataSource` supplies browse catalogs and episode listings for movies and series.
-The host's `MetadataBackedVideoSource` pairs any registered metadata source with any
-registered indexers, so browsing and resolving stay decoupled.
+Implementing `OpenAsync` gets the source a host-owned
+`/proxy/{sourceKey}/{id}/{name}` route that forwards the `Range` header and relays
+bytes back; the host does not need to know why a given source requires proxying.
 
 ## Sources the host ships
 
-Three, none of which name a third-party site:
-
-- **`IndexerSearchSource`** — title search across every registered indexer, listed as
-  releases. With a Torznab endpoint configured and no plugins at all, this alone gives
-  you working search catalogs.
-- **`MetadataBackedVideoSource`** — movie and series browsing through any registered
-  `IMetadataSource`, resolved through the pipeline.
-- **`LocalFolderSource`** (sample project) — scans a directory and serves files.
+Zero. The host has no built-in `IMediaSource`. `EverythingBox.Server.SampleSource` is a
+separate, optional plugin project — `LocalFolderSource` — that ships as a worked
+example: it scans the folders in its config, lists media files it recognizes by
+extension, and serves them through `OpenAsync`/the proxy route. It is not loaded by the
+host unless its build output is placed under `plugins/local/` like any other plugin.
 
 ## Routing
 
-Every id the server emits is prefixed with its owner: `{sourceKey}:{payload}`, or `idx:`
-for anything that came through the torrent pipeline. `SourceRouter` splits on the first
-colon and dispatches. Payloads are opaque to the host, so each plugin chooses its own
+Every id the server emits is prefixed with its owner: `{sourceKey}:{payload}`.
+`SourceRouter` (`Routing/SourceRouter.cs`) splits on the first `:` and dispatches to the
+matching source; payloads are opaque to the host, so each plugin chooses its own
 encoding.
 
-`ManifestBuilder` unions every registered catalog and media type into the addon manifest
-the EverythingBox client consumes. Installing a plugin changes the manifest; the client
-needs no changes.
+`ManifestBuilder` unions every registered source's catalogs and media types into the
+addon manifest the EverythingBox client consumes. Installing a plugin changes the
+manifest; the client needs no changes.
+
+## Addon routes
+
+All routes below except `/` and `/health` are mounted under an optional token prefix
+(`/<token>/...`) when `AccessToken` is configured.
+
+| Route | Does |
+|---|---|
+| `GET /` | Plain-text usage hint |
+| `GET /health` | `{ ok: true }` |
+| `GET /manifest.json` | Built by `ManifestBuilder` from every loaded source |
+| `GET /catalog/{catalogId}.json` | `SourceRouter.TryResolve` → `IMediaSource.SearchAsync` |
+| `GET /catalog/{catalogId}/{extra}.json` | Same, with `search=...` parsed out of `{extra}` |
+| `GET /detail/{type}/{id}.json` | `IMediaSource.DetailAsync` |
+| `GET /meta/{type}/{id}.json` | Always an empty object — no metadata source exists yet |
+| `GET /stream/{type}/{id}.json?n=&dl=` | `IMediaSource.ResolveAsync`, then `SafeUrlGuard` |
+| `GET /proxy/{sourceKey}/{id}/{name}` | `IMediaSource.OpenAsync`, relayed with range support |
+| `GET /files/{name}` | Serves a file `FileCache` already built, with range support |
 
 ## Loading and isolation
 
-Plugins live at `plugins/<key>/<key>.dll`. Each loads into its own `AssemblyLoadContext`
-so their dependencies cannot collide with each other or with the host's.
+Plugins live at `plugins/<key>/<dll>.dll` — any `.dll` in the folder is a candidate, not
+just one named after the folder. `PluginHost.Load` (`Plugins/PluginHost.cs`) enumerates
+plugin directories, and each candidate assembly loads into its own
+`AssemblyLoadContext` (`PluginLoadContext`) so its dependencies cannot collide with
+another plugin's or the host's.
 
-The Abstractions assembly is deliberately *not* loaded per-plugin — each context resolves
-it back to the default context, so `ITorrentProvider` in a plugin is the same type as
-`ITorrentProvider` in the host. Copying Abstractions into a plugin folder would break
-this; the build template excludes it.
+The Abstractions assembly (and `Microsoft.Extensions.Logging.Abstractions`) is
+deliberately *not* loaded per-plugin — `PluginLoadContext.Load` returns `null` for those
+names so resolution falls through to the default context, which is what makes a
+plugin's `IMediaSource` the same runtime type as the host's. A plugin project must
+reference Abstractions with `Private="false"` (see
+`EverythingBox.Server.SampleSource.csproj`); copying a second copy into a plugin's
+output folder loads it twice and breaks every cast between the host's and the plugin's
+`IMediaSource`.
 
-Failures are contained:
+Failures are contained — logged and skipped, never a crash of the whole process:
 
 | Failure | Behavior |
 |---|---|
-| API-version mismatch | Log, skip plugin, server starts |
-| Throws in `Configure` | Log, skip plugin, server starts |
-| Throws during a search | Log, drop from that response; other sources still answer |
-| Resolve returns nothing | Empty streams response |
-| Required `WarmUpAsync` fails | Retry until deadline, then refuse to serve |
+| Assembly is not a loadable managed DLL | Skip that file, keep scanning the folder |
+| Plugin type has no public parameterless constructor | Log, skip that type |
+| Plugin key invalid (empty or contains `:`) | Log, skip the plugin |
+| `ApiVersion` incompatible with `ServerApi.Version` | Log, skip the plugin, server starts |
+| Plugin key already used by another loaded plugin | Log, skip the later one |
+| `Configure` throws | Log, skip the plugin, server starts |
+| `SearchAsync`/`DetailAsync`/`ResolveAsync` throws | **Not caught by the host** — propagates as an unhandled exception on that request |
+| No source claims a requested id | Empty catalog / empty streams response |
+| `ResolveAsync` returns `null` | Empty streams response |
 | Resolved URL is not client-safe | Refuse, log, return empty streams |
+
+## `SafeUrlGuard`
+
+`SafeUrlGuard.IsClientSafe` (`SafeUrlGuard.cs`) is the one thing a plugin cannot bypass:
+a stream URL from `ResolveAsync` is only handed to the client if it's either a relative
+path (served by this host) or an absolute `http`/`https` URL. Anything else — a magnet
+link, a local file path, an unrecognized scheme — is refused and logged before it
+reaches the client. This runs in the host on purpose, because the guarantee has to hold
+for plugin code the host did not write.
+
+## `FileCache`
+
+`FileCache.GetOrBuildAsync` (`FileCache.cs`) builds a served file once even under
+concurrent requests — the build function runs exactly once per name via a
+`Lazy<Task<T>>` keyed by the served name — and evicts a failed build so a retry can
+succeed. `GET /files/{name}` serves whatever was built, from `cache.Root`, with range
+processing enabled.
 
 ## Stream request flow
 
 ```
 GET /<token>/stream/{type}/{id}.json?n=&dl=
    │
-   ├─ SourceRouter splits "key:payload"
-   │
-   ├─ key = plugin source ──► IMediaSource.ResolveAsync(payload, n, ctx)
-   │                            └─ may call ctx.Server.Grabber / Debrid / Downloader
-   │
-   └─ key = "idx"         ──► TorrentStreamResolver
-                                ├─ cached on debrid ──► direct link, single file extracted
-                                ├─ uncached, within size cap ──► self-download ──► /files/…
-                                └─ otherwise ──► notice ("caching, retry shortly")
+   ├─ SourceRouter splits "key:payload"; no match ──► { streams: [] }
    │
    ▼
-SafeUrlGuard: a relative addon path, or http(s). Anything else is refused and logged.
+IMediaSource.ResolveAsync(payload, n ?? 0, ctx)
    │
-   ▼
-{ url, mime }  |  { url, mime, curl:true }  |  { streams:[], notice }
+   ├─ null ──► { streams: [] }
+   ├─ empty Url, Notice set ──► { streams: [], notice }
+   └─ Url set ──► SafeUrlGuard.IsClientSafe?
+                     ├─ no  ──► log, { streams: [] }
+                     └─ yes ──► { url, mime } or { url, mime, curl: true } when the source set Curl
 ```
 
-`SafeUrlGuard` lives in the host on purpose. The guarantee that the client is never
-handed a magnet or an unknown scheme has to hold for plugin code the host did not write.
-
-## Server-owned services
-
-Plugins reach these through `IPluginContext.Server`:
-
-| Service | Does |
-|---|---|
-| `Grabber` | Run a `MediaRequest` through the full search-and-rank pipeline |
-| `Debrid` | Resolve a torrent to direct links on the configured (or caller's) account |
-| `Downloader` | Self-download over BitTorrent, extracting only the wanted files |
-| `FileCache` | Build a file once under concurrent requests, then serve it from `/files` |
-
-`FileCache` deduplicates in-flight builds by name, so ten simultaneous requests for the
-same generated file produce one build.
-
-## `?n=` and rejection
-
-The stream route takes an optional `?n=K` for the K-th best source. A user who rejects a
-result gets the next candidate without a re-search. Pipeline results are ordered by the
-ranker; a plugin source decides its own ordering.
+`ctx.ClientCanCurl` is set from `?dl=curl` — a source can use it to decide whether to
+hand the client a URL directly instead of routing through its own proxy.
 
 ## The cleanliness gate
 
 `RepositoryCleanlinessTests` fails the build if a content source is named — in the
 working tree or anywhere in git history. It runs in CI with full history fetched.
 
-This repository ships the engine, not the sources. That is a property worth enforcing
-mechanically rather than by discipline: a name added and later deleted is still public,
-so the history check matters more than the working-tree one.
+This repository ships the plugin host, not any source. That is a property worth
+enforcing mechanically rather than by discipline: a name added and later deleted is
+still public, so the history check matters more than the working-tree one.
 
-Prowlarr and Jackett are allowlisted. They are indexer managers a user points the server
-at, and supporting them is the point.
+Prowlarr and Jackett are allowlisted. They are indexer managers a user could point a
+future plugin at, not sources themselves, and supporting that kind of infrastructure is
+the point.
+
+## Planned — not yet implemented
+
+Everything in this section describes where the project is going, not what exists in
+this codebase today. None of it is callable, configurable, or partially wired up unless
+explicitly noted.
+
+- **A torrent-indexer plugin tier**, likely something like `AddIndexer`/`ITorrentProvider`
+  on `IPluginRegistry`, feeding a shared search → parse → rank pipeline instead of each
+  plugin owning search end to end the way `IMediaSource` does.
+- **A Torznab adapter** so a single configured endpoint fronts indexer managers such as
+  Prowlarr and Jackett.
+- **Debrid and download-client integration** (for example Real-Debrid, TorBox,
+  qBittorrent, Transmission) as resolution targets for that pipeline, on accounts the
+  user configures.
+- **A metadata-source tier** (`AddMetadata`/`IMetadataSource`) for movie/series browsing
+  decoupled from any one indexer.
+- **A richer `IPluginContext`**, likely an `IServerServices Server` member, so a plugin
+  can call back into shared pipeline services instead of implementing resolution itself.
+- **`WarmUpAsync` actually being called.** The method exists on `IMediaSource` today
+  with a default no-op implementation, and `MediaSourceContractTests` covers that
+  default — but nothing in `PluginHost` or `Program.cs` invokes it. A plugin that
+  implements it currently has no effect.
+- **Retrying a source whose search throws**, instead of the exception propagating
+  unhandled as it does today.
