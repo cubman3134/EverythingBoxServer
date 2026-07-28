@@ -89,4 +89,60 @@ public class SampleSourceTests : IDisposable
         var catalog = await source.SearchAsync("files", null, new SourceContext(), CancellationToken.None);
         Assert.Empty(catalog.Items);
     }
+
+    [Fact]
+    public async Task Refuses_to_open_a_file_reached_through_a_junction_that_escapes_the_configured_folder()
+    {
+        // Directory junctions on Windows do not require elevation (unlike file symlinks), so this
+        // test can run in ordinary CI. There is no equivalent unprivileged repro on non-Windows
+        // filesystems here, so skip rather than fail elsewhere.
+        if (!OperatingSystem.IsWindows()) return;
+
+        var outsideDir = Path.Combine(Path.GetTempPath(), "ebs-junction-target-" + Guid.NewGuid().ToString("N"));
+        var linkPath = Path.Combine(_root, "link-out");
+        Directory.CreateDirectory(outsideDir);
+        var secretFile = Path.Combine(outsideDir, "secret.mkv");
+        await File.WriteAllTextAsync(secretFile, "SECRET-DATA");
+
+        try
+        {
+            var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe",
+                $"/c mklink /J \"{linkPath}\" \"{outsideDir}\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            mklink!.WaitForExit();
+            Assert.Equal(0, mklink.ExitCode);
+
+            var throughJunction = LocalFolderSource.EncodeId(Path.Combine(linkPath, "secret.mkv"));
+
+            // Dispose defensively: if this regresses and a stream comes back, an undisposed
+            // FileStream would hold secret.mkv open and make the outsideDir cleanup below fail
+            // silently, leaving a scratch directory behind outside the system temp cleanup.
+            await using var proxy = await NewSource().OpenAsync(throughJunction, null, CancellationToken.None);
+            Assert.Null(proxy);
+        }
+        finally
+        {
+            // Remove the junction itself (not its target) so the outside directory's contents
+            // survive for cleanup, then delete both.
+            try { Directory.Delete(linkPath); } catch { /* best effort */ }
+            try { Directory.Delete(outsideDir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task A_configured_folder_with_a_trailing_separator_still_serves_its_files()
+    {
+        var withTrailingSeparator = _root + Path.DirectorySeparatorChar;
+        var source = new LocalFolderSource(new LocalFolderConfig { Folders = [withTrailingSeparator] });
+
+        var catalog = await source.SearchAsync("files", "sintel", new SourceContext(), CancellationToken.None);
+        var item = Assert.Single(catalog.Items);
+
+        await using var proxy = await source.OpenAsync(item.Id, null, CancellationToken.None);
+        Assert.NotNull(proxy);
+        Assert.Equal(1, proxy!.ContentLength);
+    }
 }
