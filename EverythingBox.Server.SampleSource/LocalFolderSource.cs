@@ -37,10 +37,14 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
     // from outside a configured folder or loop back on an ancestor; it doesn't apply to the root
     // passed to EnumerateFiles, so a configured folder that is itself a reparse point still works.
     // IgnoreInaccessible skips an unreadable subdirectory instead of aborting the whole walk.
+    // We explicitly set AttributesToSkip to ONLY ReparsePoint, overriding the framework default
+    // (which includes Hidden | System). A media server hiding a user's file with no indication is
+    // worse than listing one they incidentally marked hidden — files can pick up that attribute
+    // from a download, NAS, or sync tool without the owner's intent.
     private static readonly EnumerationOptions WalkOptions = new()
     {
         RecurseSubdirectories = true,
-        AttributesToSkip = FileAttributes.ReparsePoint | FileAttributes.Hidden | FileAttributes.System,
+        AttributesToSkip = FileAttributes.ReparsePoint,
         IgnoreInaccessible = true,
     };
 
@@ -58,8 +62,10 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
 
                 if (!MediaExtensions.ContainsKey(Path.GetExtension(path))) continue;
 
-                // Defence in depth, and the reason SearchAsync and ResolvePath share one
-                // containment check instead of two that can quietly drift apart.
+                // The enumerator prevents junction escapes during listing via AttributesToSkip.
+                // This check is a deliberate backstop: if WalkOptions is ever loosened, or
+                // containment logic changes, both SearchAsync and ResolvePath enforce the same
+                // discipline — sharing one implementation so they can never quietly diverge.
                 if (!IsContained(path)) continue;
 
                 var title = Path.GetFileNameWithoutExtension(path);

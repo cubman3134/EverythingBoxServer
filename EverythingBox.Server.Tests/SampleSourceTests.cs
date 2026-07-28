@@ -331,4 +331,22 @@ public class SampleSourceTests : IDisposable
             try { Directory.Delete(realDir, recursive: true); } catch { /* best effort */ }
         }
     }
+
+    [Fact]
+    public async Task A_media_file_marked_Hidden_is_still_listed()
+    {
+        // Files can pick up the Hidden attribute from a download, NAS, or sync tool without the
+        // owner's intent. A media server hiding such a file with no indication is worse than
+        // listing one they didn't deliberately mark hidden — so SearchAsync lists it anyway,
+        // and AttributesToSkip is set to only ReparsePoint, not Hidden | System.
+        var hiddenFile = Path.Combine(_root, "HiddenMovie.mp4");
+        await File.WriteAllTextAsync(hiddenFile, "x");
+        var info = new FileInfo(hiddenFile);
+        info.Attributes |= FileAttributes.Hidden;
+
+        var catalog = await NewSource().SearchAsync("files", null, new SourceContext(), CancellationToken.None);
+
+        var hidden = Assert.Single(catalog.Items, i => i.Title == "HiddenMovie");
+        Assert.NotNull(hidden);
+    }
 }

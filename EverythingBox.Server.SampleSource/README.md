@@ -50,7 +50,9 @@ In `everythingbox-server.json`:
   reparse point is still walked normally — a legitimately-linked root keeps working.) On top of
   that, every enumerated path still runs through the same resolved-path containment check
   `ResolvePath` uses (factored out as `IsContained`, not duplicated) before it reaches the
-  catalog — defence in depth, and the reason the list and open paths can't quietly diverge again.
+  catalog — the enumerator prevents junction escapes during listing, and this check is a
+  deliberate backstop if that configuration changes. Sharing one implementation is also the
+  reason the list and open paths can't quietly diverge again.
   `WalkOptions.IgnoreInaccessible` also means one unreadable subdirectory is skipped, not treated
   as a reason to abandon the rest of that folder's listing.
 - Also note what a decoded id can do to a filesystem call that isn't gated by `File.Exists`
