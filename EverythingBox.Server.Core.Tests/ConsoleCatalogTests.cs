@@ -16,9 +16,10 @@ public class ConsoleCatalogTests
     [Fact]
     public void Prefers_the_longest_matching_console_name()
     {
-        // "Famicom Disk System" must win over the "Famicom" alias — they are
-        // different libraries with different file extensions.
-        Assert.Equal("Famicom Disk System", ConsoleCatalog.DetectFromQuery("Zelda no Densetsu Famicom Disk System"));
+        // "Super Famicom" (alias for Super Nintendo, 13 chars) must win over "Famicom" (alias for NES, 8 chars).
+        // Both match as trailing word-runs (Famicom is a suffix of Super Famicom with a space before it).
+        // Without length-ordering, Famicom (added earlier in the list from NES) would match first.
+        Assert.Equal("Super Nintendo", ConsoleCatalog.DetectFromQuery("Best Game Super Famicom"));
     }
 
     [Fact]
