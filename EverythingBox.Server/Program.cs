@@ -21,6 +21,8 @@ builder.Services.AddSingleton(_ =>
 
 builder.Services.AddSingleton<PluginHost>();
 
+builder.Services.AddSingleton(_ => new FileCache(config.ResolvedFilesCacheDir));
+
 builder.Services.AddSingleton(sp =>
 {
     var host = sp.GetRequiredService<PluginHost>();
@@ -72,6 +74,7 @@ app.MapGet("/health", () => Results.Json(new { ok = true }));
 
 app.MapBrowse(prefix);
 app.MapStreams(prefix);
+app.MapFiles(prefix);
 
 // Force plugin loading now, so failures surface at startup rather than on first request.
 _ = app.Services.GetRequiredService<SourceRouter>();

@@ -153,6 +153,21 @@ public static class AddonEndpoints
             });
     }
 
+    /// <summary>Serves a file this server built. Range processing is enabled so the
+    /// client can seek and resume.</summary>
+    public static void MapFiles(this WebApplication app, string prefix)
+    {
+        app.MapGet($"{prefix}/files/{{name}}", (string name, FileCache cache) =>
+        {
+            if (name != Path.GetFileName(name)) return Results.NotFound();
+
+            var path = Path.Combine(cache.Root, name);
+            return File.Exists(path)
+                ? Results.File(path, contentType: "application/octet-stream", enableRangeProcessing: true)
+                : Results.NotFound();
+        });
+    }
+
     private static object NoStreams() => new { streams = Array.Empty<object>() };
 
     private static object Empty() => new { title = "", hasMore = false, items = Array.Empty<object>() };
