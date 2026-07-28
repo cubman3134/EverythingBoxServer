@@ -207,3 +207,15 @@ same generated file produce one build.
 The stream route takes an optional `?n=K` for the K-th best source. A user who rejects a
 result gets the next candidate without a re-search. Pipeline results are ordered by the
 ranker; a plugin source decides its own ordering.
+
+## The cleanliness gate
+
+`RepositoryCleanlinessTests` fails the build if a content source is named — in the
+working tree or anywhere in git history. It runs in CI with full history fetched.
+
+This repository ships the engine, not the sources. That is a property worth enforcing
+mechanically rather than by discipline: a name added and later deleted is still public,
+so the history check matters more than the working-tree one.
+
+Prowlarr and Jackett are allowlisted. They are indexer managers a user points the server
+at, and supporting them is the point.
