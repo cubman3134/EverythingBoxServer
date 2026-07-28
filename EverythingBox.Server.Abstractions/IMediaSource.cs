@@ -32,8 +32,10 @@ public interface IMediaSource
     /// before it starts taking traffic, so a source can cache expensive state up front. This
     /// is a single best-effort attempt, not a retry loop and not a startup gate: a thrown
     /// exception or a <see cref="WarmUpStatus.Failed"/> result is logged as a warning and the
-    /// server starts anyway — no source can block another's warm-up or the server's
-    /// availability by failing here.</summary>
+    /// server starts anyway. The host also bounds this call with a timeout, so a source that
+    /// never returns is logged as a warning and abandoned rather than run to completion — no
+    /// source can block another's warm-up or the server's availability by failing OR by
+    /// hanging here.</summary>
     Task<WarmUpResult> WarmUpAsync(CancellationToken ct)
         => Task.FromResult(WarmUpResult.NotApplicable);
 }

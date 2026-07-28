@@ -209,4 +209,14 @@ public class SourceRouterTests
 
         Assert.Contains(log.Messages, m => m.Contains("dropped", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void A_source_with_a_null_Key_is_logged()
+    {
+        var log = new CapturingLogger<SourceRouter>();
+
+        _ = new SourceRouter([new NullKeySource()], log);
+
+        Assert.Contains(log.Messages, m => m.Contains("dropped", StringComparison.OrdinalIgnoreCase));
+    }
 }

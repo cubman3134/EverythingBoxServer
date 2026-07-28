@@ -35,6 +35,17 @@ public sealed class ManifestBuilder(ILogger<ManifestBuilder>? log = null)
     /// (as opposed to a null Type string, which the post-loop filter/group-by tolerate fine) is
     /// discarded here too, inside the same try — the combined list is filtered again after the
     /// loop, and a null element would NRE there for every source, not just the one that misbehaved.
+    /// A null CatalogDescriptor ELEMENT in Catalogs gets the same treatment, for the same reason.
+    ///
+    /// The catch below is deliberately bare — no "when (ex is not OperationCanceledException)"
+    /// filter. This method takes no CancellationToken: nothing it does can be legitimately
+    /// cancelled, so there is no genuine cancellation for such a filter to let through. Its only
+    /// effect would be to let a source that merely THROWS an OperationCanceledException (which
+    /// any plugin can do, deliberately or by an unrelated internal timeout of its own) escape
+    /// containment and 500 /manifest.json for every other installed source — the exact regression
+    /// this comment exists to prevent. Do not add that filter "for consistency" with
+    /// AddonEndpoints' request-scoped catches; they have a real CancellationToken to test against
+    /// and this method does not.
     /// </summary>
     public object Build(ManifestOptions options, IEnumerable<IMediaSource> sources)
     {
@@ -49,11 +60,12 @@ public sealed class ManifestBuilder(ILogger<ManifestBuilder>? log = null)
             {
                 var key = source.Key;
                 sourceCatalogs = source.Catalogs
+                    .Where(c => c is not null)
                     .Select(c => (object)new { id = SourceRouter.Prefix(key, c.Id), name = c.Name, type = c.MediaType })
                     .ToList();
                 sourceMediaTypes = source.MediaTypes.Where(t => t is not null).ToList();
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex)
             {
                 _log.LogError(ex,
                     "Source '{Source}' threw while building the manifest — omitting it. Every other source is unaffected.",

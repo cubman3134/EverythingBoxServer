@@ -215,4 +215,38 @@ public class AddonBrowseTests
             Environment.SetEnvironmentVariable("EBS_TEST_KEY_ARMED", null);
         }
     }
+
+    // C1 (regression, over real HTTP): "canceled" throws OperationCanceledException from
+    // every member without the request ever actually being cancelled — proves the fix at
+    // the manifest AND at catalog/detail, not just at the unit level.
+
+    [Fact]
+    public async Task Manifest_still_lists_the_healthy_plugin_even_though_another_sources_Catalogs_getter_throws_OperationCanceledException()
+    {
+        var json = await _factory.CreateClient().GetFromJsonAsync<JsonElement>("/manifest.json");
+
+        var catalogs = json.GetProperty("catalogs").EnumerateArray().ToList();
+        var catalog = Assert.Single(catalogs);
+        Assert.Equal("good:all", catalog.GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task Catalog_from_a_source_whose_SearchAsync_throws_OperationCanceledException_is_empty_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/catalog/canceled:anything.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(json.GetProperty("items").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Detail_from_a_source_whose_DetailAsync_throws_OperationCanceledException_is_empty_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/detail/movie/canceled:anything.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(json.GetProperty("items").EnumerateArray());
+    }
 }

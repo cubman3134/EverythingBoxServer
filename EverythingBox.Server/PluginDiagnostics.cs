@@ -11,8 +11,10 @@ namespace EverythingBox.Server;
 /// </summary>
 internal static class PluginDiagnostics
 {
-    public static string SafeLabel(IMediaSource source)
+    public static string SafeLabel(IMediaSource? source)
     {
+        if (source is null) return "<null source>";
+
         try { return source.Key; }
         catch { return source.GetType().FullName ?? "<unknown source>"; }
     }

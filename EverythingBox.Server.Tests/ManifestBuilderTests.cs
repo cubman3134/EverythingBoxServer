@@ -43,6 +43,48 @@ file sealed class NullMediaTypeElementSource : IMediaSource
         => Task.FromResult<SourceStream?>(null);
 }
 
+/// <summary>
+/// C1 (a regression, and NOT a real cancellation): Build() takes no CancellationToken, so
+/// nothing it does can be legitimately cancelled — there is no "genuine" cancellation for a
+/// "when (ex is not OperationCanceledException)" filter to distinguish from a plugin that
+/// simply throws this type. Proves the filter must not exist here at all.
+/// </summary>
+file sealed class ThrowingOperationCanceledCatalogsSource : IMediaSource
+{
+    public string Key => "canceled";
+    public IReadOnlyList<CatalogDescriptor> Catalogs => throw new OperationCanceledException("Catalogs boom (not really cancelled)");
+
+    public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult<SourceStream?>(null);
+}
+
+/// <summary>A null CatalogDescriptor ELEMENT (as opposed to Catalogs itself being null,
+/// which the getter's own non-nullable annotation does not stop a plugin from returning
+/// anyway) — the same "null element inside an otherwise-real list" shape as C3's MediaTypes
+/// case, one field over. Proves the minor fix: it must be skipped, not NRE the whole
+/// source's catalog list away.</summary>
+file sealed class NullCatalogDescriptorElementSource : IMediaSource
+{
+    public string Key => "nullcatalogdescriptor";
+    public IReadOnlyList<CatalogDescriptor> Catalogs { get; } =
+        [null!, new CatalogDescriptor("keep", "Keep", "movie")];
+
+    public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult<SourceStream?>(null);
+}
+
 public class ManifestBuilderTests
 {
     private static readonly ManifestOptions Options = new(
@@ -139,5 +181,35 @@ public class ManifestBuilderTests
 
         var declared = json.GetProperty("mediaTypes").EnumerateArray().ToList();
         Assert.Equal("game", Assert.Single(declared).GetProperty("type").GetString());
+    }
+
+    // C1 (regression): "catch (Exception ex) when (ex is not OperationCanceledException)"
+    // tested the exception's TYPE, not whether this call was actually cancelled — and Build()
+    // has no CancellationToken at all, so nothing here can be legitimately cancelled. A
+    // plugin that simply throws OperationCanceledException (its own internal timeout,
+    // deliberately, whatever) used to escape containment entirely and 500 /manifest.json for
+    // every OTHER installed source.
+    [Fact]
+    public void A_source_whose_Catalogs_getter_throws_OperationCanceledException_is_omitted_but_others_still_appear()
+    {
+        var json = Build(
+            new FakeSource("alpha", [new CatalogDescriptor("a", "A", "movie")]),
+            new ThrowingOperationCanceledCatalogsSource());
+
+        var catalog = json.GetProperty("catalogs").EnumerateArray().Single();
+        Assert.Equal("alpha:a", catalog.GetProperty("id").GetString());
+    }
+
+    // Minor: a null CatalogDescriptor element used to NRE inside the try (reading c.Id),
+    // dropping the WHOLE source's catalog list — including its other, healthy entries —
+    // rather than just skipping the one bad element, unlike the equivalent MediaTypes case
+    // one field over.
+    [Fact]
+    public void A_null_CatalogDescriptor_element_is_skipped_but_the_healthy_one_still_appears()
+    {
+        var json = Build(new NullCatalogDescriptorElementSource());
+
+        var catalog = json.GetProperty("catalogs").EnumerateArray().Single();
+        Assert.Equal("nullcatalogdescriptor:keep", catalog.GetProperty("id").GetString());
     }
 }

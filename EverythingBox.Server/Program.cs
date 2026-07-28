@@ -88,33 +88,11 @@ var sourceRouter = app.Services.GetRequiredService<SourceRouter>();
 // that belongs to a later milestone once a real source needs it. A source's WarmUpAsync is
 // plugin-authored code, same as everything else it implements, so it gets the same
 // containment: a throw (or a Failed result) is a logged warning, never fatal, and never
-// blocks another source's warm-up.
+// blocks another source's warm-up. A HANG gets the same treatment via SourceWarmUp's bound
+// timeout — a throw is not the only way plugin code can fail to cooperate.
 foreach (var source in sourceRouter.Sources)
 {
-    string label;
-    try { label = source.Key; }
-    catch { label = source.GetType().FullName ?? "<unknown source>"; }
-
-    try
-    {
-        var result = await source.WarmUpAsync(CancellationToken.None);
-        switch (result.Status)
-        {
-            case WarmUpStatus.Ready:
-                log.LogInformation("Source '{Source}' warmed up.", label);
-                break;
-            case WarmUpStatus.Failed:
-                log.LogWarning("Source '{Source}' failed to warm up: {Detail}", label, result.Detail);
-                break;
-            case WarmUpStatus.NotApplicable:
-            default:
-                break;
-        }
-    }
-    catch (Exception ex)
-    {
-        log.LogWarning(ex, "Source '{Source}' threw during WarmUpAsync — continuing without it warmed.", label);
-    }
+    await SourceWarmUp.RunAsync(source, PluginDiagnostics.SafeLabel(source), log, SourceWarmUp.DefaultTimeout);
 }
 
 log.LogInformation("Listening on {Urls}", config.Listen);

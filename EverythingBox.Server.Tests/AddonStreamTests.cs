@@ -189,4 +189,74 @@ public class AddonStreamTests
             Environment.SetEnvironmentVariable("EBS_TEST_KEY_ARMED", null);
         }
     }
+
+    // C1 (regression, over real HTTP): "canceled" throws OperationCanceledException from
+    // every member without the request ever actually being cancelled — proves the fix at
+    // stream and proxy too, matching the manifest/catalog/detail coverage in AddonBrowseTests.
+
+    [Fact]
+    public async Task Stream_from_a_source_whose_ResolveAsync_throws_OperationCanceledException_is_empty_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/stream/movie/canceled:anything.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(json.GetProperty("streams").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Proxy_from_a_source_whose_OpenAsync_throws_OperationCanceledException_is_404_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/proxy/canceled/anything/file.bin");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    // I1: the proxy body-relay path has a `finally` but, before this fix, no `catch` at
+    // all — every plugin-authored thing touched there (Body itself, its ReadAsync/
+    // CopyToAsync/DisposeAsync, Owner.Dispose, and the StatusCode/ContentLength a plugin
+    // set) could 500 or corrupt an otherwise-successful relay.
+
+    [Fact]
+    public async Task Proxy_with_a_null_Body_is_404_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/proxy/proxyedge/null-body/file.bin");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Proxy_whose_Body_throws_on_first_read_is_404_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/proxy/proxyedge/throwing-read/file.bin");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Proxy_whose_Body_DisposeAsync_throws_still_delivers_the_full_body()
+    {
+        var response = await _factory.CreateClient().GetAsync("/proxy/proxyedge/throwing-dispose-body/file.bin");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("EDGE-BODY", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Proxy_whose_Owner_Dispose_throws_still_delivers_the_full_body()
+    {
+        var response = await _factory.CreateClient().GetAsync("/proxy/proxyedge/throwing-owner/file.bin");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("EDGE-BODY", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Proxy_with_a_negative_ContentLength_is_404_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/proxy/proxyedge/bad-length/file.bin");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Proxy_with_an_implausible_StatusCode_is_404_not_500()
+    {
+        var response = await _factory.CreateClient().GetAsync("/proxy/proxyedge/bad-status/file.bin");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
 }

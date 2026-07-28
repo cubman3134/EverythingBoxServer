@@ -148,6 +148,111 @@ public sealed class KeyArmableAndMethodsThrowSource : IMediaSource
         => throw new InvalidOperationException("OpenAsync boom");
 }
 
+/// <summary>
+/// Throws OperationCanceledException unconditionally from every member — WITHOUT the
+/// request's CancellationToken ever actually being cancelled. Proves C1 (a regression):
+/// "catch (Exception ex) when (ex is not OperationCanceledException)" tests the exception's
+/// TYPE, not whether cancellation was actually requested, so a plugin that throws this type
+/// for reasons of its own (an internal timeout, deliberately, whatever) used to escape
+/// containment entirely and 500 the request/manifest for every other installed source. It
+/// must be treated exactly like any other thrown exception whenever ct is not cancelled.
+/// </summary>
+public sealed class OperationCanceledSource : IMediaSource
+{
+    public string Key => "canceled";
+
+    public IReadOnlyList<CatalogDescriptor> Catalogs =>
+        throw new OperationCanceledException("Catalogs boom (not really cancelled)");
+
+    public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
+        => throw new OperationCanceledException("SearchAsync boom (not really cancelled)");
+
+    public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
+        => throw new OperationCanceledException("DetailAsync boom (not really cancelled)");
+
+    public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
+        => throw new OperationCanceledException("ResolveAsync boom (not really cancelled)");
+
+    public Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
+        => throw new OperationCanceledException("OpenAsync boom (not really cancelled)");
+}
+
+/// <summary>Throws on every read — proves I1: a plugin body stream that fails before any
+/// bytes are copied must degrade like every other "source can't serve this" case (404),
+/// not 500 with the plugin's exception text leaked into the response body.</summary>
+file sealed class ThrowingReadStream : Stream
+{
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position
+    {
+        get => throw new NotSupportedException();
+        set => throw new NotSupportedException();
+    }
+    public override void Flush() { }
+    public override int Read(byte[] buffer, int offset, int count) => throw new InvalidOperationException("Read boom");
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        => throw new InvalidOperationException("ReadAsync boom");
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+}
+
+/// <summary>Copies its bytes successfully, then throws when disposed — proves I1: a throw
+/// from Body.DisposeAsync (a broken connection on close, say) must be logged and swallowed,
+/// not corrupt a response that had already completed successfully.</summary>
+file sealed class ThrowingDisposeBodyStream(byte[] buffer) : MemoryStream(buffer)
+{
+    public override ValueTask DisposeAsync() => throw new InvalidOperationException("Body.DisposeAsync boom");
+}
+
+/// <summary>Proves I1: a throw from Owner.Dispose must be logged and swallowed the same
+/// way, not corrupt an otherwise-successful response.</summary>
+file sealed class ThrowingOwner : IDisposable
+{
+    public void Dispose() => throw new InvalidOperationException("Owner.Dispose boom");
+}
+
+/// <summary>
+/// Every ProxyResponse edge case a plugin could hand back that isn't a plain throw from
+/// OpenAsync itself — proves I1: the body-relay path (Body, its disposal, and the
+/// StatusCode/ContentLength a plugin sets) is just as plugin-authored, and just as capable
+/// of taking a request down, as OpenAsync itself.
+/// </summary>
+public sealed class ProxyEdgeCasesSource : IMediaSource
+{
+    public string Key => "proxyedge";
+    public IReadOnlyList<CatalogDescriptor> Catalogs { get; } = [];
+
+    public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult(SourceCatalog.Empty(""));
+
+    public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult<SourceStream?>(null);
+
+    public Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
+    {
+        var bytes = "EDGE-BODY"u8.ToArray();
+        return Task.FromResult<ProxyResponse?>(itemId switch
+        {
+            "null-body" => new ProxyResponse(null!, "application/octet-stream"),
+            "throwing-read" => new ProxyResponse(new ThrowingReadStream(), "application/octet-stream"),
+            "throwing-dispose-body" => new ProxyResponse(new ThrowingDisposeBodyStream(bytes), "application/octet-stream")
+                { ContentLength = bytes.Length },
+            "throwing-owner" => new ProxyResponse(new MemoryStream(bytes), "application/octet-stream")
+                { ContentLength = bytes.Length, Owner = new ThrowingOwner() },
+            "bad-length" => new ProxyResponse(new MemoryStream(bytes), "application/octet-stream") { ContentLength = -5 },
+            "bad-status" => new ProxyResponse(new MemoryStream(bytes), "application/octet-stream") { StatusCode = 99999 },
+            _ => null,
+        });
+    }
+}
+
 public sealed class ThrowingSourcePlugin : IPlugin
 {
     public string Key => "throwing";
@@ -162,5 +267,7 @@ public sealed class ThrowingSourcePlugin : IPlugin
         registry.AddSource(new ThrowingEnumerationSource());
         registry.AddSource(new KeyArmableSource());
         registry.AddSource(new KeyArmableAndMethodsThrowSource());
+        registry.AddSource(new OperationCanceledSource());
+        registry.AddSource(new ProxyEdgeCasesSource());
     }
 }
