@@ -12,4 +12,10 @@
     <ProjectReference Include="..\EverythingBox.Server.Abstractions\EverythingBox.Server.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="everythingbox-server.example.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

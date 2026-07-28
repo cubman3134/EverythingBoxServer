@@ -1,0 +1,14 @@
+{
+  "Listen": "http://0.0.0.0:7000",
+  "AccessToken": null,
+  "PluginsDirectory": null,
+  "FilesCacheDir": null,
+  "Manifest": {
+    "Id": "com.everythingbox.server",
+    "Name": "EverythingBox Server",
+    "Version": "1.0.0",
+    "Description": "Media from the sources you configure.",
+    "Accent": "#3E8E7E"
+  },
+  "Plugins": {}
+}

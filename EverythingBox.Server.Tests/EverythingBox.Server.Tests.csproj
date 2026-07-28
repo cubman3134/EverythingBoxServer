@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
@@ -26,12 +27,9 @@
   <!-- Build the fixtures but do NOT reference their assemblies — they must be
        discovered from disk exactly as a real plugin is. -->
   <ItemGroup>
-    <ProjectReference Include="..\tests\TestPlugin.Good\TestPlugin.Good.csproj"
-                      ReferenceOutputAssembly="false" Private="false" />
-    <ProjectReference Include="..\tests\TestPlugin.Bad\TestPlugin.Bad.csproj"
-                      ReferenceOutputAssembly="false" Private="false" />
-    <ProjectReference Include="..\tests\TestPlugin.Dup\TestPlugin.Dup.csproj"
-                      ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\tests\TestPlugin.Good\TestPlugin.Good.csproj" ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\tests\TestPlugin.Bad\TestPlugin.Bad.csproj" ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\tests\TestPlugin.Dup\TestPlugin.Dup.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
 
   <!-- Stage each fixture's FULL build output directory, not just its named DLL. A

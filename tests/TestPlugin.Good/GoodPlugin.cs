@@ -8,7 +8,8 @@ public sealed class GoodSource : IMediaSource
     public IReadOnlyList<CatalogDescriptor> Catalogs { get; } = [new CatalogDescriptor("all", "All", "movie")];
 
     public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
-        => Task.FromResult(new SourceCatalog("All", [new CatalogItem("one", "One", "", "movie")]));
+        // Title echoes the query so a test can assert exactly what arrived.
+        => Task.FromResult(new SourceCatalog(query ?? "All", [new CatalogItem("one", "One", "", "movie")]));
 
     public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
         => Task.FromResult(SourceCatalog.Empty("All"));
