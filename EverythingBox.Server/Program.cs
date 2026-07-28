@@ -71,6 +71,7 @@ app.MapGet("/", () => Results.Text(
 app.MapGet("/health", () => Results.Json(new { ok = true }));
 
 app.MapBrowse(prefix);
+app.MapStreams(prefix);
 
 // Force plugin loading now, so failures surface at startup rather than on first request.
 _ = app.Services.GetRequiredService<SourceRouter>();

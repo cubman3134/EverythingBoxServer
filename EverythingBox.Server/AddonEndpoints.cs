@@ -84,6 +84,77 @@ public static class AddonEndpoints
         return null;
     }
 
+    public static void MapStreams(this WebApplication app, string prefix)
+    {
+        // ?n=K asks for the K-th best source, so a user can reject one and get another.
+        // ?dl=curl says the client can fetch a URL itself.
+        app.MapGet($"{prefix}/stream/{{type}}/{{id}}.json",
+            async (string type, string id, int? n, string? dl,
+                   SourceRouter router, ILoggerFactory loggers, CancellationToken ct) =>
+            {
+                var log = loggers.CreateLogger("Stream");
+
+                if (!router.TryResolve(id, out var source, out var payload))
+                {
+                    log.LogWarning("stream {Type}/{Id}: no source owns this id", type, id);
+                    return Results.Json(NoStreams());
+                }
+
+                var context = new SourceContext { ClientCanCurl = dl == "curl" };
+                var stream = await source.ResolveAsync(payload, n ?? 0, context, ct);
+
+                if (stream is null) return Results.Json(NoStreams());
+
+                // A notice with no URL: something is in progress. The client shows the
+                // message in place of a bare "no source".
+                if (string.IsNullOrEmpty(stream.Url))
+                    return Results.Json(new { streams = Array.Empty<object>(), notice = stream.Notice });
+
+                if (!SafeUrlGuard.IsClientSafe(stream.Url))
+                {
+                    log.LogWarning("stream {Type}/{Id}: source '{Source}' returned a url the client cannot play — refusing",
+                        type, id, source.Key);
+                    return Results.Json(NoStreams());
+                }
+
+                return stream.Curl
+                    ? Results.Json(new { url = stream.Url, mime = stream.Mime, curl = true })
+                    : Results.Json(new { url = stream.Url, mime = stream.Mime });
+            });
+
+        // Relays bytes for a host the client cannot fetch itself. {name} carries the real
+        // filename so the client sees the extension; only {id} is load-bearing.
+        app.MapGet($"{prefix}/proxy/{{sourceKey}}/{{id}}/{{name}}",
+            async (string sourceKey, string id, string name, HttpContext http,
+                   SourceRouter router, CancellationToken ct) =>
+            {
+                if (!router.TryResolve(SourceRouter.Prefix(sourceKey, id), out var source, out var payload))
+                {
+                    http.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+
+                var range = http.Request.Headers.Range.ToString();
+                await using var upstream = await source.OpenAsync(payload, string.IsNullOrEmpty(range) ? null : range, ct);
+
+                if (upstream is null)
+                {
+                    http.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+
+                http.Response.StatusCode = upstream.StatusCode;
+                http.Response.ContentType = upstream.ContentType;
+                if (upstream.ContentLength is { } length) http.Response.ContentLength = length;
+                if (upstream.AcceptRanges is { } accept) http.Response.Headers.AcceptRanges = accept;
+                if (upstream.ContentRange is { } contentRange) http.Response.Headers.ContentRange = contentRange;
+
+                await upstream.Body.CopyToAsync(http.Response.Body, ct);
+            });
+    }
+
+    private static object NoStreams() => new { streams = Array.Empty<object>() };
+
     private static object Empty() => new { title = "", hasMore = false, items = Array.Empty<object>() };
 
     /// <summary>Prefixes every item id with its owner on the way out, so whatever the

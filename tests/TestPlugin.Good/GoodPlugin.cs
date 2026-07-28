@@ -15,7 +15,30 @@ public sealed class GoodSource : IMediaSource
         => Task.FromResult(SourceCatalog.Empty("All"));
 
     public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
-        => Task.FromResult<SourceStream?>(new SourceStream($"https://example.test/{itemId}", "video/mp4"));
+        => Task.FromResult<SourceStream?>(itemId switch
+        {
+            "notice"   => SourceStream.FromNotice("caching, retry shortly"),
+            "unsafe"   => new SourceStream("magnet:?xt=urn:btih:abc", "video/mp4"),
+            "curl"     => new SourceStream("https://example.test/gated.7z", "application/x-7z-compressed", Curl: true),
+            "missing"  => null,
+            "indexed"  => new SourceStream($"https://example.test/pick-{index}.mkv", "video/x-matroska"),
+            _          => new SourceStream($"https://example.test/{itemId}.mkv", "video/x-matroska"),
+        });
+
+    public Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
+    {
+        if (itemId != "proxied") return Task.FromResult<ProxyResponse?>(null);
+
+        var bytes = "PROXIED-BODY"u8.ToArray();
+        return Task.FromResult<ProxyResponse?>(new ProxyResponse(new MemoryStream(bytes), "application/octet-stream")
+        {
+            ContentLength = bytes.Length,
+            AcceptRanges = "bytes",
+            // Set ONLY when a range arrived, so its presence proves the header reached
+            // the source. Must be a valid Content-Range or HttpClient drops it.
+            ContentRange = rangeHeader is null ? null : "bytes 0-3/12",
+        });
+    }
 }
 
 public sealed class GoodPlugin : IPlugin
