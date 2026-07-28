@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>EverythingBox.Server.Core</RootNamespace>
+  </PropertyGroup>
+
+  <!-- DELIBERATELY EMPTY. Core is BCL-only: System.Text.Json, System.Xml.Linq,
+       HttpClient, System.IO.Compression. Anything needing a package belongs in the
+       host behind an interface (INestedArchiveReader, ITorrentDownloader).
+       Adding a PackageReference here is a design change, not a convenience. -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\EverythingBox.Server.Abstractions\EverythingBox.Server.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>
