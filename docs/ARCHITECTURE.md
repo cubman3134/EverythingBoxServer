@@ -33,8 +33,17 @@ EverythingBox.Server.Core/           standalone torrent search/parse/rank/resolv
                                       the host or wired into the addon protocol; a
                                       plugin author can build on it directly. See
                                       "The torrent pipeline" below.
-EverythingBox.Server.Core.Tests/     xUnit tests for Core (161 tests)
+EverythingBox.Server.Core.Tests/     xUnit tests for Core (163 tests)
 ```
+
+**Namespace convention.** `EverythingBox.Server.Abstractions` is deliberately *flat*: every
+type lives in the single `EverythingBox.Server.Abstractions` namespace regardless of which
+folder (`Pipeline/`, `Requests/`, `Results/`) it's filed under, so a plugin author needs
+exactly one `using`. `EverythingBox.Server.Core` does the opposite on purpose: its
+namespaces mirror its folders (`EverythingBox.Server.Core.Download.QBittorrent`,
+`EverythingBox.Server.Core.Scraping`, etc.), because it's a larger surface a consumer
+browses by area rather than referencing wholesale. Both are internally consistent today;
+this is the reasoning, recorded once rather than left implicit.
 
 Plugins reference **Abstractions only**. The host is free to change without breaking
 them, as long as the `IPlugin`/`IMediaSource` contract and `ServerApi.VersionString`

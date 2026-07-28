@@ -1,6 +1,5 @@
 using System.Text.RegularExpressions;
 using EverythingBox.Server.Abstractions;
-using EverythingBox.Server.Core.Torrents;
 
 namespace EverythingBox.Server.Core.Download.QBittorrent;
 

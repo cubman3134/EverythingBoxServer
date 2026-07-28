@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using EverythingBox.Server.Abstractions;
-using EverythingBox.Server.Core.Torrents;
 
 namespace EverythingBox.Server.Core.Download.Transmission;
 

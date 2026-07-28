@@ -74,6 +74,36 @@ public class FileResolverCacheTests
         finally { Cleanup(dir); }
     }
 
+    [Fact]
+    public async Task CancelledWriteLeavesNoTempFileBehind()
+    {
+        var dir = NewDir();
+        try
+        {
+            // Cap is well above the value size so eviction never enters into it —
+            // this test is only about what a cancellation leaves behind.
+            var cache = new FileResolverCache(dir, maxBytes: 100 * 1024 * 1024);
+            using var cts = new CancellationTokenSource();
+
+            // Cancel as soon as the temp file is created on disk (well before a
+            // multi-megabyte value finishes writing), so the write is guaranteed to be
+            // interrupted rather than racing it to completion.
+            using var watcher = new FileSystemWatcher(dir) { EnableRaisingEvents = true };
+            watcher.Created += (_, e) =>
+            {
+                if (e.Name is not null && e.Name.EndsWith(".tmp", StringComparison.Ordinal))
+                    cts.Cancel();
+            };
+
+            var bigValue = new string('x', 20 * 1024 * 1024); // 20 MB: ample margin for the watcher event to land first
+            await cache.SetAsync("k", bigValue, cts.Token);
+
+            Assert.Empty(Directory.GetFiles(dir, "*.tmp"));
+            Assert.Null(await cache.GetAsync("k")); // the cancelled write never published an entry either
+        }
+        finally { Cleanup(dir); }
+    }
+
     private static string NewDir() => Path.Combine(Path.GetTempPath(), "ebs-cache-test-" + Guid.NewGuid().ToString("N"));
     private static void Cleanup(string dir) { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
 

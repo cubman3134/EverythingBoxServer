@@ -274,7 +274,7 @@ public class MediaFileMatcherTests
         };
 
         var selected = MediaFileMatcher.SelectForRequest(
-            new GeneralRequest { Title = "Centuron PSX", FileFilters = ["3D Lemmings"] }, files);
+            new GeneralRequest { Title = "Big Game Pack", FileFilters = ["3D Lemmings"] }, files);
 
         Assert.Equal(2, selected.Count); // the .bin + .cue for that game
         Assert.All(selected, f => Assert.Contains("3D Lemmings", f.FileName));
@@ -294,7 +294,7 @@ public class MediaFileMatcherTests
         };
 
         var selected = MediaFileMatcher.SelectForRequest(
-            new GeneralRequest { Title = "Centuron PSX", FileFilters = ["3D Lemmings", "40 Winks"] }, files);
+            new GeneralRequest { Title = "Big Game Pack", FileFilters = ["3D Lemmings", "40 Winks"] }, files);
 
         Assert.Equal(4, selected.Count); // both games' .bin + .cue
         Assert.Contains(selected, f => f.FileName == "3D Lemmings.bin");

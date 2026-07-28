@@ -1,7 +1,7 @@
 namespace EverythingBox.Server.Abstractions;
 
 /// <summary>
-/// Lists and extracts members of archive formats the BCL/<see cref="RemoteZip"/>
+/// Lists and extracts members of archive formats the BCL/RemoteZip
 /// can't handle (7z, rar) — an upstream host that cannot extract those server-side
 /// either. The core library stays dependency-free: a consumer supplies an
 /// implementation (e.g. one backed by SharpCompress) and injects it into the file
