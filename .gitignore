@@ -4,7 +4,9 @@ obj/
 *.user
 *.suo
 artifacts/
-plugins/
+# Runtime plugin drop directory at repo root — must be anchored to avoid shadowing source
+/plugins/
 everythingbox-server.json
 *.bak
 TestResults/
+.superpowers/
