@@ -120,11 +120,12 @@ public sealed class PluginHost(ILogger<PluginHost> log)
 
         try
         {
-            if (!ServerApi.IsCompatible(plugin.ApiVersion))
+            var apiVersion = plugin.ApiVersion;
+            if (!ServerApi.IsCompatible(apiVersion))
             {
                 log.LogError(
                     "Plugin '{Key}' targets API {PluginVersion}, this server provides {ServerVersion} — skipping. Update the plugin.",
-                    key, plugin.ApiVersion, ServerApi.Version);
+                    key, apiVersion, ServerApi.Version);
                 return null;
             }
 

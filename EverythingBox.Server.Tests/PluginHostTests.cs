@@ -54,7 +54,21 @@ public class PluginHostTests
     {
         var loaded = NewHost().Load(IsolatedRoot("good"), _ => new StubContext());
 
-        IMediaSource source = loaded.Single().Sources.Single();
+        Assert.True(loaded.Count == 1,
+            "Expected the plugin to load. A count of 0 usually means IMediaSource is NOT type-identical " +
+            "across the load-context boundary: PluginHost's IsAssignableFrom filter drops the plugin before " +
+            "any cast. Check that PluginLoadContext.Load defers the shared assemblies to the default context, " +
+            "and that Abstractions.dll is not being copied into the plugin folder (Private=\"false\").");
+
+        var loadedPlugin = loaded.First();
+        var sources = loadedPlugin.Sources;
+        Assert.True(sources.Count == 1,
+            "Expected the plugin to provide one IMediaSource. A count of 0 usually means IMediaSource is NOT type-identical " +
+            "across the load-context boundary: PluginHost's IsAssignableFrom filter drops the plugin before " +
+            "any cast. Check that PluginLoadContext.Load defers the shared assemblies to the default context, " +
+            "and that Abstractions.dll is not being copied into the plugin folder (Private=\"false\").");
+
+        IMediaSource source = sources.First();
         Assert.Equal("good", source.Key);
 
         var catalog = await source.SearchAsync("all", null, new SourceContext(), CancellationToken.None);
