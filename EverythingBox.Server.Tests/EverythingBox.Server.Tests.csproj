@@ -23,4 +23,22 @@
     <ProjectReference Include="..\EverythingBox.Server\EverythingBox.Server.csproj" />
   </ItemGroup>
 
+  <!-- Build the fixtures but do NOT reference their assemblies — they must be
+       discovered from disk exactly as a real plugin is. -->
+  <ItemGroup>
+    <ProjectReference Include="..\tests\TestPlugin.Good\TestPlugin.Good.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\tests\TestPlugin.Bad\TestPlugin.Bad.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+  </ItemGroup>
+
+  <Target Name="StageTestPlugins" AfterTargets="Build">
+    <ItemGroup>
+      <GoodPluginOut Include="..\tests\TestPlugin.Good\bin\$(Configuration)\net9.0\TestPlugin.Good.dll" />
+      <BadPluginOut Include="..\tests\TestPlugin.Bad\bin\$(Configuration)\net9.0\TestPlugin.Bad.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(GoodPluginOut)" DestinationFolder="$(OutDir)testplugins\good\" />
+    <Copy SourceFiles="@(BadPluginOut)" DestinationFolder="$(OutDir)testplugins\bad\" />
+  </Target>
+
 </Project>
