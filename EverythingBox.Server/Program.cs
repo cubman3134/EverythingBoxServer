@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using EverythingBox.Server;
 using EverythingBox.Server.Abstractions;
+using EverythingBox.Server.Core;
 using EverythingBox.Server.Plugins;
 using EverythingBox.Server.Routing;
 
@@ -28,11 +29,30 @@ builder.Services.AddSingleton(sp =>
     var host = sp.GetRequiredService<PluginHost>();
     var loggers = sp.GetRequiredService<ILoggerFactory>();
     var http = sp.GetRequiredService<HttpClient>();
+    var files = sp.GetRequiredService<FileCache>();
     var cacheRoot = Path.Combine(config.ResolvedFilesCacheDir, "plugins");
+
+    // Plugins register indexers during Configure, but Configure is also where a plugin
+    // receives IServerServices — which holds the grabber built FROM those indexers. Handing
+    // out a real, eagerly-built grabber here would mean building it before any plugin has
+    // registered anything. LazyTorrentGrabber breaks the cycle: `loaded` starts empty, a
+    // plugin may stash the ITorrentGrabber reference during registration, and the closure
+    // below only reads `loaded` (by then fully populated) the first time something actually
+    // calls Search/GrabAsync — which happens while serving a request, never during Configure.
+    List<LoadedPlugin> loaded = [];
+    var grabber = new LazyTorrentGrabber(() =>
+    {
+        var grabberBuilder = new GrabberBuilder();
+        foreach (var indexer in loaded.SelectMany(p => p.Indexers))
+            grabberBuilder.AddProvider(indexer);
+        return grabberBuilder.Build();
+    });
+    var services = new ServerServices(grabber, debrid: null, files);
 
     var plugins = host.Load(
         config.ResolvedPluginsDirectory,
-        plugin => new PluginContext(plugin.Key, config, loggers, http, cacheRoot));
+        plugin => new PluginContext(plugin.Key, config, loggers, http, cacheRoot, services));
+    loaded.AddRange(plugins);
 
     return new SourceRouter(plugins.SelectMany(p => p.Sources), loggers.CreateLogger<SourceRouter>());
 });

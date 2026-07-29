@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\EverythingBox.Server.Abstractions\EverythingBox.Server.Abstractions.csproj" />
+    <ProjectReference Include="..\EverythingBox.Server.Core\EverythingBox.Server.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -24,6 +24,10 @@ public sealed class PluginRegistry : IPluginRegistry
             throw new InvalidOperationException($"A source with key '{source.Key}' is already registered.");
     }
 
+    // Deliberately does NOT read provider.Name. Name is plugin-authored code and can
+    // throw (the host learned this the hard way in milestone 1, where reading a plugin
+    // property outside a try/catch let one bad plugin 500 the manifest for everyone).
+    // Do not "helpfully" add a name check here — it reintroduces that hazard.
     public void AddIndexer(ITorrentProvider provider)
     {
         ArgumentNullException.ThrowIfNull(provider);

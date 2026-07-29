@@ -10,7 +10,7 @@ public sealed class PluginContext : IPluginContext
     private readonly ServerConfig _config;
     private readonly string _key;
 
-    public PluginContext(string key, ServerConfig config, ILoggerFactory loggers, HttpClient http, string cacheRoot)
+    public PluginContext(string key, ServerConfig config, ILoggerFactory loggers, HttpClient http, string cacheRoot, IServerServices server)
     {
         _key = key;
         _config = config;
@@ -18,6 +18,7 @@ public sealed class PluginContext : IPluginContext
         Http = http;
         CacheDirectory = Path.Combine(cacheRoot, key);
         Directory.CreateDirectory(CacheDirectory);
+        Server = server;
     }
 
     public ILoggerFactory Loggers { get; }
@@ -26,11 +27,5 @@ public sealed class PluginContext : IPluginContext
 
     public T? GetConfig<T>() where T : class => _config.PluginSection<T>(_key);
 
-    // The host does not yet wire a TorrentGrabber/debrid service/file cache bundle into
-    // plugin loading (that lands with the pipeline wiring in a later task). Throwing here
-    // rather than returning null means a plugin that reaches for Server before it exists
-    // fails at the point of use instead of with a confusing NullReferenceException later.
-    public IServerServices Server =>
-        throw new NotSupportedException(
-            "This server build does not yet wire host capabilities into the plugin context.");
+    public IServerServices Server { get; }
 }

@@ -3,7 +3,11 @@ using EverythingBox.Server.Core;
 
 namespace EverythingBox.Server.Core.Tests;
 
-public class ServerApiTests
+// Renamed from ServerApiTests (Task 2 review): EverythingBox.Server.Tests also has a
+// ServerApiTests testing the same ServerApi type. Two identically-named classes across
+// projects meant a contributor grepping for the name could edit the wrong one with no
+// compile error to catch it.
+public class ServerApiContractTests
 {
     [Fact]
     public void Version_is_1_1_now_that_the_registry_and_context_have_grown()
