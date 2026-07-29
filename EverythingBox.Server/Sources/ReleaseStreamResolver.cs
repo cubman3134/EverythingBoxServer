@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using EverythingBox.Server.Abstractions;
 using EverythingBox.Server.Core.Selection;
@@ -24,20 +27,42 @@ internal sealed class UnknownMediaTypeRequest : MediaRequest
 
 /// <summary>
 /// Turns a chosen <see cref="TorrentResult"/> into something the client can play, via
-/// whatever <see cref="IDebridService"/> the host was configured with. There is
-/// deliberately no self-download fallback here — an uncached release comes back as a
-/// notice, not a download queued on the host's own hardware; that belongs to a later
-/// plan.
+/// whatever <see cref="IDebridService"/> the host was configured with. When debrid
+/// answers <see cref="DebridStatus.Pending"/> — it's still caching the release — and a
+/// <see cref="ITorrentDownloader"/> was supplied, this optionally fetches the release
+/// itself rather than leaving the caller with only a "try again shortly" notice; see
+/// <see cref="TryFallbackDownloadAsync"/> for the gates that must all pass first.
 /// </summary>
 public sealed class ReleaseStreamResolver
 {
     private readonly IDebridService? _debrid;
     private readonly ILogger<ReleaseStreamResolver> _logger;
+    private readonly ITorrentDownloader? _downloader;
+    private readonly IFileCache? _files;
+    private readonly DownloadConfig _download;
 
-    public ReleaseStreamResolver(IDebridService? debrid, ILogger<ReleaseStreamResolver> logger)
+    // Memoizes the one expensive step — actually joining the swarm — per (release, request),
+    // independent of how many files it produces or how many indices a caller walks. Concurrent
+    // callers asking for the SAME release+request share the SAME Lazy<Task<>>, so only the
+    // caller that wins the dictionary insert ever runs RunDownloadAsync; everyone else just
+    // awaits its result. Deliberately separate from IFileCache's own build-once dictionary,
+    // which dedupes at the single-served-file granularity below in PublishAsync — this one
+    // exists so that fetching index 0 and then index 1 of the same still-caching release (or
+    // calling ResolveAsync and ResolveAllAsync back to back) doesn't rejoin the swarm twice.
+    private readonly ConcurrentDictionary<string, Lazy<Task<IReadOnlyList<string>>>> _downloads = new(StringComparer.Ordinal);
+
+    public ReleaseStreamResolver(
+        IDebridService? debrid,
+        ILogger<ReleaseStreamResolver> logger,
+        ITorrentDownloader? downloader = null,
+        IFileCache? files = null,
+        DownloadConfig? download = null)
     {
         _debrid = debrid;
         _logger = logger;
+        _downloader = downloader;
+        _files = files;
+        _download = download ?? new DownloadConfig();
 
         if (debrid is null)
             logger.LogInformation("No debrid service configured; the catalog will browse but nothing will play.");
@@ -142,10 +167,16 @@ public sealed class ReleaseStreamResolver
                 return null;
 
             case ResolutionOutcome.Pending:
-                // A still-caching release has no per-file distinction yet, so every index
-                // gets the same caching notice — unlike ResolveAllAsync below, which wraps
-                // Pending as a single-element list, so only a walk's n=0 ever sees it.
-                return SourceStream.FromNotice(outcome.Notice!);
+                // A still-caching release has no per-file distinction from debrid, but a
+                // successful self-download DOES — index walks the fetched file(s) exactly
+                // like the Resolved branch below walks narrowed links. Falling back to the
+                // notice (gate failed, or the download produced nothing) ignores index,
+                // same as the no-fallback case always has.
+                var downloaded = await TryFallbackDownloadAsync(release, request, cancellationToken);
+                if (downloaded is null)
+                    return SourceStream.FromNotice(outcome.Notice!);
+
+                return index >= 0 && index < downloaded.Count ? downloaded[index] : null;
 
             default: // Resolved
                 if (index < 0 || index >= outcome.Narrowed.Count)
@@ -177,12 +208,161 @@ public sealed class ReleaseStreamResolver
     {
         var outcome = await ResolveOutcomeAsync(release, request, cancellationToken);
 
-        return outcome.Outcome switch
+        switch (outcome.Outcome)
         {
-            ResolutionOutcome.Failed => [],
-            ResolutionOutcome.Pending => [SourceStream.FromNotice(outcome.Notice!)],
-            _ => outcome.Narrowed.Select(link => new SourceStream(link.Url.ToString(), MimeFor(link.FileName))).ToList(),
-        };
+            case ResolutionOutcome.Failed:
+                return [];
+
+            case ResolutionOutcome.Pending:
+                // A successful download replaces the single notice placeholder with the
+                // fetched file(s) themselves — same fallback ResolveAsync uses above, so
+                // the two paths can't drift on when the fallback applies.
+                var downloaded = await TryFallbackDownloadAsync(release, request, cancellationToken);
+                return downloaded is null ? [SourceStream.FromNotice(outcome.Notice!)] : downloaded;
+
+            default: // Resolved
+                return outcome.Narrowed.Select(link => new SourceStream(link.Url.ToString(), MimeFor(link.FileName))).ToList();
+        }
+    }
+
+    /// <summary>
+    /// Attempts to fetch a still-caching release directly instead of leaving the caller
+    /// with only a notice. Returns null when any gate fails or the download produced
+    /// nothing usable — both cases mean "behave exactly like today", i.e. the caller
+    /// falls back to the ordinary <see cref="DebridResult"/> notice. The four gates, all
+    /// of which must pass before a single byte moves:
+    /// <list type="number">
+    ///   <item><see cref="DownloadConfig.Enabled"/> is true.</item>
+    ///   <item>A <see cref="ITorrentDownloader"/> (and somewhere to serve the result from)
+    ///   was actually supplied.</item>
+    ///   <item><paramref name="release"/>'s <see cref="TorrentResult.SizeBytes"/> is known
+    ///   AND within <see cref="DownloadConfig.MaxSizeMB"/> — an unknown size never passes;
+    ///   the whole point of the cap is to refuse an unbounded fetch, and "we don't know how
+    ///   big it is" is exactly that.</item>
+    ///   <item><paramref name="cancellationToken"/> is not already cancelled.</item>
+    /// </list>
+    /// </summary>
+    private async Task<IReadOnlyList<SourceStream>?> TryFallbackDownloadAsync(
+        TorrentResult release, MediaRequest request, CancellationToken cancellationToken)
+    {
+        if (!_download.Enabled)
+            return null;
+
+        var downloader = _downloader;
+        var files = _files;
+        if (downloader is null || files is null)
+            return null;
+
+        if (release.SizeBytes is not { } sizeBytes || sizeBytes > _download.MaxSizeMB * 1024L * 1024L)
+            return null;
+
+        if (cancellationToken.IsCancellationRequested)
+            return null;
+
+        IReadOnlyList<string> localPaths;
+        try
+        {
+            localPaths = await GetOrDownloadAsync(downloader, files, release, request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            // Same contract as the debrid call above: someone else's swarm/network being
+            // slow, unreachable, or broken degrades to "nothing fetched", never a 500. A
+            // genuine caller cancellation still propagates rather than being hidden as a
+            // false-looking notice.
+            _logger.LogWarning(ex, "Self-download of '{Title}' failed; falling back to the caching notice.", release.Title);
+            return null;
+        }
+
+        if (localPaths.Count == 0)
+            return null;
+
+        var streams = new List<SourceStream>(localPaths.Count);
+        foreach (var path in localPaths)
+        {
+            var built = await PublishAsync(files, release, request, path, cancellationToken).ConfigureAwait(false);
+            if (built is not null)
+                streams.Add(new SourceStream($"files/{built.ServedName}", built.ContentType));
+        }
+
+        return streams.Count > 0 ? streams : null;
+    }
+
+    /// <summary>
+    /// The memoized entry point for the actual swarm join — see the <see cref="_downloads"/>
+    /// field doc for why this is a separate dictionary from <see cref="IFileCache"/>'s own.
+    /// </summary>
+    private Task<IReadOnlyList<string>> GetOrDownloadAsync(
+        ITorrentDownloader downloader, IFileCache files, TorrentResult release, MediaRequest request, CancellationToken cancellationToken)
+    {
+        var key = ReleaseKey(release, request);
+        var lazy = _downloads.GetOrAdd(key, _ => new Lazy<Task<IReadOnlyList<string>>>(
+            () => RunDownloadAsync(downloader, files, release, request, cancellationToken),
+            LazyThreadSafetyMode.ExecutionAndPublication));
+        return lazy.Value;
+    }
+
+    /// <summary>
+    /// Actually joins the swarm, bounded by <see cref="DownloadConfig.TimeoutSeconds"/> and
+    /// linked to <paramref name="cancellationToken"/> so a client disconnect stops it too. A
+    /// timeout is treated the same as "no peers, gave up" — degrade to the notice, don't throw.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> RunDownloadAsync(
+        ITorrentDownloader downloader, IFileCache files, TorrentResult release, MediaRequest request, CancellationToken cancellationToken)
+    {
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_download.TimeoutSeconds));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
+        var directory = Path.Combine(files.Root, ".downloads", ReleaseKey(release, request));
+
+        try
+        {
+            return await downloader.DownloadAsync(release, request, directory, progress: null, linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogInformation(
+                "Self-download of '{Title}' timed out after {Seconds}s; falling back to the caching notice.",
+                release.Title, _download.TimeoutSeconds);
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Registers one already-downloaded local file with <see cref="IFileCache"/> so it
+    /// becomes servable from <c>files/{name}</c> — <see cref="AddonEndpoints.MapFiles"/>
+    /// serves straight off <see cref="IFileCache.Root"/> by plain file name, so the served
+    /// name must be flat and must not collide across releases; it's prefixed with the same
+    /// <see cref="ReleaseKey"/> the download itself was keyed by.
+    /// </summary>
+    private static async Task<BuiltFile?> PublishAsync(
+        IFileCache files, TorrentResult release, MediaRequest request, string localPath, CancellationToken cancellationToken)
+    {
+        var servedName = $"{ReleaseKey(release, request)}-{Path.GetFileName(localPath)}";
+
+        return await files.GetOrBuildAsync(servedName, (name, _) =>
+        {
+            var destination = Path.Combine(files.Root, name);
+            if (!string.Equals(Path.GetFullPath(destination), Path.GetFullPath(localPath), StringComparison.OrdinalIgnoreCase))
+                File.Copy(localPath, destination, overwrite: true);
+
+            return Task.FromResult<BuiltFile?>(new BuiltFile(name, destination, MimeFor(name)));
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A short, stable, filesystem/URL-safe key identifying "this release, for this kind of
+    /// request" — the unit both the download memoization and the served file names key off
+    /// of. Prefers the info hash (present for almost every real release); a magnet or
+    /// .torrent URL is a fine fallback identifier when it isn't, and the title is the last
+    /// resort for a release with none of those (still deterministic, just less precise).
+    /// </summary>
+    private static string ReleaseKey(TorrentResult release, MediaRequest request)
+    {
+        var identity = release.InfoHash ?? release.MagnetUri?.ToString() ?? release.DownloadUrl?.ToString() ?? release.Title;
+        var seed = $"{identity}|{request.GetType().Name}|{request.Title}";
+        var hash = SHA1.HashData(Encoding.UTF8.GetBytes(seed));
+        return Convert.ToHexString(hash)[..16].ToLowerInvariant();
     }
 
     // Single-extension whole-archive shapes, matched via Path.GetExtension. ".iso" is

@@ -11,8 +11,43 @@ file sealed class StubDebrid(DebridResult result) : IDebridService
         => Task.FromResult(result);
 }
 
-public class ReleaseStreamResolverTests
+/// <summary>Records how many times it was asked to download, and writes fixed-content
+/// placeholder files for whatever names it's told to "produce" — enough to exercise
+/// ReleaseStreamResolver's fallback wiring without a real BitTorrent swarm.</summary>
+file sealed class RecordingDownloader(params string[] produce) : ITorrentDownloader
 {
+    public int Calls { get; private set; }
+
+    public Task<IReadOnlyList<string>> DownloadAsync(
+        TorrentResult torrent, MediaRequest? request, string directory,
+        IProgress<TorrentDownloadProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        Calls++;
+        Directory.CreateDirectory(directory);
+        var paths = new List<string>();
+        foreach (var name in produce)
+        {
+            var path = Path.Combine(directory, name);
+            File.WriteAllText(path, "x");
+            paths.Add(path);
+        }
+        return Task.FromResult<IReadOnlyList<string>>(paths);
+    }
+}
+
+public class ReleaseStreamResolverTests : IDisposable
+{
+    private readonly List<string> _tempRoots = [];
+
+    public void Dispose()
+    {
+        foreach (var root in _tempRoots)
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
+        GC.SuppressFinalize(this);
+    }
+
     private static TorrentResult Release() => new()
     {
         Title = "Some Release 1080p",
@@ -383,6 +418,131 @@ public class ReleaseStreamResolverTests
 
         Assert.NotNull(stream);
         Assert.Equal("https://example.test/disc.iso", stream!.Url);
+    }
+
+    // --- Task 3: falling back to a self-download when debrid says Pending ---
+
+    private static DebridResult Pending() => DebridResult.Pending("stub", "id", "caching");
+
+    private static TorrentResult Sized(int megabytes) => new()
+    {
+        Title = "Some Release 1080p",
+        ProviderName = "test-indexer",
+        InfoHash = "0123456789abcdef0123456789abcdef01234567",
+        MagnetUri = new Uri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"),
+        SizeBytes = megabytes * 1024L * 1024L,
+    };
+
+    private static TorrentResult Unsized() => new()
+    {
+        Title = "Some Release 1080p",
+        ProviderName = "test-indexer",
+        InfoHash = "0123456789abcdef0123456789abcdef01234567",
+        MagnetUri = new Uri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"),
+        // SizeBytes deliberately absent — the cap has nothing to check against.
+    };
+
+    private ReleaseStreamResolver ResolverWithDownload(
+        DebridResult result, ITorrentDownloader downloader, DownloadConfig download)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ebs-fallback-" + Guid.NewGuid().ToString("N"));
+        _tempRoots.Add(root);
+        return new ReleaseStreamResolver(
+            new StubDebrid(result),
+            NullLogger<ReleaseStreamResolver>.Instance,
+            downloader,
+            new FileCache(root),
+            download);
+    }
+
+    [Fact]
+    public async Task An_uncached_release_is_fetched_when_downloading_is_enabled()
+    {
+        var downloader = new RecordingDownloader("Some.Release.1080p.mkv");
+        var resolver = ResolverWithDownload(Pending(), downloader, new DownloadConfig { Enabled = true });
+
+        var stream = await resolver.ResolveAsync(Sized(500), new MovieRequest { Title = "x" }, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.StartsWith("files/", stream!.Url);
+        Assert.Equal(1, downloader.Calls);
+    }
+
+    [Fact]
+    public async Task With_downloading_disabled_the_user_still_gets_the_caching_notice()
+    {
+        // The shipped default. Turning the feature off must change nothing else.
+        var downloader = new RecordingDownloader("Some.Release.1080p.mkv");
+        var resolver = ResolverWithDownload(Pending(), downloader, new DownloadConfig { Enabled = false });
+
+        var stream = await resolver.ResolveAsync(Sized(500), new MovieRequest { Title = "x" }, 0, CancellationToken.None);
+
+        Assert.Equal("", stream!.Url);
+        Assert.False(string.IsNullOrWhiteSpace(stream.Notice));
+        Assert.Equal(0, downloader.Calls);
+    }
+
+    [Fact]
+    public async Task A_release_over_the_size_cap_is_not_fetched()
+    {
+        var downloader = new RecordingDownloader("huge.mkv");
+        var resolver = ResolverWithDownload(Pending(), downloader, new DownloadConfig { Enabled = true, MaxSizeMB = 100 });
+
+        var stream = await resolver.ResolveAsync(Sized(5000), new MovieRequest { Title = "x" }, 0, CancellationToken.None);
+
+        Assert.Equal("", stream!.Url);
+        Assert.Equal(0, downloader.Calls);
+    }
+
+    [Fact]
+    public async Task A_release_of_unknown_size_is_not_fetched()
+    {
+        // An unknown size is exactly what the cap exists to refuse.
+        var downloader = new RecordingDownloader("mystery.mkv");
+        var resolver = ResolverWithDownload(Pending(), downloader, new DownloadConfig { Enabled = true });
+
+        var stream = await resolver.ResolveAsync(Unsized(), new MovieRequest { Title = "x" }, 0, CancellationToken.None);
+
+        Assert.Equal(0, downloader.Calls);
+    }
+
+    [Fact]
+    public async Task A_debrid_failure_does_not_trigger_a_download()
+    {
+        // Failed usually means a bad key or a rejected magnet. Starting a swarm is
+        // the wrong answer to an authentication problem.
+        var downloader = new RecordingDownloader("Some.Release.1080p.mkv");
+        var resolver = ResolverWithDownload(DebridResult.Failed("stub", "nope"), downloader, new DownloadConfig { Enabled = true });
+
+        Assert.Null(await resolver.ResolveAsync(Sized(500), new MovieRequest { Title = "x" }, 0, CancellationToken.None));
+        Assert.Equal(0, downloader.Calls);
+    }
+
+    [Fact]
+    public async Task A_download_that_produces_nothing_falls_back_to_the_notice()
+    {
+        var downloader = new RecordingDownloader();   // no files
+        var resolver = ResolverWithDownload(Pending(), downloader, new DownloadConfig { Enabled = true });
+
+        var stream = await resolver.ResolveAsync(Sized(500), new MovieRequest { Title = "x" }, 0, CancellationToken.None);
+
+        Assert.Equal("", stream!.Url);
+        Assert.False(string.IsNullOrWhiteSpace(stream.Notice));
+    }
+
+    [Fact]
+    public async Task Two_callers_wanting_the_same_release_download_it_once()
+    {
+        // FileCache already guarantees build-once; this asserts the fallback goes through it.
+        var downloader = new RecordingDownloader("Some.Release.1080p.mkv");
+        var resolver = ResolverWithDownload(Pending(), downloader, new DownloadConfig { Enabled = true });
+        var request = new MovieRequest { Title = "x" };
+
+        var first = resolver.ResolveAsync(Sized(500), request, 0, CancellationToken.None);
+        var second = resolver.ResolveAsync(Sized(500), request, 0, CancellationToken.None);
+        await Task.WhenAll(first, second);
+
+        Assert.Equal(1, downloader.Calls);
     }
 }
 

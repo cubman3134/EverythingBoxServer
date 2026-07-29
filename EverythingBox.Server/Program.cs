@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using EverythingBox.Server;
 using EverythingBox.Server.Abstractions;
 using EverythingBox.Server.Core;
+using EverythingBox.Server.Download;
 using EverythingBox.Server.Plugins;
 using EverythingBox.Server.Routing;
 using EverythingBox.Server.Sources;
@@ -88,6 +89,17 @@ builder.Services.AddSingleton(sp =>
     // request — by then SetGrabber above has bound the real grabber; calling through the
     // deferred wrapper during THIS factory would throw by design.
     //
+    // The self-download fallback is opt-in and OFF by default (see ServerConfig.Download):
+    // only construct the downloader — and the BitTorrent engine setup that goes with it —
+    // when it will actually be used. MonoTorrentDownloader itself allocates nothing at
+    // construction (it just stores the logger/HttpClient), but there's no reason to hold
+    // even that for a server that will never call it; a disabled config should be as inert
+    // as if this line weren't here at all. Built over the SAME shared HttpClient as every
+    // other outbound call, so a .torrent-to-magnet fetch inherits its retry handling.
+    ITorrentDownloader? downloader = config.Download.Enabled
+        ? new MonoTorrentDownloader(loggers.CreateLogger<MonoTorrentDownloader>(), http)
+        : null;
+
     // ReleaseStreamResolver is constructed exactly once, right here, because this whole
     // factory lambda is itself only ever invoked once (AddSingleton below caches the
     // result) — so its constructor's "no debrid configured" log line fires exactly once,
@@ -96,7 +108,8 @@ builder.Services.AddSingleton(sp =>
     // Appended AFTER every plugin source so a plugin can never be shadowed by it: if a
     // plugin also declares key "idx", SourceRouter's duplicate-key handling keeps the
     // first registration (the plugin's) and logs+drops this one instead.
-    var resolver = new ReleaseStreamResolver(debrid, loggers.CreateLogger<ReleaseStreamResolver>());
+    var resolver = new ReleaseStreamResolver(
+        debrid, loggers.CreateLogger<ReleaseStreamResolver>(), downloader, files, config.Download);
     var indexerSource = new IndexerSearchSource(deferredGrabber, resolver, grabber.Providers.Count, loggers.CreateLogger<IndexerSearchSource>());
 
     // MetadataBackedVideoSource turns every metadata source collected across all loaded
