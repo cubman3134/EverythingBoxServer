@@ -15,6 +15,15 @@ namespace EverythingBox.Server.Tests;
 /// This class is shared by every test in <see cref="AddonServerCollection"/> because it sets
 /// these as process-wide environment variables and <see cref="ServerConfig"/> re-reads them
 /// live rather than snapshotting; see that collection's doc comment for why.
+///
+/// <see cref="AddonServerCollection"/> now also provides <see cref="SearchServerFactory"/> as a
+/// second <c>ICollectionFixture</c>. xUnit constructs every fixture registered on a collection
+/// before any test in that collection runs, so without the eager <see cref="CreateClient"/> call
+/// at the end of this constructor, whichever of the two factories is constructed SECOND would
+/// silently overwrite these env vars before THIS host's lazily-built <c>Program.cs</c> ever reads
+/// them — this factory's own host would then boot against the other one's config. Forcing the
+/// host to build here, immediately after these env vars are set and before the other fixture's
+/// constructor can run, makes each factory's config read atomic with its own env-var write.
 /// </summary>
 public sealed class PluginServerFactory : WebApplicationFactory<Program>
 {
@@ -41,6 +50,10 @@ public sealed class PluginServerFactory : WebApplicationFactory<Program>
         Environment.SetEnvironmentVariable("EBS_PLUGINS_DIR", PluginsDirectory);
         Environment.SetEnvironmentVariable("EBS_FILES_DIR", FilesDirectory);
         Environment.SetEnvironmentVariable("EBS_CONFIG", configPath);
+
+        // See the class doc comment: forces Program.cs to read these env vars NOW, before a
+        // sibling collection fixture's constructor can overwrite them.
+        CreateClient().Dispose();
     }
 
     private void StagePlugin(string fixtureName)

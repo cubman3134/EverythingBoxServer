@@ -29,25 +29,38 @@ public static class GrabberFactory
     /// debrid instance can be built once and shared across the plugin system and the
     /// grabber, ensuring there is exactly one instance for the process.
     /// </summary>
+    /// <param name="transport">
+    /// The message handler backing <paramref name="httpClient"/>'s actual network transport, so
+    /// <see cref="WrapWithRetry"/>'s <see cref="RetryHandler"/> chains onto the SAME transport the
+    /// caller's <see cref="HttpClient"/> uses instead of silently constructing an unrelated
+    /// <see cref="HttpClientHandler"/> of its own. Null (the default) preserves the original
+    /// behavior for callers that have no handler to hand over — <see cref="HttpClient"/> does not
+    /// expose its own handler, so there is no way to recover one from <paramref name="httpClient"/>
+    /// alone. Passing this is what makes it possible to intercept every indexer/debrid/download
+    /// call a test makes by swapping one handler, rather than the swap being silently discarded.
+    /// </param>
     public static IDebridService? BuildDebrid(
         ServerConfig config,
         HttpClient httpClient,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        HttpMessageHandler? transport = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(loggerFactory);
 
         var log = loggerFactory.CreateLogger("EverythingBox.Server.GrabberFactory");
-        var http = WrapWithRetry(httpClient);
+        var http = WrapWithRetry(httpClient, transport);
         return BuildDebrid(config.Debrid, http, log);
     }
 
+    /// <param name="transport">See the overload of <see cref="BuildDebrid(ServerConfig, HttpClient, ILoggerFactory, HttpMessageHandler?)"/>.</param>
     public static (TorrentGrabber Grabber, IDebridService? Debrid) Build(
         ServerConfig config,
         HttpClient httpClient,
         IEnumerable<ITorrentProvider> pluginIndexers,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        HttpMessageHandler? transport = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(httpClient);
@@ -59,7 +72,7 @@ public static class GrabberFactory
         // Every provider, the debrid service, and the download client share one HttpClient
         // wrapped in RetryHandler, so transient failures (429/502/503/504, network errors)
         // get exponential-backoff retries for free, without any of them opting in individually.
-        var http = WrapWithRetry(httpClient);
+        var http = WrapWithRetry(httpClient, transport);
 
         var configIndexers = config.Indexers
             .Select(entry => BuildIndexer(entry, http, log))
@@ -88,12 +101,14 @@ public static class GrabberFactory
     /// Build a grabber with a pre-built debrid service, ensuring the same instance
     /// is used everywhere it's needed.
     /// </summary>
+    /// <param name="transport">See the overload of <see cref="BuildDebrid(ServerConfig, HttpClient, ILoggerFactory, HttpMessageHandler?)"/>.</param>
     public static TorrentGrabber Build(
         ServerConfig config,
         HttpClient httpClient,
         IEnumerable<ITorrentProvider> pluginIndexers,
         ILoggerFactory loggerFactory,
-        IDebridService? debrid)
+        IDebridService? debrid,
+        HttpMessageHandler? transport = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(httpClient);
@@ -102,7 +117,7 @@ public static class GrabberFactory
 
         var log = loggerFactory.CreateLogger("EverythingBox.Server.GrabberFactory");
 
-        var http = WrapWithRetry(httpClient);
+        var http = WrapWithRetry(httpClient, transport);
 
         var configIndexers = config.Indexers
             .Select(entry => BuildIndexer(entry, http, log))
@@ -126,9 +141,19 @@ public static class GrabberFactory
         return builder.Build();
     }
 
-    private static HttpClient WrapWithRetry(HttpClient shared)
+    /// <summary>
+    /// Previously always constructed a brand-new <see cref="HttpClientHandler"/> here,
+    /// silently discarding whatever transport <paramref name="shared"/> was actually built on —
+    /// only its headers and timeout survived the wrap. That made the host's "one shared
+    /// HttpClient" claim in <c>Program.cs</c> false for every indexer/debrid/download-client call
+    /// (a proxy or custom handler configured on the shared client never reached them), and made
+    /// the whole pipeline impossible to intercept in a test without this parameter — exactly the
+    /// gap <c>SearchToStreamTests</c> exists to catch. <paramref name="transport"/>, when supplied,
+    /// becomes <see cref="RetryHandler"/>'s inner handler instead.
+    /// </summary>
+    private static HttpClient WrapWithRetry(HttpClient shared, HttpMessageHandler? transport = null)
     {
-        var wrapped = new HttpClient(new RetryHandler()) { Timeout = shared.Timeout };
+        var wrapped = new HttpClient(new RetryHandler(innerHandler: transport)) { Timeout = shared.Timeout };
         foreach (var header in shared.DefaultRequestHeaders)
             wrapped.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, header.Value);
         return wrapped;

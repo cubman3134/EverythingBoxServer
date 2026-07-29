@@ -14,9 +14,22 @@ builder.WebHost.UseUrls(config.Listen);
 builder.Services.AddSingleton(config);
 builder.Services.AddSingleton<ManifestBuilder>();
 
-builder.Services.AddSingleton(_ =>
+// Registered as its own singleton — separately from the HttpClient built on top of it below —
+// so GrabberFactory can wrap the SAME transport in RetryHandler for every indexer/debrid/
+// download-client call, rather than those calls silently going out over an unrelated
+// HttpClientHandler of GrabberFactory's own making. HttpClient does not expose whatever handler
+// it was built with, so this is the only way to actually share one transport with it; see
+// GrabberFactory.WrapWithRetry's doc comment for what broke before this existed (a test-installed
+// fake handler on the shared HttpClient below was silently never consulted for any pipeline
+// call — SearchToStreamTests is what caught it).
+builder.Services.AddSingleton<HttpMessageHandler>(_ => new HttpClientHandler());
+
+builder.Services.AddSingleton(sp =>
 {
-    var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+    var http = new HttpClient(sp.GetRequiredService<HttpMessageHandler>(), disposeHandler: false)
+    {
+        Timeout = TimeSpan.FromSeconds(60),
+    };
     http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("EverythingBoxServer", "1.0"));
     return http;
 });
@@ -30,6 +43,7 @@ builder.Services.AddSingleton(sp =>
     var host = sp.GetRequiredService<PluginHost>();
     var loggers = sp.GetRequiredService<ILoggerFactory>();
     var http = sp.GetRequiredService<HttpClient>();
+    var transport = sp.GetRequiredService<HttpMessageHandler>();
     var files = sp.GetRequiredService<FileCache>();
     var cacheRoot = Path.Combine(config.ResolvedFilesCacheDir, "plugins");
     var log = loggers.CreateLogger<SourceRouter>();
@@ -38,7 +52,7 @@ builder.Services.AddSingleton(sp =>
     // up front and handed to every plugin's IServerServices.Debrid as-is. Build it once here
     // and pass it to both the plugin system and the grabber below, ensuring there is exactly
     // one debrid instance for the entire process.
-    var debrid = GrabberFactory.BuildDebrid(config, http, loggers);
+    var debrid = GrabberFactory.BuildDebrid(config, http, loggers, transport);
 
     // Plugins register indexers during Configure, but Configure is also where a plugin
     // receives IServerServices — which holds the grabber built FROM those indexers. Handing
@@ -60,7 +74,7 @@ builder.Services.AddSingleton(sp =>
     // grabber (config indexers + plugin indexers, one merged provider list) and bind it.
     // Pass the pre-built debrid so it's the same instance everywhere.
     var pluginIndexers = plugins.SelectMany(p => p.Indexers).ToList();
-    var grabber = GrabberFactory.Build(config, http, pluginIndexers, loggers, debrid);
+    var grabber = GrabberFactory.Build(config, http, pluginIndexers, loggers, debrid, transport);
     deferredGrabber.SetGrabber(grabber);
 
     log.LogInformation(
