@@ -35,7 +35,8 @@ public sealed class AddonServerCollection :
     ICollectionFixture<PluginServerFactory>,
     ICollectionFixture<SearchServerFactory>,
     ICollectionFixture<BrowseServerFactory>,
-    ICollectionFixture<SearchOnlyServerFactory>
+    ICollectionFixture<SearchOnlyServerFactory>,
+    ICollectionFixture<FallbackServerFactory>
 {
     public const string Name = "addon-server";
 }

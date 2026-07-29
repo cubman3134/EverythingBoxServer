@@ -37,6 +37,14 @@ public interface IPluginRegistry
     /// locating stay decoupled — any metadata source works with any set of indexers.
     /// </summary>
     void AddMetadata(IMetadataSource metadata);
+
+    /// <summary>
+    /// Supply a tracker that learns which indexers actually pay off. The grabber orders
+    /// providers best-first before each search and reports back afterwards, so the
+    /// strongest are queried first and a quick grab can finish sooner. At most one
+    /// applies across the whole server.
+    /// </summary>
+    void AddProviderTracker(IProviderPerformanceTracker tracker);
 }
 
 public interface IPluginContext

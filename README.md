@@ -97,6 +97,11 @@ configured folder and serves the files it finds.
   ],
   "Debrid": null,                    // { "Provider": "torbox" | "realdebrid", "ApiKey": "..." }
   "DownloadClient": null,            // { "Kind": "qbittorrent" | "transmission", "BaseUrl": "...", "Username": "...", "Password": "...", "Category": "..." }
+  "Download": {                      // self-download fallback for an uncached release — OFF by default
+    "Enabled": false,                //   fetch it over BitTorrent from THIS host's own IP instead of waiting on debrid
+    "MaxSizeMB": 2048,               //   never self-download a release larger than this — or one of unknown size
+    "TimeoutSeconds": 600            //   give up on a stalled/seedless swarm instead of holding the request open
+  },
   "Ranking": { }                     // MinSeeders, MinSizeBytes, MaxSizeBytes, PreferredResolutions,
                                       // PreferredAudioFormats, PreferredLanguages, PreferredSubtitleLanguages,
                                       // BannedTerms, RequireRelevanceMatch — see RankingOptions for defaults
@@ -130,11 +135,38 @@ manifest declares none of these catalogs at all, rather than advertising six she
 that can never return anything.
 
 Add `Debrid` to make a search result playable: resolving a release asks the configured
-debrid service (TorBox or Real-Debrid today) for a direct link. **If the release isn't
+debrid service (TorBox or Real-Debrid today) for a direct link. If the release isn't
 already cached on the debrid service, the server returns a "still caching, try again
-shortly" notice — there is no fallback that downloads it for you.** Retrying the same
-search later, once the debrid service has finished caching it, is currently the only way
-to get a playable link for an uncached release.
+shortly" notice — unless the self-download fallback below is switched on.
+
+#### The self-download fallback (`Download`)
+
+When debrid reports a release as still caching, the server can fetch it itself instead of
+handing back the notice — `ReleaseStreamResolver` joins the swarm via
+`MonoTorrentDownloader` (an `ITorrentDownloader`), saves the file into `FilesCacheDir`, and
+serves it back as a hosted `files/...` URL the client plays directly.
+
+**This is off by default, and turning it on is a network-exposure decision, not a speed
+setting.** Every other path here talks only to services you configured (an indexer, a
+debrid provider). This one joins a BitTorrent swarm **from the host's own IP address** to
+download the release, which is a different thing to opt into. It exists for the case where
+waiting on debrid to cache a release isn't acceptable and fetching it yourself is.
+
+`Download` controls it:
+
+- **`Enabled`** — `false` by default. Nothing is ever self-downloaded until you set this
+  `true`.
+- **`MaxSizeMB`** — releases larger than this are never fetched (default `2048`), so a
+  fallback finishes while you're still interested. **A release whose size the indexer
+  didn't report is treated as over the cap and never fetched** — the point of the cap is to
+  refuse an unbounded download, and "we don't know how big it is" is exactly that.
+- **`TimeoutSeconds`** — a stalled or seedless swarm is given up on after this long
+  (default `600`) and the request falls back to the caching notice, rather than being held
+  open indefinitely.
+
+Concurrent viewers of the same still-caching release share one download rather than each
+starting their own; a timed-out or empty attempt is not memoized, so a later retry can
+still succeed.
 
 `DownloadClient` (qBittorrent or Transmission) feeds the same pipeline but is not
 exercised by anything the host calls today — no route hands a release to a download
@@ -275,6 +307,24 @@ metadata plugin" above). A plugin registering one does not need to also register
 indexer or a source; the host already has a pipeline to search once `Indexers`/`Debrid`
 are configured.
 
+### Registering a provider tracker from a plugin
+
+A fourth registration tunes the shared pipeline rather than adding to it:
+
+```csharp
+void AddProviderTracker(IProviderPerformanceTracker tracker);
+```
+
+An `IProviderPerformanceTracker` learns which indexers actually pay off. Before each
+search the grabber calls `Prioritize` to order providers best-first (so a "quick grab"
+score threshold can finish sooner), and after each search it calls `Record` with one
+`ProviderOutcome` per provider (result count, whether it errored, how long it took,
+whether it produced the winning release) — an implementation persists those stats so the
+ordering improves across runs. **At most one applies across the whole server**: a single
+plugin's registry rejects a second registration, and if two different plugins each
+register one, the first in load order wins and the rest are logged and dropped
+(`Program.cs`).
+
 ## Building
 
 ```bash
@@ -301,12 +351,10 @@ MIT licensed. See [LICENSE](LICENSE).
 The pieces below don't exist yet. They're the direction, not the current state — nothing
 in this section is installed, callable, or configurable today.
 
-- A MonoTorrent-backed self-download fallback for an uncached debrid release, so a
-  release that isn't already cached can be fetched on the host's own hardware instead of
-  only returning the "still caching" notice described above.
 - A SharpCompress-backed archive reader and `ArchiveNormalizer`, so an archive-packaged
   release (`.zip`/`.rar`/`.7z`) can be browsed and streamed member-by-member the way a
   single video/audio/document file already can.
 
-Both are host-side (`EverythingBox.Server`), not `EverythingBox.Server.Core`, because
-each needs a package Core is not allowed to take.
+This is host-side (`EverythingBox.Server`), not `EverythingBox.Server.Core`, because it
+needs a package Core is not allowed to take — the same reason the now-shipped
+MonoTorrent-backed self-download fallback (see `Download` above) lives there.

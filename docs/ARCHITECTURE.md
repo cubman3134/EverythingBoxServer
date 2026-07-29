@@ -88,6 +88,11 @@ public interface IPluginRegistry
     // pairs it with the same shared pipeline via the built-in MetadataBackedVideoSource
     // ("meta:" catalogs) — see "Browse: the meta: catalogs" below.
     void AddMetadata(IMetadataSource metadata);
+
+    // Supply a tracker that orders the shared pipeline's providers best-first and learns
+    // from each search's outcome. At most one applies across the whole server — see
+    // "The provider tracker tier" below.
+    void AddProviderTracker(IProviderPerformanceTracker tracker);
 }
 
 public interface IPluginContext
@@ -100,7 +105,7 @@ public interface IPluginContext
 }
 ```
 
-There are three registration tiers today. `IMediaSource` (`AddSource`) owns its own
+There are four registration tiers today. `IMediaSource` (`AddSource`) owns its own
 catalogs, its own search, and its own stream resolution end to end — the tier every
 shipped plugin (`EverythingBox.Server.SampleSource`) uses. `ITorrentProvider`
 (`AddIndexer`) is smaller: it plugs into the shared `EverythingBox.Server.Core` pipeline
@@ -109,6 +114,23 @@ entry feeds — see "The torrent pipeline" below. `IMetadataSource` (`AddMetadat
 smaller still: it supplies only what to browse (titles, and episodes for a series);
 the host's built-in `MetadataBackedVideoSource` pairs it with that same shared
 pipeline for locating and resolving a release — see "Browse: the meta: catalogs" below.
+`IProviderPerformanceTracker` (`AddProviderTracker`) doesn't add a source at all: it
+tunes how the shared pipeline orders the providers it already has — see "The provider
+tracker tier" below.
+
+### The provider tracker tier
+
+`AddProviderTracker(IProviderPerformanceTracker)`
+(`Abstractions/Pipeline/IProviderPerformanceTracker.cs`) hands the grabber a tracker that
+orders indexers best-first. Before each search the grabber calls `Prioritize` to reorder
+the provider list (so a quick-grab score threshold can stop sooner against the strongest
+indexers), and after each search it calls `Record` with one `ProviderOutcome` per provider
+— `ResultCount`, `Errored`, `Elapsed`, and `ProducedBest` — which an implementation is
+expected to persist so the ordering improves across runs. **At most one tracker applies to
+the whole server**, because it orders one shared provider list: a single plugin's
+`PluginRegistry` refuses a second `AddProviderTracker` call, and the conflict a single
+registry can't see — two different plugins each registering their own — is resolved in
+`Program.cs`, where the first in load order wins and every later one is logged and dropped.
 
 ### `IServerServices`
 
@@ -206,8 +228,29 @@ round-trips through the client without any server-side state.
 `{ url, mime }`, `Pending` becomes a notice-only stream (`{ streams: [], notice }`,
 "still caching" or similar), `Failed` or no configured debrid becomes an empty streams
 response, the same shape `SourceStream` and the stream route already use for every other
-source. **There is deliberately no self-download fallback** — an uncached release comes
-back as a notice, not a download queued on the host's own hardware; see "Planned" below.
+source. On a `Pending` result it can also self-download the release rather than returning
+the notice — see "The self-download fallback" below.
+
+### The self-download fallback
+
+When debrid answers `Pending` (still caching) and the `Download` config is switched on,
+`ReleaseStreamResolver.TryFallbackDownloadAsync` fetches the release itself instead of
+returning the notice: it hands the release to an `ITorrentDownloader`
+(`Abstractions/Pipeline/ITorrentDownloader.cs`), whose only implementation is
+`MonoTorrentDownloader` (`Download/MonoTorrentDownloader.cs`, MonoTorrent-backed and
+therefore host-side — `EverythingBox.Server.Core` takes no `PackageReference`), saves the
+file(s) under `FilesCacheDir` via `FileCache`, and serves each back as a hosted
+`files/{name}` URL. `Program.cs` registers the downloader in DI only when
+`Download.Enabled`, and the resolver applies four gates before a byte moves —
+`Download.Enabled` is true, a downloader and file cache were supplied, the release's size
+is known **and** at most `Download.MaxSizeMB` (an unknown size never passes), and the
+request isn't already cancelled — after which the swarm join is bounded by
+`Download.TimeoutSeconds`. Concurrent callers for the same release share one download
+(memoized per release+request); a timed-out or empty attempt is evicted rather than
+memoized, so a later retry can still succeed. **It is off by default and, unlike every
+other path here, joins a BitTorrent swarm from the host's own IP** — see the `Download`
+config section in `README.md`. `ServerConfig.Download` (`DownloadConfig` in
+`ServerConfig.cs`) carries `Enabled`, `MaxSizeMB`, and `TimeoutSeconds`.
 
 `GrabberFactory.cs` is what builds the `ITorrentGrabber` and `IDebridService` these two
 sources use, from `ServerConfig`'s `Indexers`/`Debrid`/`DownloadClient`/`Ranking` keys —
@@ -450,8 +493,7 @@ Reachable through the addon protocol above via the `idx:` search catalogs (see "
 out of the box") and the `meta:` browse catalogs (see "Browse: the `meta:` catalogs"),
 and directly by a plugin author who wants more than that — see
 `EverythingBox.Server.Core.Tests/` for the library's own test coverage. What is NOT yet
-reachable: a self-download fallback for an uncached release, and archive-packaged
-releases — see Planned below.
+reachable: archive-packaged releases — see Planned below.
 
 ## The cleanliness gate
 
@@ -474,10 +516,6 @@ explicitly noted. The indexer tier, the metadata tier, `IServerServices`, and th
 `idx:`/`meta:` catalogs described above are no longer planned — they exist; what
 remains is genuinely absent.
 
-- **A MonoTorrent-backed self-download fallback** for an uncached debrid release.
-  `Sources/ReleaseStreamResolver.cs` deliberately has none today: an uncached release
-  returns a "still caching" notice, and retrying the same search later — once the debrid
-  service finishes caching it on its own — is currently the only way to get a link.
 - **A SharpCompress-backed archive reader and `ArchiveNormalizer`**, so an
   archive-packaged release (`.zip`/`.rar`/`.7z`) can be browsed and streamed
   member-by-member the way a single video/audio/document file already can.
@@ -486,5 +524,7 @@ remains is genuinely absent.
   (see the failure-containment table above) and a throwing `SearchAsync`/`ResolveAsync`/etc.
   simply degrades that one request to its route's empty shape — there is no retry.
 
-The first two are host-side (`EverythingBox.Server`), not `EverythingBox.Server.Core`,
-because each needs a package Core is not allowed to take.
+The archive reader is host-side (`EverythingBox.Server`), not `EverythingBox.Server.Core`,
+because it needs a package Core is not allowed to take — the same reason the now-shipped
+MonoTorrent-backed self-download fallback (see "The self-download fallback" above) lives
+there.

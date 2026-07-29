@@ -230,4 +230,36 @@ public class GrabberFactoryTests
         Assert.NotNull(result.Debrid);
         Assert.Equal(marker, result.Debrid!.ServiceName);
     }
+
+    [Fact]
+    public async Task A_provider_tracker_passed_to_GrabberFactory_actually_reaches_the_grabber()
+    {
+        // A registry that merely HOLDS a tracker nobody passes on would satisfy every
+        // other test in this file while changing nothing at runtime. Prove the tracker
+        // handed to GrabberFactory.Build is the one TorrentGrabber actually consults
+        // during a real search — not just that Build() accepted the parameter.
+        var tracker = new RecordingTracker();
+        var provider = new FakeIndexer("from-plugin", FindableRelease());
+
+        var grabber = GrabberFactory.Build(
+            new ServerConfig(), new HttpClient(), [provider], NullLoggerFactory.Instance,
+            debrid: null, transport: null, providerTracker: tracker);
+
+        await grabber.GrabAsync(new MovieRequest { Title = "Test Movie" });
+
+        Assert.True(tracker.PrioritizeCalled);
+    }
+
+    private sealed class RecordingTracker : IProviderPerformanceTracker
+    {
+        public bool PrioritizeCalled { get; private set; }
+
+        public IReadOnlyList<ITorrentProvider> Prioritize(IReadOnlyList<ITorrentProvider> providers)
+        {
+            PrioritizeCalled = true;
+            return providers;
+        }
+
+        public void Record(IReadOnlyList<ProviderOutcome> outcomes) { }
+    }
 }

@@ -9,8 +9,13 @@ public sealed class PluginRegistry : IPluginRegistry
     private readonly Dictionary<string, IMediaSource> _sources = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ITorrentProvider> _indexers = [];
     private readonly List<IMetadataSource> _metadata = [];
+    private IProviderPerformanceTracker? _providerTracker;
 
     public IReadOnlyCollection<IMediaSource> Sources => _sources.Values;
+
+    /// <summary>The tracker this plugin registered, or null if none. Consumed by the
+    /// host to feed GrabberBuilder.UseProviderTracker.</summary>
+    public IProviderPerformanceTracker? ProviderTracker => _providerTracker;
 
     /// <summary>Indexers registered so far. Consumed by the host to feed the pipeline
     /// that backs <see cref="IServerServices.Grabber"/>.</summary>
@@ -48,6 +53,28 @@ public sealed class PluginRegistry : IPluginRegistry
     {
         ArgumentNullException.ThrowIfNull(metadata);
         _metadata.Add(metadata);
+    }
+
+    // Deliberately does NOT invoke Prioritize/Record on the tracker. Those are
+    // plugin-authored code and can throw (the host learned this the hard way in
+    // milestone 1, where reading a plugin property outside a try/catch let one bad
+    // plugin 500 the manifest for everyone). Do not "helpfully" probe the tracker here
+    // — it reintroduces that hazard.
+    //
+    // At most one tracker applies across the whole server (it orders ONE provider
+    // list), so a second registration is a real configuration mistake, not something
+    // to silently paper over. It throws — same as AddSource's duplicate-key check —
+    // rather than silently replacing the first tracker, which would leave whoever
+    // wrote the first registration wondering why it's never consulted.
+    public void AddProviderTracker(IProviderPerformanceTracker tracker)
+    {
+        ArgumentNullException.ThrowIfNull(tracker);
+
+        if (_providerTracker is not null)
+            throw new InvalidOperationException(
+                "A provider tracker is already registered — at most one applies across the whole server.");
+
+        _providerTracker = tracker;
     }
 
     internal static void ValidateKey(string key, string paramName)

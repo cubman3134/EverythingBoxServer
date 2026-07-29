@@ -31,6 +31,13 @@ public sealed class ServerConfig
 
     public RankingOptions Ranking { get; set; } = new();
 
+    /// <summary>
+    /// Fetching an uncached release ourselves rather than waiting on debrid. OFF by
+    /// default: unlike every other path here, this joins a BitTorrent swarm from your
+    /// own IP address, so it is something you switch on deliberately.
+    /// </summary>
+    public DownloadConfig Download { get; set; } = new();
+
     public string ResolvedPluginsDirectory =>
         Environment.GetEnvironmentVariable("EBS_PLUGINS_DIR") is { Length: > 0 } fromEnv ? fromEnv
         : !string.IsNullOrWhiteSpace(PluginsDirectory) ? PluginsDirectory!
@@ -68,6 +75,12 @@ public sealed class ServerConfig
         {
             throw new InvalidOperationException($"{path} is not valid JSON: {ex.Message}", ex);
         }
+    }
+
+    /// <summary>Deserializes a ServerConfig from a JSON string, using the same options as Load.</summary>
+    public static ServerConfig FromJson(string json)
+    {
+        return JsonSerializer.Deserialize<ServerConfig>(json, Json) ?? new ServerConfig();
     }
 
     /// <summary>Binds this plugin's opaque section to its own type.</summary>
@@ -114,4 +127,17 @@ public sealed class DownloadClientConfig
     public string Username { get; set; } = "";
     public string Password { get; set; } = "";
     public string Category { get; set; } = "";
+}
+
+public sealed class DownloadConfig
+{
+    /// <summary>Off by default. See the note on <see cref="ServerConfig.Download"/>.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>Releases larger than this are never self-downloaded — a fallback should
+    /// finish while the user is still interested.</summary>
+    public int MaxSizeMB { get; set; } = 2048;
+
+    /// <summary>Gives up on a stalled or seedless swarm instead of holding the request open.</summary>
+    public int TimeoutSeconds { get; set; } = 600;
 }

@@ -24,5 +24,11 @@
   // Optional. Kind is "qbittorrent" or "transmission".
   "DownloadClient": { "Kind": "", "BaseUrl": "", "Username": "", "Password": "", "Category": "" },
 
+  // Optional. Fetch an uncached release yourself instead of waiting on debrid.
+  // OFF by default: this joins a BitTorrent swarm from YOUR IP address, which is a
+  // different thing from asking a service you pay for to fetch something. Turn it on
+  // only if that is what you want.
+  "Download": { "Enabled": false, "MaxSizeMB": 2048, "TimeoutSeconds": 600 },
+
   "Ranking": { "MinSeeders": 1, "BannedTerms": [] }
 }

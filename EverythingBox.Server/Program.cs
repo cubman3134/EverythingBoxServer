@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using EverythingBox.Server;
 using EverythingBox.Server.Abstractions;
 using EverythingBox.Server.Core;
+using EverythingBox.Server.Download;
 using EverythingBox.Server.Plugins;
 using EverythingBox.Server.Routing;
 using EverythingBox.Server.Sources;
@@ -37,6 +38,21 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<PluginHost>();
 
 builder.Services.AddSingleton(_ => new FileCache(config.ResolvedFilesCacheDir));
+
+// The self-download fallback is opt-in and OFF by default (see ServerConfig.Download).
+// Register the downloader in DI — rather than newing it inline inside the SourceRouter
+// factory below — only when it will actually be used, so a disabled config stays exactly as
+// inert as before (nothing constructed, GetService returns null). Resolving it from DI is
+// also what lets a test host swap in a fake via ConfigureTestServices, the same seam the
+// shared HttpMessageHandler above is replaced through. MonoTorrentDownloader allocates
+// nothing at construction; the guard is about intent, not cost. Built over the SAME shared
+// HttpClient as every other outbound call, so a .torrent-to-magnet fetch inherits its retry.
+if (config.Download.Enabled)
+{
+    builder.Services.AddSingleton<ITorrentDownloader>(sp => new MonoTorrentDownloader(
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger<MonoTorrentDownloader>(),
+        sp.GetRequiredService<HttpClient>()));
+}
 
 builder.Services.AddSingleton(sp =>
 {
@@ -74,7 +90,23 @@ builder.Services.AddSingleton(sp =>
     // grabber (config indexers + plugin indexers, one merged provider list) and bind it.
     // Pass the pre-built debrid so it's the same instance everywhere.
     var pluginIndexers = plugins.SelectMany(p => p.Indexers).ToList();
-    var grabber = GrabberFactory.Build(config, http, pluginIndexers, loggers, debrid, transport);
+
+    // At most one provider tracker applies across the whole server (it orders ONE provider
+    // list) — PluginRegistry.AddProviderTracker already refuses a SECOND registration
+    // within one plugin's own Configure. Two DIFFERENT plugins each successfully
+    // registering their own tracker is a conflict PluginRegistry cannot see (each plugin
+    // gets a fresh registry), so it's resolved here: the first plugin in load order wins,
+    // and every later one is logged and dropped rather than silently overriding it.
+    var providerTrackers = plugins.Where(p => p.ProviderTracker is not null).ToList();
+    if (providerTrackers.Count > 1)
+    {
+        log.LogWarning(
+            "{Count} plugins each registered a provider tracker ({Keys}); only '{Winner}' (first in load order) is used.",
+            providerTrackers.Count, string.Join(", ", providerTrackers.Select(p => p.Key)), providerTrackers[0].Key);
+    }
+    var providerTracker = providerTrackers.Count > 0 ? providerTrackers[0].ProviderTracker : null;
+
+    var grabber = GrabberFactory.Build(config, http, pluginIndexers, loggers, debrid, transport, providerTracker);
     deferredGrabber.SetGrabber(grabber);
 
     log.LogInformation(
@@ -88,6 +120,13 @@ builder.Services.AddSingleton(sp =>
     // request — by then SetGrabber above has bound the real grabber; calling through the
     // deferred wrapper during THIS factory would throw by design.
     //
+    // Resolved from DI, not newed here: the singleton above is registered only when
+    // config.Download.Enabled, so a disabled config yields null and the fallback stays off,
+    // exactly as before — and a test host can replace the registration via
+    // ConfigureTestServices. See the registration comment above for why the opt-in gate lives
+    // there rather than in an inline `? : null` here.
+    var downloader = sp.GetService<ITorrentDownloader>();
+
     // ReleaseStreamResolver is constructed exactly once, right here, because this whole
     // factory lambda is itself only ever invoked once (AddSingleton below caches the
     // result) — so its constructor's "no debrid configured" log line fires exactly once,
@@ -96,7 +135,8 @@ builder.Services.AddSingleton(sp =>
     // Appended AFTER every plugin source so a plugin can never be shadowed by it: if a
     // plugin also declares key "idx", SourceRouter's duplicate-key handling keeps the
     // first registration (the plugin's) and logs+drops this one instead.
-    var resolver = new ReleaseStreamResolver(debrid, loggers.CreateLogger<ReleaseStreamResolver>());
+    var resolver = new ReleaseStreamResolver(
+        debrid, loggers.CreateLogger<ReleaseStreamResolver>(), downloader, files, config.Download);
     var indexerSource = new IndexerSearchSource(deferredGrabber, resolver, grabber.Providers.Count, loggers.CreateLogger<IndexerSearchSource>());
 
     // MetadataBackedVideoSource turns every metadata source collected across all loaded

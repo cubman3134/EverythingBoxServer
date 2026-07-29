@@ -2,16 +2,23 @@
 
 A complete, working `IMediaSource` — the shortest path to understanding the contract.
 
-This is the heaviest of three registration tiers `IPluginRegistry` offers — `AddSource`
+This is the heaviest of four registration tiers `IPluginRegistry` offers — `AddSource`
 owns its own catalogs, search, and stream resolution end to end, which is why this
-sample exists to show it. The other two are lighter and don't need a worked example of
-their own: `AddIndexer(ITorrentProvider)` plugs a single indexer into the host's shared
-search/rank/resolve pipeline instead of implementing search yourself, and
-`AddMetadata(IMetadataSource)` supplies only what to browse (titles, and episodes for a
-series) — the host's built-in `MetadataBackedVideoSource` pairs it with that same shared
-pipeline to locate and resolve a release. See the root `README.md`
-("Registering an indexer from a plugin" / "Registering a metadata source from a
-plugin") and `docs/ARCHITECTURE.md` for both.
+sample exists to show it. The other three are lighter and don't need a worked example of
+their own:
+
+- `AddIndexer(ITorrentProvider)` plugs a single indexer into the host's shared
+  search/rank/resolve pipeline instead of implementing search yourself.
+- `AddMetadata(IMetadataSource)` supplies only what to browse (titles, and episodes for a
+  series) — the host's built-in `MetadataBackedVideoSource` pairs it with that same shared
+  pipeline to locate and resolve a release.
+- `AddProviderTracker(IProviderPerformanceTracker)` doesn't add a source at all: it orders
+  the pipeline's indexers best-first and learns from each search's outcome. At most one
+  applies across the whole server.
+
+See the root `README.md` ("Registering an indexer from a plugin" / "Registering a metadata
+source from a plugin" / "Registering a provider tracker from a plugin") and
+`docs/ARCHITECTURE.md` for all three.
 
 ## Build and install
 
