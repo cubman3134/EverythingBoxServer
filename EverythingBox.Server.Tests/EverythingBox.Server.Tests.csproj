@@ -51,6 +51,20 @@
       <ThrowingPluginOut Include="..\tests\TestPlugin.Throwing\bin\$(Configuration)\net9.0\**\*.*" />
       <MetadataPluginOut Include="..\tests\TestPlugin.Metadata\bin\$(Configuration)\net9.0\**\*.*" />
     </ItemGroup>
+    <!-- Fail the BUILD, loudly and by name, if a fixture produced nothing to stage.
+         A ProjectReference alone is not enough: a plugin project missing from the
+         .sln is not built by a solution-level `dotnet build`, so its bin/ is empty
+         on a clean checkout. That shipped once — the wildcards matched nothing, the
+         Copy silently did nothing, and the first sign was a DirectoryNotFoundException
+         from a dozen unrelated tests in CI while every local run was green (a stale
+         bin/Debug from an earlier ad-hoc build was covering it). Add a new fixture to
+         the .sln as well as to the ProjectReference list above. -->
+    <Error Condition="'@(GoodPluginOut)' == ''" Text="TestPlugin.Good produced no output to stage. Is it in EverythingBoxServer.sln?" />
+    <Error Condition="'@(BadPluginOut)' == ''" Text="TestPlugin.Bad produced no output to stage. Is it in EverythingBoxServer.sln?" />
+    <Error Condition="'@(DupPluginOut)' == ''" Text="TestPlugin.Dup produced no output to stage. Is it in EverythingBoxServer.sln?" />
+    <Error Condition="'@(ThrowingPluginOut)' == ''" Text="TestPlugin.Throwing produced no output to stage. Is it in EverythingBoxServer.sln?" />
+    <Error Condition="'@(MetadataPluginOut)' == ''" Text="TestPlugin.Metadata produced no output to stage. Is it in EverythingBoxServer.sln?" />
+
     <Copy SourceFiles="@(GoodPluginOut)" DestinationFolder="$(OutDir)testplugins\good\%(RecursiveDir)" />
     <Copy SourceFiles="@(BadPluginOut)" DestinationFolder="$(OutDir)testplugins\bad\%(RecursiveDir)" />
     <Copy SourceFiles="@(DupPluginOut)" DestinationFolder="$(OutDir)testplugins\dup\%(RecursiveDir)" />
