@@ -24,6 +24,25 @@ namespace EverythingBox.Server;
 /// </summary>
 public static class GrabberFactory
 {
+    /// <summary>
+    /// Build a debrid service from config. This method is exposed separately so the
+    /// debrid instance can be built once and shared across the plugin system and the
+    /// grabber, ensuring there is exactly one instance for the process.
+    /// </summary>
+    public static IDebridService? BuildDebrid(
+        ServerConfig config,
+        HttpClient httpClient,
+        ILoggerFactory loggerFactory)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(httpClient);
+        ArgumentNullException.ThrowIfNull(loggerFactory);
+
+        var log = loggerFactory.CreateLogger("EverythingBox.Server.GrabberFactory");
+        var http = WrapWithRetry(httpClient);
+        return BuildDebrid(config.Debrid, http, log);
+    }
+
     public static (TorrentGrabber Grabber, IDebridService? Debrid) Build(
         ServerConfig config,
         HttpClient httpClient,
@@ -63,6 +82,48 @@ public static class GrabberFactory
             builder.UseDownloadClient(downloadClient);
 
         return (builder.Build(), debrid);
+    }
+
+    /// <summary>
+    /// Build a grabber with a pre-built debrid service, ensuring the same instance
+    /// is used everywhere it's needed.
+    /// </summary>
+    public static TorrentGrabber Build(
+        ServerConfig config,
+        HttpClient httpClient,
+        IEnumerable<ITorrentProvider> pluginIndexers,
+        ILoggerFactory loggerFactory,
+        IDebridService? debrid)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(httpClient);
+        ArgumentNullException.ThrowIfNull(pluginIndexers);
+        ArgumentNullException.ThrowIfNull(loggerFactory);
+
+        var log = loggerFactory.CreateLogger("EverythingBox.Server.GrabberFactory");
+
+        var http = WrapWithRetry(httpClient);
+
+        var configIndexers = config.Indexers
+            .Select(entry => BuildIndexer(entry, http, log))
+            .Where(provider => provider is not null)
+            .Select(provider => provider!);
+
+        var providers = configIndexers.Concat(pluginIndexers).ToList();
+
+        var downloadClient = BuildDownloadClient(config.DownloadClient, http, log);
+
+        var options = new GrabberOptions { Ranking = config.Ranking };
+
+        var builder = new GrabberBuilder().Configure(options);
+        foreach (var provider in providers)
+            builder.AddProvider(provider);
+        if (debrid is not null)
+            builder.UseDebridService(debrid);
+        if (downloadClient is not null)
+            builder.UseDownloadClient(downloadClient);
+
+        return builder.Build();
     }
 
     private static HttpClient WrapWithRetry(HttpClient shared)

@@ -34,11 +34,10 @@ builder.Services.AddSingleton(sp =>
     var log = loggers.CreateLogger<SourceRouter>();
 
     // Debrid depends only on config (never on what a plugin registers), so it can be built
-    // up front and handed to every plugin's IServerServices.Debrid as-is — unlike the
-    // grabber below, there is no ordering problem to solve for it. The grabber returned by
-    // this first call is a throwaway: it only knows about config-configured indexers, since
-    // no plugin has loaded yet.
-    var (_, debrid) = GrabberFactory.Build(config, http, [], loggers);
+    // up front and handed to every plugin's IServerServices.Debrid as-is. Build it once here
+    // and pass it to both the plugin system and the grabber below, ensuring there is exactly
+    // one debrid instance for the entire process.
+    var debrid = GrabberFactory.BuildDebrid(config, http, loggers);
 
     // Plugins register indexers during Configure, but Configure is also where a plugin
     // receives IServerServices — which holds the grabber built FROM those indexers. Handing
@@ -58,8 +57,9 @@ builder.Services.AddSingleton(sp =>
 
     // Now that every plugin's Configure has run, every indexer is known — build the real
     // grabber (config indexers + plugin indexers, one merged provider list) and bind it.
+    // Pass the pre-built debrid so it's the same instance everywhere.
     var pluginIndexers = plugins.SelectMany(p => p.Indexers).ToList();
-    var (grabber, _) = GrabberFactory.Build(config, http, pluginIndexers, loggers);
+    var grabber = GrabberFactory.Build(config, http, pluginIndexers, loggers, debrid);
     deferredGrabber.SetGrabber(grabber);
 
     log.LogInformation(

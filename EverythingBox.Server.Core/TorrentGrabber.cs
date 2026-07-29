@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using EverythingBox.Server.Abstractions;
@@ -18,7 +19,8 @@ namespace EverythingBox.Server.Core;
 /// </summary>
 public sealed class TorrentGrabber : ITorrentGrabber
 {
-    private readonly IReadOnlyList<ITorrentProvider> _providers;
+    private readonly List<ITorrentProvider> _providers;
+    private readonly ReadOnlyCollection<ITorrentProvider> _providersReadOnly;
     private readonly ITorrentRanker _ranker;
     private readonly IReleaseParser _parser;
     private readonly GrabberOptions _options;
@@ -36,6 +38,7 @@ public sealed class TorrentGrabber : ITorrentGrabber
         IProviderPerformanceTracker? providerTracker = null)
     {
         _providers = providers.ToList();
+        _providersReadOnly = _providers.AsReadOnly();
         _ranker = ranker ?? new DefaultTorrentRanker();
         _parser = parser ?? new DefaultReleaseParser();
         _options = options ?? new GrabberOptions();
@@ -45,7 +48,7 @@ public sealed class TorrentGrabber : ITorrentGrabber
     }
 
     /// <summary>The providers this grabber was constructed with.</summary>
-    public IReadOnlyList<ITorrentProvider> Providers => _providers;
+    public IReadOnlyList<ITorrentProvider> Providers => _providersReadOnly;
 
     /// <summary>The options this grabber was constructed with.</summary>
     public GrabberOptions Options => _options;
