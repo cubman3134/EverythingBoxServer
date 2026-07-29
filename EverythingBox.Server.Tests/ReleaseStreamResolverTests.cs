@@ -91,6 +91,34 @@ public class ReleaseStreamResolverTests
         Assert.Null(await resolver.ResolveAsync(Release(), new MovieRequest { Title = "x" }, 0, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task A_timeout_from_debrid_internal_is_contained_when_caller_did_not_cancel()
+    {
+        // HttpClient throws TaskCanceledException (which derives from OperationCanceledException) on its own internal
+        // timeout. If the caller's token is NOT cancelled, this must be contained as "nothing playable", not escape as
+        // an unhandled exception and 500 the request.
+        var resolver = new ReleaseStreamResolver(new DebridThrowingTaskCanceled(), NullLogger<ReleaseStreamResolver>.Instance);
+        var stream = await resolver.ResolveAsync(Release(), new MovieRequest { Title = "x" }, 0, CancellationToken.None);
+        Assert.Null(stream);
+    }
+
+    [Fact]
+    public async Task A_genuine_caller_cancellation_propagates()
+    {
+        // A genuine caller cancellation (the token was actually cancelled by the caller) must still propagate,
+        // not be swallowed into a null that hides a real client disconnect.
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var resolver = new ReleaseStreamResolver(
+            new DebridRespectsToken(), NullLogger<ReleaseStreamResolver>.Instance);
+
+        // When the token is already cancelled, ResolveAsync should throw OperationCanceledException,
+        // not return null.
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => resolver.ResolveAsync(Release(), new MovieRequest { Title = "x" }, 0, cts.Token));
+    }
+
     [Theory]
     [InlineData("a.mkv", "video/x-matroska")]
     [InlineData("a.mp4", "video/mp4")]
@@ -110,4 +138,21 @@ file sealed class ThrowingDebrid : IDebridService
     public string Name => "throwing";
     public Task<DebridResult> ResolveAsync(TorrentResult torrent, MediaRequest? request = null, CancellationToken cancellationToken = default)
         => throw new HttpRequestException("upstream is down");
+}
+
+file sealed class DebridThrowingTaskCanceled : IDebridService
+{
+    public string Name => "throwing-timeout";
+    public Task<DebridResult> ResolveAsync(TorrentResult torrent, MediaRequest? request = null, CancellationToken cancellationToken = default)
+        => throw new TaskCanceledException("internal timeout from HttpClient");
+}
+
+file sealed class DebridRespectsToken : IDebridService
+{
+    public string Name => "respects-token";
+    public Task<DebridResult> ResolveAsync(TorrentResult torrent, MediaRequest? request = null, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(DebridResult.Resolved(Name, "id", cached: true, []));
+    }
 }

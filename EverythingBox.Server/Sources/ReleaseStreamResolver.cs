@@ -68,10 +68,12 @@ public sealed class ReleaseStreamResolver
         {
             result = await _debrid.ResolveAsync(release, request, cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // Debrid is a network call to someone else's paid service. It being down,
             // slow, or returning garbage must degrade to "nothing playable", never a 500.
+            // A genuine caller cancellation (cancellationToken.IsCancellationRequested is true)
+            // must still propagate, not be swallowed into a false-looking success.
             _logger.LogWarning(ex, "Debrid resolution threw for '{Title}'; treating as unplayable.", release.Title);
             return null;
         }
@@ -93,7 +95,7 @@ public sealed class ReleaseStreamResolver
                 return new SourceStream(link.Url.ToString(), MimeFor(link.FileName));
 
             default:
-                return null;
+                throw new InvalidOperationException($"Unhandled DebridStatus: {result.Status}");
         }
     }
 
