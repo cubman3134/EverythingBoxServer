@@ -70,17 +70,28 @@ public sealed class ReleaseStreamResolver
 
     private const string DefaultMime = "application/octet-stream";
 
+    /// <summary>The shape a debrid round trip settles into, before either public method
+    /// turns it into its own return shape. <see cref="Outcome"/> is deliberately its own
+    /// enum rather than reusing <see cref="DebridStatus"/> plus a "no debrid"/"threw"
+    /// pair of booleans — collapsing "no debrid configured" and "the call threw" into
+    /// one <see cref="ResolutionOutcome.Failed"/> case is exactly what both public
+    /// methods already treated identically (null / empty list, no notice).</summary>
+    private enum ResolutionOutcome { Failed, Pending, Resolved }
+
+    private readonly record struct DebridOutcome(ResolutionOutcome Outcome, string? Notice, IReadOnlyList<DebridLink> Narrowed);
+
     /// <summary>
-    /// Resolve <paramref name="release"/> to a playable stream. Returns null when there is
-    /// no debrid configured, resolution failed, or <paramref name="index"/> is past the end
-    /// of the links debrid returned; returns a notice-only stream when the release is still
-    /// caching; otherwise returns a stream with a URL and mime for the link at
-    /// <paramref name="index"/>.
+    /// The one path through the debrid call and status handling that both
+    /// <see cref="ResolveAsync"/> and <see cref="ResolveAllAsync"/> build their return
+    /// shape from — the null-debrid guard, the try/catch around the debrid call, and the
+    /// <see cref="DebridStatus"/> switch (including the throw on an unhandled member) all
+    /// live here exactly once, so a new <see cref="DebridStatus"/> member only needs
+    /// handling in this one switch, not in two near-identical copies of it.
     /// </summary>
-    public async Task<SourceStream?> ResolveAsync(TorrentResult release, MediaRequest request, int index, CancellationToken cancellationToken)
+    private async Task<DebridOutcome> ResolveOutcomeAsync(TorrentResult release, MediaRequest request, CancellationToken cancellationToken)
     {
         if (_debrid is null)
-            return null;
+            return new DebridOutcome(ResolutionOutcome.Failed, null, []);
 
         DebridResult result;
         try
@@ -94,29 +105,84 @@ public sealed class ReleaseStreamResolver
             // A genuine caller cancellation (cancellationToken.IsCancellationRequested is true)
             // must still propagate, not be swallowed into a false-looking success.
             _logger.LogWarning(ex, "Debrid resolution threw for '{Title}'; treating as unplayable.", release.Title);
-            return null;
+            return new DebridOutcome(ResolutionOutcome.Failed, null, []);
         }
 
         switch (result.Status)
         {
             case DebridStatus.Pending:
-                return SourceStream.FromNotice(result.Message ?? "Still caching; try again shortly.");
+                return new DebridOutcome(ResolutionOutcome.Pending, result.Message ?? "Still caching; try again shortly.", []);
 
             case DebridStatus.Failed:
                 _logger.LogInformation("Debrid resolution failed for '{Title}': {Message}", release.Title, result.Message);
-                return null;
+                return new DebridOutcome(ResolutionOutcome.Failed, null, []);
 
             case DebridStatus.Resolved:
-                var narrowed = Narrow(request, result.Links);
-                if (index < 0 || index >= narrowed.Count)
-                    return null;
-
-                var link = narrowed[index];
-                return new SourceStream(link.Url.ToString(), MimeFor(link.FileName));
+                return new DebridOutcome(ResolutionOutcome.Resolved, null, Narrow(request, result.Links));
 
             default:
                 throw new InvalidOperationException($"Unhandled DebridStatus: {result.Status}");
         }
+    }
+
+    /// <summary>
+    /// Resolve <paramref name="release"/> to a playable stream. Returns null when there is
+    /// no debrid configured, resolution failed, or <paramref name="index"/> is past the end
+    /// of the links debrid returned; returns a notice-only stream when the release is still
+    /// caching; otherwise returns a stream with a URL and mime for the link at
+    /// <paramref name="index"/>.
+    /// </summary>
+    public async Task<SourceStream?> ResolveAsync(TorrentResult release, MediaRequest request, int index, CancellationToken cancellationToken)
+    {
+        var outcome = await ResolveOutcomeAsync(release, request, cancellationToken);
+
+        switch (outcome.Outcome)
+        {
+            case ResolutionOutcome.Failed:
+                return null;
+
+            case ResolutionOutcome.Pending:
+                // A still-caching release has no per-file distinction yet, so every index
+                // gets the same caching notice — unlike ResolveAllAsync below, which wraps
+                // Pending as a single-element list, so only a walk's n=0 ever sees it.
+                return SourceStream.FromNotice(outcome.Notice!);
+
+            default: // Resolved
+                if (index < 0 || index >= outcome.Narrowed.Count)
+                    return null;
+
+                var link = outcome.Narrowed[index];
+                return new SourceStream(link.Url.ToString(), MimeFor(link.FileName));
+        }
+    }
+
+    /// <summary>
+    /// Resolves every playable option for <paramref name="release"/> in a single debrid
+    /// round trip, rather than one round trip per index. A caller that needs to walk
+    /// files within a release before moving on to the next candidate release (see
+    /// <see cref="Sources.MetadataBackedVideoSource"/>) uses this to learn how many
+    /// options a release yields without resolving each one separately — resolving a
+    /// release a second time just to ask "how many?" would double the round trips this
+    /// method exists to avoid.
+    /// <para>
+    /// No configured debrid, a thrown exception, or a failed resolution all yield an
+    /// empty list — nothing to walk into. A still-caching release yields a single
+    /// notice option — so only n=0 of a walk sees the caching notice, unlike
+    /// <see cref="ResolveAsync"/>, which ignores the index entirely for Pending and
+    /// returns the notice regardless. A resolved release yields one option per narrowed
+    /// link, in the same order <see cref="ResolveAsync"/> would index into.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<SourceStream>> ResolveAllAsync(TorrentResult release, MediaRequest request, CancellationToken cancellationToken)
+    {
+        var outcome = await ResolveOutcomeAsync(release, request, cancellationToken);
+
+        return outcome.Outcome switch
+        {
+            ResolutionOutcome.Failed => [],
+            ResolutionOutcome.Pending => [SourceStream.FromNotice(outcome.Notice!)],
+            _ => outcome.Narrowed.Select(link => new SourceStream(link.Url.ToString(), MimeFor(link.FileName))).ToList(),
+        };
     }
 
     // Single-extension whole-archive shapes, matched via Path.GetExtension. ".iso" is

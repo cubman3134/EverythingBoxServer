@@ -61,12 +61,7 @@ public sealed class TorrentGrabber : ITorrentGrabber
         if (_options.QuickGrabScore is { } threshold)
             return await QuickGrabAsync(request, threshold, cancellationToken).ConfigureAwait(false);
 
-        var queryResults = await SearchInternalAsync(request, cancellationToken).ConfigureAwait(false);
-        var results = queryResults.SelectMany(q => q.Results).ToList();
-
-        var prepared = Prepare(request, results);
-        var ranked = await MarkAndOrderByCacheAsync(_ranker.Rank(request, prepared, _options.Ranking), cancellationToken)
-            .ConfigureAwait(false);
+        var (ranked, queryResults) = await SearchAndRankAsync(request, cancellationToken).ConfigureAwait(false);
 
         RecordOutcomes(queryResults, ranked.Count > 0 ? ranked[0].Result.ProviderName : null);
 
@@ -76,6 +71,37 @@ public sealed class TorrentGrabber : ITorrentGrabber
             Ranked = ranked,
             Errors = ErrorsOf(queryResults),
         };
+    }
+
+    /// <summary>Search, dedupe, parse, then rank and filter — best first, ineligible releases removed.</summary>
+    public async Task<IReadOnlyList<TorrentResult>> SearchRankedAsync(
+        MediaRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var (ranked, queryResults) = await SearchAndRankAsync(request, cancellationToken).ConfigureAwait(false);
+
+        RecordOutcomes(queryResults, ranked.Count > 0 ? ranked[0].Result.ProviderName : null);
+
+        return ranked.Select(s => s.Result).ToList();
+    }
+
+    /// <summary>
+    /// The shared core of both <see cref="GrabAsync"/> and <see cref="SearchRankedAsync"/>:
+    /// query every capable provider, prepare (dedupe/parse), then rank and filter, with
+    /// cached-first ordering applied on top. Callers differ only in what they do with the
+    /// ranked list afterward — GrabAsync takes the head, SearchRankedAsync returns all of it.
+    /// </summary>
+    private async Task<(IReadOnlyList<ScoredTorrent> Ranked, List<QueryResult> QueryResults)> SearchAndRankAsync(
+        MediaRequest request, CancellationToken cancellationToken)
+    {
+        var queryResults = await SearchInternalAsync(request, cancellationToken).ConfigureAwait(false);
+        var results = queryResults.SelectMany(q => q.Results).ToList();
+
+        var prepared = Prepare(request, results);
+        var ranked = await MarkAndOrderByCacheAsync(_ranker.Rank(request, prepared, _options.Ranking), cancellationToken)
+            .ConfigureAwait(false);
+
+        return (ranked, queryResults);
     }
 
     /// <summary>

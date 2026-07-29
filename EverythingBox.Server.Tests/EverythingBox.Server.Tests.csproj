@@ -35,6 +35,7 @@
     <ProjectReference Include="..\tests\TestPlugin.Bad\TestPlugin.Bad.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\tests\TestPlugin.Dup\TestPlugin.Dup.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\tests\TestPlugin.Throwing\TestPlugin.Throwing.csproj" ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\tests\TestPlugin.Metadata\TestPlugin.Metadata.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\EverythingBox.Server.SampleSource\EverythingBox.Server.SampleSource.csproj" />
   </ItemGroup>
 
@@ -48,11 +49,13 @@
       <BadPluginOut Include="..\tests\TestPlugin.Bad\bin\$(Configuration)\net9.0\**\*.*" />
       <DupPluginOut Include="..\tests\TestPlugin.Dup\bin\$(Configuration)\net9.0\**\*.*" />
       <ThrowingPluginOut Include="..\tests\TestPlugin.Throwing\bin\$(Configuration)\net9.0\**\*.*" />
+      <MetadataPluginOut Include="..\tests\TestPlugin.Metadata\bin\$(Configuration)\net9.0\**\*.*" />
     </ItemGroup>
     <Copy SourceFiles="@(GoodPluginOut)" DestinationFolder="$(OutDir)testplugins\good\%(RecursiveDir)" />
     <Copy SourceFiles="@(BadPluginOut)" DestinationFolder="$(OutDir)testplugins\bad\%(RecursiveDir)" />
     <Copy SourceFiles="@(DupPluginOut)" DestinationFolder="$(OutDir)testplugins\dup\%(RecursiveDir)" />
     <Copy SourceFiles="@(ThrowingPluginOut)" DestinationFolder="$(OutDir)testplugins\throwing\%(RecursiveDir)" />
+    <Copy SourceFiles="@(MetadataPluginOut)" DestinationFolder="$(OutDir)testplugins\browsemeta\%(RecursiveDir)" />
   </Target>
 
 </Project>

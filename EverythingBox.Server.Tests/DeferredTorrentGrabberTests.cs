@@ -135,6 +135,12 @@ public class DeferredTorrentGrabberTests
             Interlocked.Increment(ref SearchCalls);
             return Task.FromResult(SearchResult);
         }
+
+        public Task<IReadOnlyList<TorrentResult>> SearchRankedAsync(MediaRequest request, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref SearchCalls);
+            return Task.FromResult(SearchResult);
+        }
     }
 
     private sealed class StubFileCache : IFileCache

@@ -97,9 +97,19 @@ builder.Services.AddSingleton(sp =>
     // plugin also declares key "idx", SourceRouter's duplicate-key handling keeps the
     // first registration (the plugin's) and logs+drops this one instead.
     var resolver = new ReleaseStreamResolver(debrid, loggers.CreateLogger<ReleaseStreamResolver>());
-    var indexerSource = new IndexerSearchSource(deferredGrabber, resolver, loggers.CreateLogger<IndexerSearchSource>());
+    var indexerSource = new IndexerSearchSource(deferredGrabber, resolver, grabber.Providers.Count, loggers.CreateLogger<IndexerSearchSource>());
 
-    var sources = plugins.SelectMany(p => p.Sources).Append(indexerSource);
+    // MetadataBackedVideoSource turns every metadata source collected across all loaded
+    // plugins (there is no config-driven equivalent — metadata always comes from a
+    // plugin) into browsable movie/series shelves. Same reasoning as indexerSource above:
+    // built with `deferredGrabber` because SearchAsync/ResolveAsync run later, and
+    // appended AFTER every plugin source (alongside indexerSource) so a plugin can never
+    // be shadowed by it.
+    var pluginMetadata = plugins.SelectMany(p => p.MetadataSources).ToList();
+    var metadataSource = new MetadataBackedVideoSource(
+        pluginMetadata, deferredGrabber, resolver, loggers.CreateLogger<MetadataBackedVideoSource>());
+
+    var sources = plugins.SelectMany(p => p.Sources).Append(indexerSource).Append(metadataSource);
     return new SourceRouter(sources, log);
 });
 

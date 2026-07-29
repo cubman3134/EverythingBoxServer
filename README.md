@@ -121,12 +121,13 @@ server's routes at all.
 ### Search, out of the box
 
 Configuring at least one `Indexers` entry makes the server searchable without
-installing any plugin. The host always registers a built-in `idx:` source
+installing any plugin. The host registers a built-in `idx:` source
 (`IndexerSearchSource`) exposing one search-only catalog per media type the pipeline
 understands — movies, series, music, audiobooks, books, comics — backed by every
-configured indexer (plus any a plugin registers, see `AddIndexer` below). With
-`Indexers: []` these catalogs still appear in the manifest; they just return nothing,
-same as the rest of a stock server.
+configured indexer (plus any a plugin registers, see `AddIndexer` below), but only once
+at least one indexer exists. With `Indexers: []` and no plugin-registered indexer, the
+manifest declares none of these catalogs at all, rather than advertising six shelves
+that can never return anything.
 
 Add `Debrid` to make a search result playable: resolving a release asks the configured
 debrid service (TorBox or Real-Debrid today) for a direct link. **If the release isn't
@@ -135,10 +136,55 @@ shortly" notice — there is no fallback that downloads it for you.** Retrying t
 search later, once the debrid service has finished caching it, is currently the only way
 to get a playable link for an uncached release.
 
-`DownloadClient` (qBittorrent or Transmission) and `Ranking` (seeders, size bounds,
-preferred resolution/language/format, banned terms) feed the same pipeline but are not
+`DownloadClient` (qBittorrent or Transmission) feeds the same pipeline but is not
 exercised by anything the host calls today — no route hands a release to a download
-client yet. **`Ranking` applies only to the single-best ranked path (`GrabAsync`) and does not filter what search catalogs return; see "Search, out of the box" above.**
+client yet. `Ranking` (seeders, size bounds, preferred resolution/language/format,
+banned terms) has no such gap: it's applied to both the single-best ranked path
+(`GrabAsync`) and the search catalogs described above, via `ITorrentGrabber.SearchRankedAsync`
+— search, dedupe, parse, then rank and filter, best first, ineligible releases
+removed per `Ranking`.
+
+### Browse, with a metadata plugin
+
+Search is not the only way in. `IPluginRegistry.AddMetadata` registers an
+`IMetadataSource` (`EverythingBox.Server.Abstractions/Metadata/IMetadataSource.cs`),
+decoupled from any one indexer:
+
+```csharp
+public interface IMetadataSource
+{
+    string Name { get; }
+    IReadOnlyList<string> SupportedMediaTypes { get; }   // protocol strings — "movie", "series"
+
+    Task<IReadOnlyList<MetadataItem>> BrowseAsync(string mediaType, string? query, CancellationToken ct);
+
+    // Optional — defaults to empty, so a movie-only source need not implement it.
+    Task<IReadOnlyList<MetadataEpisode>> EpisodesAsync(string seriesId, CancellationToken ct);
+}
+```
+
+`MetadataItem` carries an id, title, media type, and optionally a year and poster URL
+— `MediaType` is the protocol string this item actually is ("movie", "series"), and
+the host shelves it by that, not by whichever catalog it was returned from, so a
+source mixing types into one `BrowseAsync` call gets each item shelved correctly (or
+dropped, if it doesn't match). `MetadataEpisode` carries a season, episode, title, and
+optionally an overview — no id of its own; nothing downstream needs one.
+
+The host's built-in `meta:` source (`Sources/MetadataBackedVideoSource.cs`) pairs
+every registered `IMetadataSource` with the same indexer/debrid pipeline `idx:` uses:
+browsing `meta:movies`/`meta:series` lists titles from the metadata source(s); opening
+a series (`/detail/series/{id}.json`) expands it into episodes via `EpisodesAsync`. A
+bare series id has no single release to resolve — only a movie or one of its episodes
+does; resolving either searches the pipeline (`SearchRankedAsync`, the same ranked path
+described above) for a matching release, then hands it to the same `Debrid`-backed
+resolution `idx:` uses. **The metadata source only supplies what to browse; the
+`Indexers`/`Debrid` config above is still what makes a browsed title actually playable.**
+
+Same "advertise only what can be filled" discipline as `idx:`: `meta:movies` is
+declared only when a registered metadata source's `SupportedMediaTypes` includes
+"movie" (independently for `meta:series`/"series"). **With no metadata plugin
+installed, neither catalog appears — the server ships no metadata source, the same
+way it ships no indexer.**
 
 ## The torrent pipeline (`EverythingBox.Server.Core`)
 
@@ -215,6 +261,20 @@ public interface IServerServices
 }
 ```
 
+### Registering a metadata source from a plugin
+
+A third, independent registration:
+
+```csharp
+void AddMetadata(IMetadataSource metadata);
+```
+
+A metadata source only supplies what to browse — the built-in `MetadataBackedVideoSource`
+pairs it with the shared indexer/debrid pipeline automatically (see "Browse, with a
+metadata plugin" above). A plugin registering one does not need to also register an
+indexer or a source; the host already has a pipeline to search once `Indexers`/`Debrid`
+are configured.
+
 ## Building
 
 ```bash
@@ -241,10 +301,6 @@ MIT licensed. See [LICENSE](LICENSE).
 The pieces below don't exist yet. They're the direction, not the current state — nothing
 in this section is installed, callable, or configurable today.
 
-- A metadata-source contract (`IPluginRegistry.AddMetadata` / `IMetadataSource`) for
-  movie/series **browsing** decoupled from any one indexer, and a
-  `MetadataBackedVideoSource` built on top of it. Today the `idx:` catalogs are
-  search-only — see "Search, out of the box" above.
 - A MonoTorrent-backed self-download fallback for an uncached debrid release, so a
   release that isn't already cached can be fetched on the host's own hardware instead of
   only returning the "still caching" notice described above.
@@ -252,5 +308,5 @@ in this section is installed, callable, or configurable today.
   release (`.zip`/`.rar`/`.7z`) can be browsed and streamed member-by-member the way a
   single video/audio/document file already can.
 
-All three are host-side (`EverythingBox.Server`), not `EverythingBox.Server.Core`,
-because each needs a package Core is not allowed to take.
+Both are host-side (`EverythingBox.Server`), not `EverythingBox.Server.Core`, because
+each needs a package Core is not allowed to take.

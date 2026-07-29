@@ -31,6 +31,12 @@ public interface IPluginRegistry
     /// any of it. This is the smaller of the two plugin tiers and usually the right one.
     /// </summary>
     void AddIndexer(ITorrentProvider provider);
+
+    /// <summary>
+    /// Register a metadata source. The host pairs it with the pipeline, so browsing and
+    /// locating stay decoupled — any metadata source works with any set of indexers.
+    /// </summary>
+    void AddMetadata(IMetadataSource metadata);
 }
 
 public interface IPluginContext

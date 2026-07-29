@@ -14,6 +14,9 @@ file sealed class RecordingGrabber(params TorrentResult[] results) : ITorrentGra
         => throw new NotSupportedException("IndexerSearchSource lists candidates; it does not auto-pick.");
 
     public Task<IReadOnlyList<TorrentResult>> SearchAsync(MediaRequest request, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("IndexerSearchSource must search via the ranked pipeline, so Ranking config applies.");
+
+    public Task<IReadOnlyList<TorrentResult>> SearchRankedAsync(MediaRequest request, CancellationToken cancellationToken = default)
     {
         LastRequest = request;
         return Task.FromResult<IReadOnlyList<TorrentResult>>(results);
@@ -26,6 +29,9 @@ file sealed class ThrowingGrabber : ITorrentGrabber
         => throw new HttpRequestException("indexer unreachable");
 
     public Task<IReadOnlyList<TorrentResult>> SearchAsync(MediaRequest request, CancellationToken cancellationToken = default)
+        => throw new HttpRequestException("indexer unreachable");
+
+    public Task<IReadOnlyList<TorrentResult>> SearchRankedAsync(MediaRequest request, CancellationToken cancellationToken = default)
         => throw new HttpRequestException("indexer unreachable");
 }
 
@@ -67,10 +73,13 @@ public class IndexerSearchSourceTests
         Seeders = 42,
     };
 
-    /// <summary>No debrid by default; pass one when a test needs resolution to succeed.</summary>
-    private static IndexerSearchSource Source(ITorrentGrabber grabber, IDebridService? debrid = null) =>
+    /// <summary>No debrid by default; pass one when a test needs resolution to succeed.
+    /// indexerCount defaults to 1 so every pre-existing test (none of which cares about
+    /// the gate) keeps exercising a source with catalogs declared.</summary>
+    private static IndexerSearchSource Source(ITorrentGrabber grabber, IDebridService? debrid = null, int indexerCount = 1) =>
         new(grabber,
             new ReleaseStreamResolver(debrid, NullLogger<ReleaseStreamResolver>.Instance),
+            indexerCount,
             NullLogger<IndexerSearchSource>.Instance);
 
     private sealed class StubDebrid : IDebridService
@@ -87,6 +96,43 @@ public class IndexerSearchSourceTests
     public void Its_key_is_idx_and_needs_no_special_routing()
     {
         Assert.Equal("idx", Source(new RecordingGrabber()).Key);
+    }
+
+    [Fact]
+    public void With_no_indexer_registered_it_declares_no_catalogs()
+    {
+        // A stock install must not advertise six shelves that can never return anything.
+        var source = Source(new RecordingGrabber(), indexerCount: 0);
+        Assert.Empty(source.Catalogs);
+    }
+
+    [Fact]
+    public void With_no_indexer_registered_it_declares_no_media_types_either()
+    {
+        // M2: MediaTypes used to be unconditional even though Catalogs was gated on
+        // indexerCount > 0 — a stock install advertised presentation hints for four
+        // media types with no catalog to appear on. Same discipline, both members.
+        var source = Source(new RecordingGrabber(), indexerCount: 0);
+        Assert.Empty(source.MediaTypes);
+    }
+
+    [Fact]
+    public void With_an_indexer_registered_it_declares_all_six()
+    {
+        var source = Source(new RecordingGrabber(), indexerCount: 1);
+        Assert.Equal(6, source.Catalogs.Count);
+    }
+
+    [Fact]
+    public async Task Searching_uses_the_ranked_pipeline_so_Ranking_config_applies()
+    {
+        // RecordingGrabber throws from SearchAsync, so reaching it fails loudly.
+        var grabber = new RecordingGrabber();
+        var catalog = await Source(grabber, indexerCount: 1)
+            .SearchAsync("movies", "some", new SourceContext(), CancellationToken.None);
+
+        Assert.NotNull(grabber.LastRequest);
+        Assert.NotNull(catalog);
     }
 
     [Fact]

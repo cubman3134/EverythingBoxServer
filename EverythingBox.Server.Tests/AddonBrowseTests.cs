@@ -11,12 +11,21 @@ public class AddonBrowseTests
     private readonly PluginServerFactory _factory;
     public AddonBrowseTests(PluginServerFactory factory) => _factory = factory;
 
-    /// <summary>Manifest catalogs minus the always-on "idx:*" ones IndexerSearchSource
-    /// contributes, so a test can assert what the fixture PLUGINS themselves put there
-    /// without needing to know how many built-in search catalogs exist.</summary>
+    // Every built-in source's key, e.g. IndexerSearchSource's "idx" and
+    // MetadataBackedVideoSource's "meta" — both are always registered alongside
+    // whatever plugins are installed, and a plugin-focused assertion must exclude
+    // every one of them, not just "idx:". Add the next built-in source's key here too,
+    // or it will slip through this filter the same way "meta:" originally did.
+    private static readonly string[] BuiltInSourceKeys = ["idx", "meta"];
+
+    /// <summary>Manifest catalogs minus the always-on built-in ones (see
+    /// <see cref="BuiltInSourceKeys"/>), so a test can assert what the fixture PLUGINS
+    /// themselves put there without needing to know how many built-in search catalogs
+    /// exist.</summary>
     private static List<JsonElement> PluginCatalogs(JsonElement manifest) =>
         manifest.GetProperty("catalogs").EnumerateArray()
-            .Where(c => !c.GetProperty("id").GetString()!.StartsWith("idx:", StringComparison.Ordinal))
+            .Where(c => !BuiltInSourceKeys.Any(key =>
+                c.GetProperty("id").GetString()!.StartsWith(key + ":", StringComparison.Ordinal)))
             .ToList();
 
     [Fact]
@@ -25,9 +34,14 @@ public class AddonBrowseTests
         var json = await _factory.CreateClient().GetFromJsonAsync<JsonElement>("/manifest.json");
 
         Assert.Equal("media-source", json.GetProperty("type").GetString());
-        // The built-in IndexerSearchSource ("idx:*") is always registered alongside
-        // whatever plugins are installed, so "good:all" is no longer the only catalog —
-        // just the only one this fixture plugin contributes.
+        // PluginServerFactory configures neither an indexer nor a metadata source, so
+        // IndexerSearchSource/MetadataBackedVideoSource each declare zero catalogs here
+        // (a shelf is only declared if something can fill it) — "good:all" genuinely IS
+        // the only catalog in THIS fixture's manifest today. Filtering through
+        // PluginCatalogs anyway is what keeps this assertion correct if that ever
+        // changes, rather than claiming a "idx:"/"meta:" catalog is present-but-filtered
+        // when none exists at all — see BrowseToStreamTests.BrowseServerFactory for a
+        // fixture where both genuinely are non-empty.
         var catalog = PluginCatalogs(json).Single();
         Assert.Equal("good:all", catalog.GetProperty("id").GetString());
     }
