@@ -170,6 +170,7 @@ public class QBittorrentClientTests
 
         Assert.False(result.Success);
         Assert.Equal(2, logins);
+        Assert.Contains("session expired", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
