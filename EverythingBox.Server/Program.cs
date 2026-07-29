@@ -75,7 +75,23 @@ builder.Services.AddSingleton(sp =>
     // grabber (config indexers + plugin indexers, one merged provider list) and bind it.
     // Pass the pre-built debrid so it's the same instance everywhere.
     var pluginIndexers = plugins.SelectMany(p => p.Indexers).ToList();
-    var grabber = GrabberFactory.Build(config, http, pluginIndexers, loggers, debrid, transport);
+
+    // At most one provider tracker applies across the whole server (it orders ONE provider
+    // list) — PluginRegistry.AddProviderTracker already refuses a SECOND registration
+    // within one plugin's own Configure. Two DIFFERENT plugins each successfully
+    // registering their own tracker is a conflict PluginRegistry cannot see (each plugin
+    // gets a fresh registry), so it's resolved here: the first plugin in load order wins,
+    // and every later one is logged and dropped rather than silently overriding it.
+    var providerTrackers = plugins.Where(p => p.ProviderTracker is not null).ToList();
+    if (providerTrackers.Count > 1)
+    {
+        log.LogWarning(
+            "{Count} plugins each registered a provider tracker ({Keys}); only '{Winner}' (first in load order) is used.",
+            providerTrackers.Count, string.Join(", ", providerTrackers.Select(p => p.Key)), providerTrackers[0].Key);
+    }
+    var providerTracker = providerTrackers.Count > 0 ? providerTrackers[0].ProviderTracker : null;
+
+    var grabber = GrabberFactory.Build(config, http, pluginIndexers, loggers, debrid, transport, providerTracker);
     deferredGrabber.SetGrabber(grabber);
 
     log.LogInformation(

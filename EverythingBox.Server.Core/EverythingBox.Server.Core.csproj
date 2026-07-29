@@ -11,7 +11,7 @@
 
   <!-- DELIBERATELY EMPTY. Core is BCL-only: System.Text.Json, System.Xml.Linq,
        HttpClient, System.IO.Compression. Anything needing a package belongs in the
-       host behind an interface (INestedArchiveReader, ITorrentDownloader).
+       host behind an interface (e.g. ITorrentDownloader).
        Adding a PackageReference here is a design change, not a convenience. -->
 
   <ItemGroup>

@@ -41,7 +41,7 @@ public class CoreDependencyTests
             "EverythingBox.Server.Core must stay BCL-only. Unexpected references: " +
             string.Join(", ", unexpected) +
             ". If a package is genuinely needed, it belongs in the host behind an interface " +
-            "(see INestedArchiveReader / ITorrentDownloader), not in Core.");
+            "(see ITorrentDownloader), not in Core.");
     }
 
     /// <summary>

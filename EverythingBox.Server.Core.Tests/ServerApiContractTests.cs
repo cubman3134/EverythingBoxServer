@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_2_now_that_the_registry_has_grown_again()
+    public void Version_is_1_3_now_that_the_registry_has_grown_again()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(2, ServerApi.Current.Minor);
+        Assert.Equal(3, ServerApi.Current.Minor);
     }
 
     [Fact]

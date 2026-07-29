@@ -60,7 +60,8 @@ public static class GrabberFactory
         HttpClient httpClient,
         IEnumerable<ITorrentProvider> pluginIndexers,
         ILoggerFactory loggerFactory,
-        HttpMessageHandler? transport = null)
+        HttpMessageHandler? transport = null,
+        IProviderPerformanceTracker? providerTracker = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(httpClient);
@@ -93,6 +94,8 @@ public static class GrabberFactory
             builder.UseDebridService(debrid);
         if (downloadClient is not null)
             builder.UseDownloadClient(downloadClient);
+        if (providerTracker is not null)
+            builder.UseProviderTracker(providerTracker);
 
         return (builder.Build(), debrid);
     }
@@ -108,7 +111,8 @@ public static class GrabberFactory
         IEnumerable<ITorrentProvider> pluginIndexers,
         ILoggerFactory loggerFactory,
         IDebridService? debrid,
-        HttpMessageHandler? transport = null)
+        HttpMessageHandler? transport = null,
+        IProviderPerformanceTracker? providerTracker = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(httpClient);
@@ -137,6 +141,8 @@ public static class GrabberFactory
             builder.UseDebridService(debrid);
         if (downloadClient is not null)
             builder.UseDownloadClient(downloadClient);
+        if (providerTracker is not null)
+            builder.UseProviderTracker(providerTracker);
 
         return builder.Build();
     }

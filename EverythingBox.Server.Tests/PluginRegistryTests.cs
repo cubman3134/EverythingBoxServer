@@ -37,6 +37,20 @@ file sealed class ThrowingNameMetadata : IMetadataSource
         => Task.FromResult<IReadOnlyList<MetadataItem>>([]);
 }
 
+file sealed class FakeTracker : IProviderPerformanceTracker
+{
+    public IReadOnlyList<ITorrentProvider> Prioritize(IReadOnlyList<ITorrentProvider> providers) => providers;
+    public void Record(IReadOnlyList<ProviderOutcome> outcomes) { }
+}
+
+file sealed class ThrowingTracker : IProviderPerformanceTracker
+{
+    public IReadOnlyList<ITorrentProvider> Prioritize(IReadOnlyList<ITorrentProvider> providers)
+        => throw new InvalidOperationException("prioritize boom");
+    public void Record(IReadOnlyList<ProviderOutcome> outcomes)
+        => throw new InvalidOperationException("record boom");
+}
+
 public class PluginRegistryTests
 {
     [Fact]
@@ -147,5 +161,52 @@ public class PluginRegistryTests
         Assert.Single(registry.Sources);
         Assert.Single(registry.Indexers);
         Assert.Single(registry.MetadataSources);
+    }
+
+    [Fact]
+    public void A_plugin_can_supply_a_provider_tracker()
+    {
+        var registry = new PluginRegistry();
+        registry.AddProviderTracker(new FakeTracker());
+        Assert.NotNull(registry.ProviderTracker);
+    }
+
+    [Fact]
+    public void Rejects_a_null_provider_tracker()
+        => Assert.Throws<ArgumentNullException>(() => new PluginRegistry().AddProviderTracker(null!));
+
+    [Fact]
+    public void Registering_a_tracker_does_not_invoke_it()
+    {
+        // Its methods are plugin code. Registration must not call them.
+        var registry = new PluginRegistry();
+        Assert.Null(Record.Exception(() => registry.AddProviderTracker(new ThrowingTracker())));
+    }
+
+    [Fact]
+    public void A_second_provider_tracker_registration_throws()
+    {
+        // Unlike sources and indexers, only one tracker can order the provider list.
+        // Two plugins both supplying one is a real configuration mistake, so this is
+        // a throw (same as AddSource's duplicate-key check) rather than a silent
+        // replace — a silent replace would leave whoever registered the first tracker
+        // wondering, with no error anywhere, why it's never consulted.
+        var registry = new PluginRegistry();
+        registry.AddProviderTracker(new FakeTracker());
+
+        var ex = Assert.Throws<InvalidOperationException>(() => registry.AddProviderTracker(new FakeTracker()));
+        Assert.Contains("already registered", ex.Message);
+
+        // And the first registration is left untouched.
+        Assert.NotNull(registry.ProviderTracker);
+    }
+
+    [Fact]
+    public void The_nested_archive_reader_contract_is_not_shipped()
+    {
+        // Removed because nothing implemented or consumed it. It belongs in the plan
+        // that needs it, not in the contract ahead of time.
+        var abstractions = typeof(IPluginRegistry).Assembly;
+        Assert.DoesNotContain(abstractions.GetExportedTypes(), t => t.Name == "INestedArchiveReader");
     }
 }
