@@ -1,4 +1,5 @@
 using EverythingBox.Server.Abstractions;
+using EverythingBox.Server.Core.Debrid;
 using EverythingBox.Server.Core.Selection;
 using Microsoft.Extensions.Logging;
 using MonoTorrent;
@@ -25,8 +26,19 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
 
     private readonly ILogger<MonoTorrentDownloader> _logger;
+    private readonly HttpClient _http;
 
-    public MonoTorrentDownloader(ILogger<MonoTorrentDownloader> logger) => _logger = logger;
+    /// <summary>
+    /// Takes an injected <see cref="HttpClient"/> (the shared one <c>Program.cs</c> builds
+    /// over its shared <see cref="HttpMessageHandler"/>, so a <c>.torrent</c> fetch gets the
+    /// same retry handling as every other outbound call) rather than constructing its own —
+    /// construction stays allocation-free either way.
+    /// </summary>
+    public MonoTorrentDownloader(ILogger<MonoTorrentDownloader> logger, HttpClient http)
+    {
+        _logger = logger;
+        _http = http;
+    }
 
     public async Task<IReadOnlyList<string>> DownloadAsync(
         TorrentResult torrent,
@@ -40,13 +52,17 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
         if (cancellationToken.IsCancellationRequested)
             return [];
 
-        var magnetLink = BuildMagnetLink(torrent);
-        if (magnetLink is null)
-            return [];
-
         ClientEngine? engine = null;
         try
         {
+            // Resolved inside the try so a mid-fetch failure (unreachable .torrent link,
+            // a 404, non-torrent bytes, or cancellation) falls through to the same
+            // empty-list-not-throw handling as every other failure below, rather than
+            // needing its own copy of that logic.
+            var magnetLink = await ResolveMagnetLinkAsync(torrent, cancellationToken).ConfigureAwait(false);
+            if (magnetLink is null)
+                return [];
+
             Directory.CreateDirectory(directory);
 
             // No trackers/DHT persistence between calls, no UPnP/local-discovery side
@@ -128,22 +144,25 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
     }
 
     /// <summary>
-    /// Builds a <see cref="MagnetLink"/> from whatever the release gives us: the
-    /// magnet URI directly, or a bare magnet synthesized from the info hash when
-    /// that's all we have. Returns null (never throws) when neither is present, or
-    /// when what's present doesn't parse.
+    /// Builds a <see cref="MagnetLink"/> from whatever the release gives us, via the same
+    /// <see cref="MagnetResolver"/> the debrid path uses: the magnet URI directly, a bare
+    /// magnet synthesized from the info hash, or — when all we have is a
+    /// <see cref="TorrentResult.DownloadUrl"/> — one built by fetching the <c>.torrent</c>
+    /// and reading its info hash. <see cref="MagnetResolver.ResolveAsync"/> already tries
+    /// magnet/info-hash before ever touching HTTP, so a release with a usable magnet makes
+    /// no network call here. Returns null (never throws) when nothing is present, when
+    /// resolution fails (unreachable link, non-torrent bytes), or when what came back
+    /// doesn't parse as a magnet.
     /// </summary>
-    private MagnetLink? BuildMagnetLink(TorrentResult torrent)
+    private async Task<MagnetLink?> ResolveMagnetLinkAsync(TorrentResult torrent, CancellationToken cancellationToken)
     {
+        var magnet = await MagnetResolver.ResolveAsync(_http, torrent, cancellationToken).ConfigureAwait(false);
+        if (magnet is null)
+            return null;
+
         try
         {
-            if (torrent.MagnetUri is not null)
-                return MagnetLink.FromUri(torrent.MagnetUri);
-
-            if (!string.IsNullOrWhiteSpace(torrent.InfoHash))
-                return MagnetLink.Parse($"magnet:?xt=urn:btih:{torrent.InfoHash.Trim()}");
-
-            return null;
+            return MagnetLink.Parse(magnet);
         }
         catch (Exception ex)
         {
