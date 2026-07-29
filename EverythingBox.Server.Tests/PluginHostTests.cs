@@ -11,6 +11,11 @@ file sealed class StubContext : IPluginContext
     public HttpClient Http { get; } = new();
     public string CacheDirectory => Path.GetTempPath();
     public T? GetConfig<T>() where T : class => null;
+
+    // A null here would fail far from the cause — throwing at the point of access makes
+    // a test that unexpectedly reaches for Server fail with a clear diagnosis instead.
+    public IServerServices Server =>
+        throw new NotSupportedException("This test does not provide server services.");
 }
 
 public class PluginHostTests

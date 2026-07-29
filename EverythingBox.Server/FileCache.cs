@@ -1,14 +1,13 @@
 using System.Collections.Concurrent;
+using EverythingBox.Server.Abstractions;
 
 namespace EverythingBox.Server;
-
-public sealed record BuiltFile(string ServedName, string Path, string ContentType);
 
 /// <summary>
 /// Builds a served file once, even under concurrent requests, then serves it from disk.
 /// A failed build is evicted so a retry can succeed.
 /// </summary>
-public sealed class FileCache
+public sealed class FileCache : IFileCache
 {
     private readonly ConcurrentDictionary<string, Lazy<Task<BuiltFile?>>> _builds = new(StringComparer.OrdinalIgnoreCase);
 

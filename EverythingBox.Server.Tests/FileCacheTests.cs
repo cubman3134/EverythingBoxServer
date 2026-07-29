@@ -1,3 +1,5 @@
+using EverythingBox.Server.Abstractions;
+
 namespace EverythingBox.Server.Tests;
 
 public class FileCacheTests : IDisposable

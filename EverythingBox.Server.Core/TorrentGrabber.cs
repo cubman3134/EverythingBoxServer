@@ -16,7 +16,7 @@ namespace EverythingBox.Server.Core;
 /// for a fluent setup.
 /// </para>
 /// </summary>
-public sealed class TorrentGrabber
+public sealed class TorrentGrabber : ITorrentGrabber
 {
     private readonly IReadOnlyList<ITorrentProvider> _providers;
     private readonly ITorrentRanker _ranker;
