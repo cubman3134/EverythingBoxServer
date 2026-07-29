@@ -90,6 +90,31 @@ public class ServerConfigTests
         Assert.True(string.IsNullOrEmpty(config.Debrid?.ApiKey));
     }
 
+    [Fact]
+    public void Self_download_is_off_in_a_stock_config()
+    {
+        // Downloading joins a BitTorrent swarm from the user's own IP. That must be
+        // something they turn on, not something an upgrade turns on for them.
+        Assert.False(new ServerConfig().Download.Enabled);
+    }
+
+    [Fact]
+    public void Download_has_a_size_cap_and_a_timeout_by_default()
+    {
+        var download = new ServerConfig().Download;
+        Assert.True(download.MaxSizeMB > 0, "an uncapped fallback would try to fetch anything");
+        Assert.True(download.TimeoutSeconds > 0, "an unbounded wait would hold a request open on a dead swarm");
+    }
+
+    [Fact]
+    public void Download_is_never_null_even_when_the_config_file_omits_it()
+    {
+        // Every existing config file predates this key; reading one must not NRE.
+        var config = ServerConfig.FromJson("""{ "Listen": "http://0.0.0.0:7000" }""");
+        Assert.NotNull(config.Download);
+        Assert.False(config.Download.Enabled);
+    }
+
     private static string RepositoryRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
