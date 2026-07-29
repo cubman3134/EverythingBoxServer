@@ -153,7 +153,9 @@ public static class GrabberFactory
     /// </summary>
     private static HttpClient WrapWithRetry(HttpClient shared, HttpMessageHandler? transport = null)
     {
-        var wrapped = new HttpClient(new RetryHandler(innerHandler: transport)) { Timeout = shared.Timeout };
+        // disposeHandler: false because the handler is a shared singleton owned by the host (Program.cs).
+        // Disposing any wrapped client would dispose the transport every other client depends on.
+        var wrapped = new HttpClient(new RetryHandler(innerHandler: transport), disposeHandler: false) { Timeout = shared.Timeout };
         foreach (var header in shared.DefaultRequestHeaders)
             wrapped.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, header.Value);
         return wrapped;

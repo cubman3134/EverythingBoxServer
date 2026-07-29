@@ -138,7 +138,7 @@ to get a playable link for an uncached release.
 `DownloadClient` (qBittorrent or Transmission) and `Ranking` (seeders, size bounds,
 preferred resolution/language/format, banned terms) feed the same pipeline but are not
 exercised by anything the host calls today — no route hands a release to a download
-client yet.
+client yet. **`Ranking` applies only to the single-best ranked path (`GrabAsync`) and does not filter what search catalogs return; see "Search, out of the box" above.**
 
 ## The torrent pipeline (`EverythingBox.Server.Core`)
 
