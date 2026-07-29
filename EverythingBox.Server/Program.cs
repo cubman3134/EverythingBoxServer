@@ -4,6 +4,7 @@ using EverythingBox.Server.Abstractions;
 using EverythingBox.Server.Core;
 using EverythingBox.Server.Plugins;
 using EverythingBox.Server.Routing;
+using EverythingBox.Server.Sources;
 
 var config = ServerConfig.Load();
 
@@ -66,7 +67,26 @@ builder.Services.AddSingleton(sp =>
         "Torrent pipeline ready: {Total} indexer(s) ({Configured} from config, {FromPlugins} from plugins); debrid: {Debrid}",
         grabber.Providers.Count, config.Indexers.Count, pluginIndexers.Count, debrid?.Name ?? "none");
 
-    return new SourceRouter(plugins.SelectMany(p => p.Sources), log);
+    // IndexerSearchSource is what makes a stock server useful without installing any
+    // plugin: it exposes every configured indexer (config + plugins, already merged into
+    // `grabber` above) as search-only catalogs. It is built with `deferredGrabber`, not
+    // the concrete `grabber`, because SearchAsync/ResolveAsync run later, while serving a
+    // request — by then SetGrabber above has bound the real grabber; calling through the
+    // deferred wrapper during THIS factory would throw by design.
+    //
+    // ReleaseStreamResolver is constructed exactly once, right here, because this whole
+    // factory lambda is itself only ever invoked once (AddSingleton below caches the
+    // result) — so its constructor's "no debrid configured" log line fires exactly once,
+    // never once per request.
+    //
+    // Appended AFTER every plugin source so a plugin can never be shadowed by it: if a
+    // plugin also declares key "idx", SourceRouter's duplicate-key handling keeps the
+    // first registration (the plugin's) and logs+drops this one instead.
+    var resolver = new ReleaseStreamResolver(debrid, loggers.CreateLogger<ReleaseStreamResolver>());
+    var indexerSource = new IndexerSearchSource(deferredGrabber, resolver, loggers.CreateLogger<IndexerSearchSource>());
+
+    var sources = plugins.SelectMany(p => p.Sources).Append(indexerSource);
+    return new SourceRouter(sources, log);
 });
 
 var app = builder.Build();

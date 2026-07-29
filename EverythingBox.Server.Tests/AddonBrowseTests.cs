@@ -11,13 +11,24 @@ public class AddonBrowseTests
     private readonly PluginServerFactory _factory;
     public AddonBrowseTests(PluginServerFactory factory) => _factory = factory;
 
+    /// <summary>Manifest catalogs minus the always-on "idx:*" ones IndexerSearchSource
+    /// contributes, so a test can assert what the fixture PLUGINS themselves put there
+    /// without needing to know how many built-in search catalogs exist.</summary>
+    private static List<JsonElement> PluginCatalogs(JsonElement manifest) =>
+        manifest.GetProperty("catalogs").EnumerateArray()
+            .Where(c => !c.GetProperty("id").GetString()!.StartsWith("idx:", StringComparison.Ordinal))
+            .ToList();
+
     [Fact]
     public async Task Manifest_lists_the_plugins_catalog()
     {
         var json = await _factory.CreateClient().GetFromJsonAsync<JsonElement>("/manifest.json");
 
         Assert.Equal("media-source", json.GetProperty("type").GetString());
-        var catalog = json.GetProperty("catalogs").EnumerateArray().Single();
+        // The built-in IndexerSearchSource ("idx:*") is always registered alongside
+        // whatever plugins are installed, so "good:all" is no longer the only catalog —
+        // just the only one this fixture plugin contributes.
+        var catalog = PluginCatalogs(json).Single();
         Assert.Equal("good:all", catalog.GetProperty("id").GetString());
     }
 
@@ -64,8 +75,9 @@ public class AddonBrowseTests
     {
         var json = await _factory.CreateClient().GetFromJsonAsync<JsonElement>("/manifest.json");
 
-        var catalogs = json.GetProperty("catalogs").EnumerateArray().ToList();
-        var catalog = Assert.Single(catalogs);
+        // Same "idx:*" caveat as Manifest_lists_the_plugins_catalog: filter to what the
+        // plugins themselves contributed before asserting exclusivity.
+        var catalog = Assert.Single(PluginCatalogs(json));
         Assert.Equal("good:all", catalog.GetProperty("id").GetString());
     }
 
@@ -225,8 +237,9 @@ public class AddonBrowseTests
     {
         var json = await _factory.CreateClient().GetFromJsonAsync<JsonElement>("/manifest.json");
 
-        var catalogs = json.GetProperty("catalogs").EnumerateArray().ToList();
-        var catalog = Assert.Single(catalogs);
+        // Same "idx:*" caveat as Manifest_lists_the_plugins_catalog: filter to what the
+        // plugins themselves contributed before asserting exclusivity.
+        var catalog = Assert.Single(PluginCatalogs(json));
         Assert.Equal("good:all", catalog.GetProperty("id").GetString());
     }
 
