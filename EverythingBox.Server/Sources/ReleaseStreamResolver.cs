@@ -253,7 +253,10 @@ public sealed class ReleaseStreamResolver
         if (downloader is null || files is null)
             return null;
 
-        if (release.SizeBytes is not { } sizeBytes || sizeBytes > _download.MaxSizeMB * 1024L * 1024L)
+        // A non-positive size is exactly as untrustworthy as no size at all — the cap
+        // exists to refuse fetching something whose size we can't rely on, and 0 or a
+        // negative value is not a real "small release", it's bad data.
+        if (release.SizeBytes is not { } sizeBytes || sizeBytes <= 0 || sizeBytes > _download.MaxSizeMB * 1024L * 1024L)
             return null;
 
         if (cancellationToken.IsCancellationRequested)
@@ -285,21 +288,54 @@ public sealed class ReleaseStreamResolver
                 streams.Add(new SourceStream($"files/{built.ServedName}", built.ContentType));
         }
 
+        if (streams.Count > 0)
+        {
+            // The engine is stopped and disposed once DownloadAsync returns, so the
+            // .downloads working copy has no reseeding use — PublishAsync already moved
+            // (not copied) every published file out of it, so this just clears whatever
+            // the move left behind (unselected pieces, empty subdirectories, engine
+            // scratch files). Best-effort: a lingering handle must not undo a download
+            // that already succeeded and is already being served.
+            RemoveDownloadDirectory(DownloadDirectory(files, release, request));
+        }
+
         return streams.Count > 0 ? streams : null;
     }
 
     /// <summary>
     /// The memoized entry point for the actual swarm join — see the <see cref="_downloads"/>
     /// field doc for why this is a separate dictionary from <see cref="IFileCache"/>'s own.
+    /// Follows the exact same eviction discipline as <see cref="FileCache.GetOrBuildAsync"/>:
+    /// an empty result (no peers yet, a stalled swarm, a timeout — see
+    /// <see cref="RunDownloadAsync"/>) or a thrown exception is a transient miss, not a
+    /// permanent one, so it's evicted rather than left memoized for the rest of the
+    /// process's life. Without this, one bad attempt at a release would disable the
+    /// fallback for that exact release forever, since this resolver is a singleton.
     /// </summary>
-    private Task<IReadOnlyList<string>> GetOrDownloadAsync(
+    private async Task<IReadOnlyList<string>> GetOrDownloadAsync(
         ITorrentDownloader downloader, IFileCache files, TorrentResult release, MediaRequest request, CancellationToken cancellationToken)
     {
         var key = ReleaseKey(release, request);
         var lazy = _downloads.GetOrAdd(key, _ => new Lazy<Task<IReadOnlyList<string>>>(
             () => RunDownloadAsync(downloader, files, release, request, cancellationToken),
             LazyThreadSafetyMode.ExecutionAndPublication));
-        return lazy.Value;
+        try
+        {
+            var result = await lazy.Value.ConfigureAwait(false);
+
+            // Evict only AFTER the entry is certainly present, and only this exact Lazy —
+            // matching on the (key, lazy) pair means a concurrent successful rebuild that
+            // has already replaced this entry is never evicted by a late empty result.
+            if (result.Count == 0)
+                _downloads.TryRemove(new KeyValuePair<string, Lazy<Task<IReadOnlyList<string>>>>(key, lazy));
+
+            return result;
+        }
+        catch
+        {
+            _downloads.TryRemove(new KeyValuePair<string, Lazy<Task<IReadOnlyList<string>>>>(key, lazy));
+            throw;
+        }
     }
 
     /// <summary>
@@ -313,7 +349,7 @@ public sealed class ReleaseStreamResolver
         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_download.TimeoutSeconds));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-        var directory = Path.Combine(files.Root, ".downloads", ReleaseKey(release, request));
+        var directory = DownloadDirectory(files, release, request);
 
         try
         {
@@ -334,6 +370,12 @@ public sealed class ReleaseStreamResolver
     /// serves straight off <see cref="IFileCache.Root"/> by plain file name, so the served
     /// name must be flat and must not collide across releases; it's prefixed with the same
     /// <see cref="ReleaseKey"/> the download itself was keyed by.
+    /// <para>
+    /// Moves rather than copies: the <c>.downloads</c> working copy is never read again
+    /// (the engine is stopped and disposed once the download finishes, so there is no
+    /// reseeding use for it), so leaving a second copy behind would just double the disk
+    /// every fetched release occupies, forever.
+    /// </para>
     /// </summary>
     private static async Task<BuiltFile?> PublishAsync(
         IFileCache files, TorrentResult release, MediaRequest request, string localPath, CancellationToken cancellationToken)
@@ -344,10 +386,63 @@ public sealed class ReleaseStreamResolver
         {
             var destination = Path.Combine(files.Root, name);
             if (!string.Equals(Path.GetFullPath(destination), Path.GetFullPath(localPath), StringComparison.OrdinalIgnoreCase))
-                File.Copy(localPath, destination, overwrite: true);
+                MoveOrCopy(localPath, destination);
 
             return Task.FromResult<BuiltFile?>(new BuiltFile(name, destination, MimeFor(name)));
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Moves <paramref name="source"/> to <paramref name="destination"/>, falling back to
+    /// copy-then-delete when a move isn't possible — chiefly a cross-volume move (the
+    /// <c>.downloads</c> working directory and the served cache root are configurable
+    /// independently and may live on different drives/mounts), which <see cref="File.Move"/>
+    /// rejects rather than performing implicitly. Either way the source is gone afterward,
+    /// so this never leaves the second, permanent copy the move exists to avoid.
+    /// </summary>
+    private static void MoveOrCopy(string source, string destination)
+    {
+        try
+        {
+            File.Move(source, destination, overwrite: true);
+        }
+        catch (IOException)
+        {
+            File.Copy(source, destination, overwrite: true);
+            File.Delete(source);
+        }
+    }
+
+    /// <summary>The <c>.downloads</c> working directory a release+request's fetch runs in —
+    /// shared by <see cref="RunDownloadAsync"/> (which creates it) and
+    /// <see cref="TryFallbackDownloadAsync"/> (which removes it once every file has been
+    /// moved out).</summary>
+    private static string DownloadDirectory(IFileCache files, TorrentResult release, MediaRequest request)
+        => Path.Combine(files.Root, ".downloads", ReleaseKey(release, request));
+
+    /// <summary>
+    /// Best-effort removal of a now-empty (or nearly so) <c>.downloads</c> working
+    /// directory after every file worth keeping has been moved out of it by
+    /// <see cref="PublishAsync"/>. Deliberately narrow: this only ever touches the one
+    /// working directory a single download used, never anything under the served cache
+    /// root — a general eviction policy for served files is <see cref="IFileCache"/>'s
+    /// own, pre-existing concern, not this method's.
+    /// </summary>
+    private static void RemoveDownloadDirectory(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+        catch (IOException)
+        {
+            // A lingering file handle (e.g. an antivirus scan) must not undo an already-
+            // successful, already-served download.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     /// <summary>
@@ -356,14 +451,46 @@ public sealed class ReleaseStreamResolver
     /// of. Prefers the info hash (present for almost every real release); a magnet or
     /// .torrent URL is a fine fallback identifier when it isn't, and the title is the last
     /// resort for a release with none of those (still deterministic, just less precise).
+    /// <para>
+    /// Beyond the request's own type and title, this must include every field that can
+    /// change which file <see cref="MediaFileMatcher.Select{T}"/> — and, in turn,
+    /// <see cref="MonoTorrentDownloader.SelectWantedFiles"/> — narrows a multi-file
+    /// release down to. Otherwise two callers who differ only in, say, which episode of
+    /// the same show they want would collide on the same memoized <see cref="_downloads"/>
+    /// entry (and the same served-file name below) and the second caller would silently
+    /// be handed the first caller's file. See <see cref="RequestDiscriminator"/>.
+    /// </para>
     /// </summary>
     private static string ReleaseKey(TorrentResult release, MediaRequest request)
     {
         var identity = release.InfoHash ?? release.MagnetUri?.ToString() ?? release.DownloadUrl?.ToString() ?? release.Title;
-        var seed = $"{identity}|{request.GetType().Name}|{request.Title}";
+        var seed = $"{identity}|{request.GetType().Name}|{request.Title}|{RequestDiscriminator(request)}";
         var hash = SHA1.HashData(Encoding.UTF8.GetBytes(seed));
         return Convert.ToHexString(hash)[..16].ToLowerInvariant();
     }
+
+    /// <summary>
+    /// Every field, beyond <see cref="MediaRequest.Title"/>, that can change which file(s)
+    /// <see cref="MediaFileMatcher.Select{T}"/> picks out of a multi-file release for this
+    /// request's concrete type — see the switch in <see cref="MediaFileMatcher"/>'s private
+    /// <c>Match</c>. Deliberately covers every field of each subtype that plausibly narrows
+    /// a pack (not only the ones the matcher happens to read today, e.g.
+    /// <see cref="TvRequest.AbsoluteEpisode"/> and <see cref="TvRequest.FullSeason"/> aren't
+    /// read by <see cref="MediaFileMatcher"/> yet, but they identify a different unit of the
+    /// same release and must not silently collide once something does start reading them).
+    /// A new field on an existing subtype, or a wholly new subtype, needs a case added here
+    /// whenever it can affect file selection — the same way it would need a case in
+    /// <see cref="MediaFileMatcher"/>'s own switch.
+    /// </summary>
+    private static string RequestDiscriminator(MediaRequest request) => request switch
+    {
+        TvRequest tv => $"s={tv.Season}|e={tv.Episode}|abs={tv.AbsoluteEpisode}|full={tv.FullSeason}",
+        MusicRequest m => $"artist={m.Artist}|album={m.Album}|track={m.Track}",
+        BookRequest b => $"format={b.Format}",
+        ComicRequest c => $"vol={c.Volume}|issue={c.Issue}|chap={c.Chapter}|format={c.Format}",
+        GeneralRequest g => $"kind={g.Kind}|filetype={g.FileType}|filetypes={string.Join(',', g.FileTypes)}|filters={string.Join(',', g.FileFilters)}",
+        _ => string.Empty,
+    };
 
     // Single-extension whole-archive shapes, matched via Path.GetExtension. ".iso" is
     // deliberately absent: unlike zip/rar/7z/tar, a disc image is frequently the actual

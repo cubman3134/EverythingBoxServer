@@ -35,6 +35,48 @@ file sealed class RecordingDownloader(params string[] produce) : ITorrentDownloa
     }
 }
 
+/// <summary>Records requests it was asked to download and writes back a file whose
+/// name reflects the episode requested — enough to tell whether two different
+/// episode requests against the same release shared one memoized download.</summary>
+file sealed class EpisodeAwareDownloader : ITorrentDownloader
+{
+    public int Calls { get; private set; }
+
+    public Task<IReadOnlyList<string>> DownloadAsync(
+        TorrentResult torrent, MediaRequest? request, string directory,
+        IProgress<TorrentDownloadProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        Calls++;
+        Directory.CreateDirectory(directory);
+        var episode = (request as TvRequest)?.Episode ?? 0;
+        var path = Path.Combine(directory, $"Some.Release.S01E{episode:00}.mkv");
+        File.WriteAllText(path, "x");
+        return Task.FromResult<IReadOnlyList<string>>([path]);
+    }
+}
+
+/// <summary>Fails (returns nothing) on its first call, then succeeds on every call
+/// after — enough to tell whether an empty result gets permanently memoized.</summary>
+file sealed class FlakyDownloader : ITorrentDownloader
+{
+    private int _calls;
+    public int Calls => _calls;
+
+    public Task<IReadOnlyList<string>> DownloadAsync(
+        TorrentResult torrent, MediaRequest? request, string directory,
+        IProgress<TorrentDownloadProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        var n = Interlocked.Increment(ref _calls);
+        Directory.CreateDirectory(directory);
+        if (n == 1)
+            return Task.FromResult<IReadOnlyList<string>>([]);
+
+        var path = Path.Combine(directory, "Some.Release.1080p.mkv");
+        File.WriteAllText(path, "x");
+        return Task.FromResult<IReadOnlyList<string>>([path]);
+    }
+}
+
 public class ReleaseStreamResolverTests : IDisposable
 {
     private readonly List<string> _tempRoots = [];
@@ -543,6 +585,105 @@ public class ReleaseStreamResolverTests : IDisposable
         await Task.WhenAll(first, second);
 
         Assert.Equal(1, downloader.Calls);
+    }
+
+    // --- C1: the memoized download must be keyed per-episode, not per-show ---
+
+    [Fact]
+    public async Task Two_viewers_wanting_different_episodes_of_the_same_release_get_different_files()
+    {
+        // Before the fix, ReleaseKey hashed only the show title for a TvRequest — Season
+        // and Episode never entered it — so a season-pack release memoized ONE download
+        // across every episode, and the second viewer silently got the first viewer's
+        // episode back.
+        var downloader = new EpisodeAwareDownloader();
+        var resolver = ResolverWithDownload(Pending(), downloader, new DownloadConfig { Enabled = true });
+
+        var e1Task = resolver.ResolveAsync(
+            Sized(500), new TvRequest { Title = "Some Release", Season = 1, Episode = 1 }, 0, CancellationToken.None);
+        var e2Task = resolver.ResolveAsync(
+            Sized(500), new TvRequest { Title = "Some Release", Season = 1, Episode = 2 }, 0, CancellationToken.None);
+        var results = await Task.WhenAll(e1Task, e2Task);
+        var (e1, e2) = (results[0], results[1]);
+
+        Assert.Equal(2, downloader.Calls);
+        Assert.NotNull(e1);
+        Assert.NotNull(e2);
+        Assert.NotEqual(e1!.Url, e2!.Url);
+        Assert.Contains("S01E01", e1.Url);
+        Assert.Contains("S01E02", e2.Url);
+    }
+
+    // --- C2: a transient empty download must not permanently disable the fallback ---
+
+    [Fact]
+    public async Task A_transient_empty_download_does_not_permanently_disable_the_fallback()
+    {
+        // Before the fix, _downloads never evicted an empty result — since
+        // ReleaseStreamResolver is a process-lifetime singleton, one "no peers yet" miss
+        // would disable the fallback for that release forever.
+        var downloader = new FlakyDownloader();
+        var resolver = ResolverWithDownload(Pending(), downloader, new DownloadConfig { Enabled = true });
+        var request = new MovieRequest { Title = "x" };
+
+        var first = await resolver.ResolveAsync(Sized(500), request, 0, CancellationToken.None);
+        var second = await resolver.ResolveAsync(Sized(500), request, 0, CancellationToken.None);
+
+        Assert.Equal("", first!.Url);
+        Assert.False(string.IsNullOrWhiteSpace(first.Notice));
+
+        Assert.NotNull(second);
+        Assert.StartsWith("files/", second!.Url);
+        Assert.Equal(2, downloader.Calls);
+    }
+
+    // --- C3: a successful fallback must not keep two copies of the file on disk forever ---
+
+    [Fact]
+    public async Task A_successful_download_removes_the_downloads_working_copy_but_keeps_the_served_file()
+    {
+        var downloader = new RecordingDownloader("Some.Release.1080p.mkv");
+        var root = Path.Combine(Path.GetTempPath(), "ebs-fallback-" + Guid.NewGuid().ToString("N"));
+        _tempRoots.Add(root);
+        var files = new FileCache(root);
+        var resolver = new ReleaseStreamResolver(
+            new StubDebrid(Pending()), NullLogger<ReleaseStreamResolver>.Instance,
+            downloader, files, new DownloadConfig { Enabled = true });
+
+        var stream = await resolver.ResolveAsync(Sized(500), new MovieRequest { Title = "x" }, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.StartsWith("files/", stream!.Url);
+
+        var servedPath = Path.Combine(root, stream.Url["files/".Length..]);
+        Assert.True(File.Exists(servedPath));
+
+        var downloadsRoot = Path.Combine(root, ".downloads");
+        Assert.False(Directory.Exists(downloadsRoot) && Directory.EnumerateFileSystemEntries(downloadsRoot).Any());
+    }
+
+    // --- C4: the size gate must refuse a non-positive size, not just an unknown one ---
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task A_non_positive_size_is_not_fetched(long sizeBytes)
+    {
+        var downloader = new RecordingDownloader("mystery.mkv");
+        var resolver = ResolverWithDownload(Pending(), downloader, new DownloadConfig { Enabled = true });
+        var release = new TorrentResult
+        {
+            Title = "Some Release 1080p",
+            ProviderName = "test-indexer",
+            InfoHash = "0123456789abcdef0123456789abcdef01234567",
+            MagnetUri = new Uri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"),
+            SizeBytes = sizeBytes,
+        };
+
+        var stream = await resolver.ResolveAsync(release, new MovieRequest { Title = "x" }, 0, CancellationToken.None);
+
+        Assert.Equal("", stream!.Url);
+        Assert.Equal(0, downloader.Calls);
     }
 }
 
