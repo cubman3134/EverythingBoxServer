@@ -1,8 +1,26 @@
+using System.Text.RegularExpressions;
 using EverythingBox.Server.Abstractions;
 using EverythingBox.Server.Core.Selection;
 using Microsoft.Extensions.Logging;
 
 namespace EverythingBox.Server.Sources;
+
+/// <summary>
+/// Marks a request whose media type could not be determined — an id encoded before
+/// the catalog's media type was recorded into it, or one from a source whose protocol
+/// string <see cref="MediaTypeNames"/> doesn't recognize. <see cref="IDebridService"/>
+/// still sees a normal, well-formed request (reporting <see cref="MediaType.Other"/>,
+/// same as a plain <see cref="GeneralRequest"/> would); the only thing this distinct
+/// type buys is that <see cref="ReleaseStreamResolver"/> can recognize it and skip
+/// <see cref="MediaFileMatcher"/> entirely, rather than route it through
+/// <c>MatchGeneral</c> — which scores a whole-torrent archive as the closest "title"
+/// match (it has no extra tokens, unlike every real file) and would drop every real
+/// file. Internal: constructed only by <c>IndexerSearchSource</c>, checked only here.
+/// </summary>
+internal sealed class UnknownMediaTypeRequest : MediaRequest
+{
+    public override MediaType MediaType => MediaType.Other;
+}
 
 /// <summary>
 /// Turns a chosen <see cref="TorrentResult"/> into something the client can play, via
@@ -101,7 +119,17 @@ public sealed class ReleaseStreamResolver
         }
     }
 
-    private static readonly string[] WholeArchiveExtensions = [".zip", ".rar", ".7z"];
+    // Single-extension whole-archive shapes, matched via Path.GetExtension. ".iso" is
+    // deliberately absent: unlike zip/rar/7z/tar, a disc image is frequently the actual
+    // deliverable a game or retro request wants (GeneralRequest.FileType="iso"), so
+    // treating it as a "whole torrent, zipped" convenience link would deprioritize a
+    // legitimate feature file instead of a wrapper around one.
+    private static readonly string[] WholeArchiveExtensions = [".zip", ".zipx", ".rar", ".7z", ".tar", ".tgz"];
+
+    // Multi-part RAR sets: classic ".r00".."r99"/"r999" volumes, and the modern
+    // ".partN.rar" naming. Neither is a single recognizable Path.GetExtension() value.
+    private static readonly Regex RarVolumePartExtension = new(@"^\.r\d{2,3}$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RarMultiPartName = new(@"\.part\d+\.rar$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
     /// Narrows debrid's raw per-file links down to what the request actually wants,
@@ -109,47 +137,93 @@ public sealed class ReleaseStreamResolver
     /// <list type="number">
     ///   <item><see cref="MediaFileMatcher.SelectForRequest"/> — the episode/track/
     ///   book/comic picker Core already has, which narrows a season pack to one
-    ///   episode, an album to one track, etc.</item>
-    ///   <item><see cref="DeprioritizeWholeArchives"/> — covers what step 1 leaves
-    ///   untouched: movie, audiobook, non-specific TV/music requests, all of which
-    ///   fall through Core's matcher unchanged (including whatever a debrid service
-    ///   prepended, e.g. TorBoxService's whole-torrent zip at index 0).</item>
+    ///   episode, an album to one track, etc. Skipped entirely for
+    ///   <see cref="UnknownMediaTypeRequest"/>: with no media type to key off of, the
+    ///   general matcher would score a whole-torrent archive as the closest "title"
+    ///   match to the release name (it has no extra tokens, unlike every real file)
+    ///   and drop every real file — worse than doing nothing.</item>
+    ///   <item><see cref="Deprioritize"/> — covers what step 1 leaves untouched:
+    ///   movie, audiobook, non-specific TV/music requests (plus the skipped case
+    ///   above), all of which fall through Core's matcher unchanged (including
+    ///   whatever a debrid service prepended, e.g. TorBoxService's whole-torrent zip
+    ///   at index 0, or an obvious sample file).</item>
     /// </list>
     /// </summary>
     private static IReadOnlyList<DebridLink> Narrow(MediaRequest request, IReadOnlyList<DebridLink> links)
     {
-        var matched = MediaFileMatcher.SelectForRequest(request, links);
-        return DeprioritizeWholeArchives(matched);
+        var matched = request is UnknownMediaTypeRequest
+            ? links
+            : MediaFileMatcher.SelectForRequest(request, links);
+        return Deprioritize(matched);
     }
 
     /// <summary>
     /// Pushes whole-torrent archive links (see TorBoxService.RequestLinksAsync's
-    /// ".zip of everything" convenience link) after every real media file, rather
-    /// than removing them outright. Deliberately a reorder, not a filter: a request
-    /// that genuinely wants an archive — a ROM or comic pack matched by extension —
-    /// already has <see cref="MediaFileMatcher"/> narrow the candidates down to
-    /// nothing BUT archives, so there is nothing non-archive to prefer and this is a
-    /// no-op; the archive still comes back, just still at its earlier position. What
-    /// this rules out is the one thing that must never happen: index 0 handing back
-    /// "everything, zipped" when a real file was sitting right next to it.
+    /// ".zip of everything" convenience link) and obvious sample files after every
+    /// real media file, rather than removing them outright. Deliberately a reorder,
+    /// not a filter: a request that genuinely wants an archive — a ROM or comic pack
+    /// matched by extension — already has <see cref="MediaFileMatcher"/> narrow the
+    /// candidates down to nothing BUT archives, so there is nothing to prefer over
+    /// them and this is a no-op; same for a pack of nothing but sample-named files.
+    /// What this rules out is index 0 handing back "everything, zipped" or a sample
+    /// clip when a real file was sitting right next to it.
     /// </summary>
-    private static IReadOnlyList<DebridLink> DeprioritizeWholeArchives(IReadOnlyList<DebridLink> links)
+    private static IReadOnlyList<DebridLink> Deprioritize(IReadOnlyList<DebridLink> links)
     {
         if (links.Count <= 1)
             return links;
 
-        var nonArchive = links.Where(l => !IsWholeArchive(l.FileName)).ToList();
-        if (nonArchive.Count == 0 || nonArchive.Count == links.Count)
-            return links;
+        var maxSize = links.Max(l => l.SizeBytes ?? 0);
 
         var archive = links.Where(l => IsWholeArchive(l.FileName)).ToList();
-        return [.. nonArchive, .. archive];
+        var sample = links.Where(l => !IsWholeArchive(l.FileName) && IsLikelySample(l, maxSize)).ToList();
+        var real = links.Where(l => !IsWholeArchive(l.FileName) && !IsLikelySample(l, maxSize)).ToList();
+
+        // Nothing to demote (every link is a real file), or nothing real to prefer
+        // (every link is an archive and/or a sample) — either way, leave order alone.
+        if (real.Count == links.Count || real.Count == 0)
+            return links;
+
+        return [.. real, .. sample, .. archive];
     }
 
     private static bool IsWholeArchive(string fileName)
     {
+        if (fileName.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (RarMultiPartName.IsMatch(fileName))
+            return true;
+
         var extension = Path.GetExtension(fileName);
-        return extension.Length > 0 && WholeArchiveExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
+        if (extension.Length == 0)
+            return false;
+
+        return WholeArchiveExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)
+            || RarVolumePartExtension.IsMatch(extension);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="link"/> looks like a promotional sample clip rather
+    /// than the feature file: named by convention (<c>sample.*</c>, <c>*-sample.*</c>,
+    /// or inside a <c>sample/</c> directory) AND smaller than the largest file in the
+    /// set. Two signals, not just the name — a legitimate release can contain the
+    /// word "sample" in its title without being one.
+    /// </summary>
+    private static bool IsLikelySample(DebridLink link, long maxSize)
+        => HasSampleName(link.FileName) && (link.SizeBytes ?? 0) < maxSize;
+
+    private static bool HasSampleName(string fileName)
+    {
+        var segments = fileName.Replace('\\', '/').Split('/');
+        var stem = Path.GetFileNameWithoutExtension(segments[^1]);
+
+        if (string.Equals(stem, "sample", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (stem.EndsWith("-sample", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return segments.Take(segments.Length - 1)
+            .Any(s => string.Equals(s, "sample", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string MimeFor(string fileName)

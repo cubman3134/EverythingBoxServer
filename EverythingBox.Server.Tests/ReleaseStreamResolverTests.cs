@@ -199,6 +199,162 @@ public class ReleaseStreamResolverTests
         Assert.NotNull(stream);
         Assert.EndsWith(".zip", stream!.Url);
     }
+
+    // --- B1: an id with no media type must not route through the general matcher ---
+
+    [Fact]
+    public async Task An_unknown_media_type_request_skips_the_matcher_and_still_gets_real_files()
+    {
+        // Before this fix, an UnknownMediaTypeRequest-shaped case was a plain
+        // GeneralRequest{Kind=Other}: MatchGeneral would score the zip as the closest
+        // "title" match to the release name (zero extra tokens, vs S01E01/S01E02 on the
+        // real files) and narrow down to just the zip — leaving n=1 and n=2 null and
+        // costing the user their only escape hatch (reject-and-retry). Skipping the
+        // matcher for this case and letting the archive-deprioritization pass run alone
+        // restores both real files, with the archive pushed after them.
+        var resolver = Resolver(TorBoxShapedResult());
+        var request = new UnknownMediaTypeRequest { Title = "Some Release" };
+
+        var n0 = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+        var n1 = await resolver.ResolveAsync(Release(), request, 1, CancellationToken.None);
+        var n2 = await resolver.ResolveAsync(Release(), request, 2, CancellationToken.None);
+
+        Assert.NotNull(n0);
+        Assert.Equal("https://example.test/e1.mkv", n0!.Url);
+        Assert.NotNull(n1);
+        Assert.Equal("https://example.test/e2.mkv", n1!.Url);
+        Assert.NotNull(n2);
+        Assert.Equal("https://example.test/whole.zip", n2!.Url);
+    }
+
+    // --- B2: nothing else in the suite notices if MediaFileMatcher stops being called ---
+
+    [Fact]
+    public async Task The_matcher_narrows_a_comic_pack_to_the_requested_issue()
+    {
+        // Every other test in this file either has a single file, has files that are
+        // already in the "right" order, or has no distinction the archive/sample pass
+        // alone would get wrong — so deleting the MediaFileMatcher.SelectForRequest
+        // call out of Narrow leaves every one of them green. This one doesn't: none of
+        // the three links is an archive or a sample, so without the matcher the
+        // deprioritization pass is a no-op and issue 1 (input order) wins index 0
+        // instead of the requested issue 5.
+        var resolver = Resolver(Resolved(
+            new DebridLink("Big Comic 001.cbz", new Uri("https://example.test/1.cbz"), 100),
+            new DebridLink("Big Comic 005.cbz", new Uri("https://example.test/5.cbz"), 100),
+            new DebridLink("Big Comic 010.cbz", new Uri("https://example.test/10.cbz"), 100)));
+        var request = new ComicRequest { Title = "Big Comic", Issue = 5 };
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/5.cbz", stream!.Url);
+    }
+
+    // --- M1: an obvious sample file must not win index 0 ---
+
+    [Fact]
+    public async Task A_sample_file_no_longer_wins_index_zero()
+    {
+        var resolver = Resolver(Resolved(
+            new DebridLink("Some.Release.zip", new Uri("https://example.test/whole.zip"), 3_000_000),
+            new DebridLink("sample.mkv", new Uri("https://example.test/sample.mkv"), 50_000_000),
+            new DebridLink("Some.Release.2020.1080p.mkv", new Uri("https://example.test/feature.mkv"), 1_500_000_000)));
+        var request = new MovieRequest { Title = "Some Release" };
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/feature.mkv", stream!.Url);
+    }
+
+    [Theory]
+    [InlineData("sample.mkv")]
+    [InlineData("Some.Release-sample.mkv")]
+    [InlineData("sample/Some.Release.mkv")]
+    public async Task Conventionally_named_sample_files_are_pushed_after_the_feature(string sampleName)
+    {
+        var resolver = Resolver(Resolved(
+            new DebridLink(sampleName, new Uri("https://example.test/sample"), 50_000_000),
+            new DebridLink("Some.Release.2020.1080p.mkv", new Uri("https://example.test/feature.mkv"), 1_500_000_000)));
+        var request = new MovieRequest { Title = "Some Release" };
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/feature.mkv", stream!.Url);
+    }
+
+    [Fact]
+    public async Task A_release_merely_containing_the_word_sample_is_not_demoted_by_the_word_alone()
+    {
+        // The naming convention (an exact "sample" stem, a "-sample" suffix, or a
+        // sample/ directory) is one signal, not a substring search — otherwise a
+        // legitimately titled release would be wrongly deprioritized.
+        var resolver = Resolver(Resolved(
+            new DebridLink("Some.Release.zip", new Uri("https://example.test/whole.zip"), 3_000_000),
+            new DebridLink("Sample.Movie.Title.2020.1080p.mkv", new Uri("https://example.test/real.mkv"), 1_500_000_000)));
+        var request = new MovieRequest { Title = "Sample Movie Title" };
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/real.mkv", stream!.Url);
+    }
+
+    [Fact]
+    public async Task A_sample_named_file_that_is_not_smaller_than_anything_else_is_not_demoted()
+    {
+        // The size signal matters too: nothing to prefer it over means nothing to lose
+        // by leaving it where it was.
+        var resolver = Resolver(Resolved(new DebridLink("sample.mkv", new Uri("https://example.test/only.mkv"), 1_000)));
+        var request = new MovieRequest { Title = "x" };
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/only.mkv", stream!.Url);
+    }
+
+    // --- M2: the whole-archive extension list misses common multi-part/tar shapes ---
+
+    [Theory]
+    [InlineData("Some.Release.tar.gz")]
+    [InlineData("Some.Release.tgz")]
+    [InlineData("Some.Release.tar")]
+    [InlineData("Some.Release.zipx")]
+    [InlineData("Some.Release.r00")]
+    [InlineData("Some.Release.part1.rar")]
+    [InlineData("Some.Release.part01.rar")]
+    public async Task Additional_whole_archive_shapes_are_pushed_after_the_real_file(string archiveName)
+    {
+        var resolver = Resolver(Resolved(
+            new DebridLink(archiveName, new Uri("https://example.test/archive"), 3_000_000),
+            new DebridLink("Some.Release.mkv", new Uri("https://example.test/real.mkv"), 1_500_000)));
+        var request = new MovieRequest { Title = "Some Release" };
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/real.mkv", stream!.Url);
+    }
+
+    [Fact]
+    public async Task An_iso_is_deliberately_kept_out_of_the_whole_archive_list()
+    {
+        // Unlike zip/rar/tar, an ISO can legitimately BE the deliverable — a disc
+        // image for a game or retro request — so it must never be pushed behind a
+        // true archive the way one of those would be.
+        var resolver = Resolver(Resolved(
+            new DebridLink("Some.Release.zip", new Uri("https://example.test/whole.zip"), 3_000_000),
+            new DebridLink("Some.Release.iso", new Uri("https://example.test/disc.iso"), 700_000_000)));
+        var request = new MovieRequest { Title = "Some Release" }; // matcher is a no-op here; only the reorder pass applies
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/disc.iso", stream!.Url);
+    }
 }
 
 file sealed class ThrowingDebrid : IDebridService

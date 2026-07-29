@@ -115,12 +115,15 @@ public sealed class IndexerSearchSource : IMediaSource
         // per-file narrowing gets the same request shape (TvRequest, ComicRequest, ...)
         // the search side used, not a media-type-less catch-all. An id encoded before
         // this carried a media type (or one from a source that can't map its protocol
-        // string) decodes with MediaType null, and falls back to exactly the old
-        // behaviour: a bare GeneralRequest is still enough context for the resolver's
-        // per-file logic to do no harm.
+        // string) decodes with MediaType null; that case gets a dedicated
+        // UnknownMediaTypeRequest rather than a bare GeneralRequest, so
+        // ReleaseStreamResolver knows to skip MediaFileMatcher entirely instead of
+        // routing it through the general matcher — which would score the whole-torrent
+        // archive as the closest "title" match (it has no extra tokens, unlike every
+        // real file) and drop every real file.
         var request = decoded.MediaType is { } type
             ? BuildRequest(type, decoded.Release.Title)
-            : new GeneralRequest { Title = decoded.Release.Title, Kind = MediaType.Other };
+            : new UnknownMediaTypeRequest { Title = decoded.Release.Title };
         return await _resolver.ResolveAsync(decoded.Release, request, index, ct);
     }
 

@@ -137,8 +137,10 @@ public class SearchToStreamTests
         var stream = await client.GetFromJsonAsync<JsonElement>($"/stream/movie/{id}.json");
 
         var url = stream.GetProperty("url").GetString();
-        Assert.EndsWith(".mkv", url);
-        Assert.DoesNotContain(".zip", url);
+        // Names the exact file expected, not just the extension: the fixture also
+        // contains release-one-sample.mkv, which would satisfy an EndsWith(".mkv")
+        // check just as well as the real feature file would.
+        Assert.EndsWith("release-one.mkv", url);
     }
 
     [Fact]

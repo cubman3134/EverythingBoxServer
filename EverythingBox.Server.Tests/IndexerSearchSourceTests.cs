@@ -45,6 +45,16 @@ file sealed class RecordingDebrid : IDebridService
     }
 }
 
+/// <summary>Always resolves to a fixed set of links, regardless of the request it's
+/// handed — B1 needs a debrid stub shaped like TorBoxService's whole-torrent zip plus
+/// real files, resolved through an id that decodes with no media type at all.</summary>
+file sealed class FixedLinksDebrid(params DebridLink[] links) : IDebridService
+{
+    public string Name => "fixed";
+    public Task<DebridResult> ResolveAsync(TorrentResult torrent, MediaRequest? request = null, CancellationToken cancellationToken = default)
+        => Task.FromResult(DebridResult.Resolved(Name, "id", cached: true, links));
+}
+
 public class IndexerSearchSourceTests
 {
     private static TorrentResult Release(string title) => new()
@@ -237,6 +247,41 @@ public class IndexerSearchSourceTests
 
         Assert.NotNull(stream);
         Assert.IsType<TvRequest>(debrid.LastRequest);
+    }
+
+    [Fact]
+    public async Task An_id_with_no_media_type_still_resolves_real_files_not_just_the_archive()
+    {
+        // B1: an id encoded before the "mt" field existed (or from a source whose
+        // protocol string MediaTypeNames doesn't recognize) decodes with MediaType
+        // null. Resolving it must not route through the general matcher — which would
+        // score the whole-torrent zip as the closest "title" match to the release name
+        // and drop every real file, leaving n=1 unreachable (null) and taking away the
+        // user's only escape hatch (reject-and-retry).
+        var debrid = new FixedLinksDebrid(
+            new DebridLink("Some.Release.zip", new Uri("https://example.test/whole.zip"), 3_000_000),
+            new DebridLink("Some.Release.S01E01.mkv", new Uri("https://example.test/e1.mkv"), 1_500_000),
+            new DebridLink("Some.Release.S01E02.mkv", new Uri("https://example.test/e2.mkv"), 1_500_000));
+        var source = Source(new RecordingGrabber(), debrid);
+
+        // A ReleaseRecord JSON payload with no "mt" property — exactly what an id
+        // encoded before that field existed looks like. Built by hand rather than via
+        // EncodeId/a search round trip, since ReleaseRecord is private and its whole
+        // point here is the field's absence.
+        const string json = """{"t":"Some Release","p":"test-indexer","h":"0123456789abcdef0123456789abcdef01234567"}""";
+        var id = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+        var n0 = await source.ResolveAsync(id, 0, Ctx, CancellationToken.None);
+        var n1 = await source.ResolveAsync(id, 1, Ctx, CancellationToken.None);
+        var n2 = await source.ResolveAsync(id, 2, Ctx, CancellationToken.None);
+
+        Assert.NotNull(n0);
+        Assert.Equal("https://example.test/e1.mkv", n0!.Url);
+        Assert.NotNull(n1);
+        Assert.Equal("https://example.test/e2.mkv", n1!.Url);
+        Assert.NotNull(n2);
+        Assert.Equal("https://example.test/whole.zip", n2!.Url);
     }
 
     [Fact]
