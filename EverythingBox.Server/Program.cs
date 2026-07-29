@@ -39,6 +39,21 @@ builder.Services.AddSingleton<PluginHost>();
 
 builder.Services.AddSingleton(_ => new FileCache(config.ResolvedFilesCacheDir));
 
+// The self-download fallback is opt-in and OFF by default (see ServerConfig.Download).
+// Register the downloader in DI — rather than newing it inline inside the SourceRouter
+// factory below — only when it will actually be used, so a disabled config stays exactly as
+// inert as before (nothing constructed, GetService returns null). Resolving it from DI is
+// also what lets a test host swap in a fake via ConfigureTestServices, the same seam the
+// shared HttpMessageHandler above is replaced through. MonoTorrentDownloader allocates
+// nothing at construction; the guard is about intent, not cost. Built over the SAME shared
+// HttpClient as every other outbound call, so a .torrent-to-magnet fetch inherits its retry.
+if (config.Download.Enabled)
+{
+    builder.Services.AddSingleton<ITorrentDownloader>(sp => new MonoTorrentDownloader(
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger<MonoTorrentDownloader>(),
+        sp.GetRequiredService<HttpClient>()));
+}
+
 builder.Services.AddSingleton(sp =>
 {
     var host = sp.GetRequiredService<PluginHost>();
@@ -105,16 +120,12 @@ builder.Services.AddSingleton(sp =>
     // request — by then SetGrabber above has bound the real grabber; calling through the
     // deferred wrapper during THIS factory would throw by design.
     //
-    // The self-download fallback is opt-in and OFF by default (see ServerConfig.Download):
-    // only construct the downloader — and the BitTorrent engine setup that goes with it —
-    // when it will actually be used. MonoTorrentDownloader itself allocates nothing at
-    // construction (it just stores the logger/HttpClient), but there's no reason to hold
-    // even that for a server that will never call it; a disabled config should be as inert
-    // as if this line weren't here at all. Built over the SAME shared HttpClient as every
-    // other outbound call, so a .torrent-to-magnet fetch inherits its retry handling.
-    ITorrentDownloader? downloader = config.Download.Enabled
-        ? new MonoTorrentDownloader(loggers.CreateLogger<MonoTorrentDownloader>(), http)
-        : null;
+    // Resolved from DI, not newed here: the singleton above is registered only when
+    // config.Download.Enabled, so a disabled config yields null and the fallback stays off,
+    // exactly as before — and a test host can replace the registration via
+    // ConfigureTestServices. See the registration comment above for why the opt-in gate lives
+    // there rather than in an inline `? : null` here.
+    var downloader = sp.GetService<ITorrentDownloader>();
 
     // ReleaseStreamResolver is constructed exactly once, right here, because this whole
     // factory lambda is itself only ever invoked once (AddSingleton below caches the
