@@ -97,7 +97,7 @@ builder.Services.AddSingleton(sp =>
     // plugin also declares key "idx", SourceRouter's duplicate-key handling keeps the
     // first registration (the plugin's) and logs+drops this one instead.
     var resolver = new ReleaseStreamResolver(debrid, loggers.CreateLogger<ReleaseStreamResolver>());
-    var indexerSource = new IndexerSearchSource(deferredGrabber, resolver, loggers.CreateLogger<IndexerSearchSource>());
+    var indexerSource = new IndexerSearchSource(deferredGrabber, resolver, grabber.Providers.Count, loggers.CreateLogger<IndexerSearchSource>());
 
     // MetadataBackedVideoSource turns every metadata source collected across all loaded
     // plugins (there is no config-driven equivalent — metadata always comes from a

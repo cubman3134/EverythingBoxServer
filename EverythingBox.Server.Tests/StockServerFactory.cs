@@ -5,12 +5,13 @@ namespace EverythingBox.Server.Tests;
 /// <summary>
 /// Boots the real host with the project's stated out-of-the-box shape: no indexer, no debrid,
 /// no plugin — <c>Indexers: []</c>, same as a fresh <c>everythingbox-server.json</c>. Proves the
-/// "empty catalogs, but the manifest and search catalogs still exist" property by assertion
-/// rather than by inspection (see <see cref="StockServerTests"/>).
+/// "no catalog is advertised that nothing can fill, but the manifest and unadvertised catalog
+/// routes still work" property by assertion rather than by inspection (see
+/// <see cref="StockServerTests"/>).
 /// <para>
 /// Unlike <see cref="SearchServerFactory"/>, this fixture needs no fake <see cref="HttpClient"/>
-/// handler: with zero configured indexers the grabber has zero providers, so
-/// <c>IndexerSearchSource.SearchAsync</c> never makes an HTTP call at all.
+/// handler: with zero configured indexers, <c>IndexerSearchSource</c> declares no catalogs at
+/// all, so a request for one never even reaches the grabber, let alone makes an HTTP call.
 /// </para>
 /// <para>
 /// Writes the same process-wide <c>EBS_*</c> environment variables every other fixture in

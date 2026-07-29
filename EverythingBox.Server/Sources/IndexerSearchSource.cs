@@ -24,18 +24,9 @@ public sealed class IndexerSearchSource : IMediaSource
     private readonly ReleaseStreamResolver _resolver;
     private readonly ILogger<IndexerSearchSource> _logger;
 
-    public IndexerSearchSource(ITorrentGrabber grabber, ReleaseStreamResolver resolver, ILogger<IndexerSearchSource> logger)
-    {
-        _grabber = grabber;
-        _resolver = resolver;
-        _logger = logger;
-    }
-
-    public string Key => "idx";
-
     // "MediaType" on each descriptor is the addon-protocol string — the same
     // vocabulary MediaTypeNames translates to/from the pipeline's MediaType enum.
-    public IReadOnlyList<CatalogDescriptor> Catalogs { get; } =
+    private static readonly IReadOnlyList<CatalogDescriptor> AllCatalogs =
     [
         new CatalogDescriptor("movies", "Movies (search)", "movie"),
         new CatalogDescriptor("series", "Series (search)", "series"),
@@ -44,6 +35,23 @@ public sealed class IndexerSearchSource : IMediaSource
         new CatalogDescriptor("books", "Books (search)", "book"),
         new CatalogDescriptor("comics", "Comics (search)", "comic"),
     ];
+
+    public IndexerSearchSource(ITorrentGrabber grabber, ReleaseStreamResolver resolver, int indexerCount, ILogger<IndexerSearchSource> logger)
+    {
+        _grabber = grabber;
+        _resolver = resolver;
+        _logger = logger;
+
+        // A shelf is only worth declaring if something can actually fill it — a stock
+        // install with no indexer configured (config or plugin-registered) must not
+        // advertise six shelves that can never return anything. Same discipline
+        // MetadataBackedVideoSource applies to its own catalogs.
+        Catalogs = indexerCount > 0 ? AllCatalogs : [];
+    }
+
+    public string Key => "idx";
+
+    public IReadOnlyList<CatalogDescriptor> Catalogs { get; }
 
     // movie/series are built into the client and must NOT be declared here — only the
     // types the client doesn't know natively need presentation hints, or they render
@@ -79,7 +87,7 @@ public sealed class IndexerSearchSource : IMediaSource
         IReadOnlyList<TorrentResult> results;
         try
         {
-            results = await _grabber.SearchAsync(request, ct);
+            results = await _grabber.SearchRankedAsync(request, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {

@@ -121,12 +121,13 @@ server's routes at all.
 ### Search, out of the box
 
 Configuring at least one `Indexers` entry makes the server searchable without
-installing any plugin. The host always registers a built-in `idx:` source
+installing any plugin. The host registers a built-in `idx:` source
 (`IndexerSearchSource`) exposing one search-only catalog per media type the pipeline
 understands — movies, series, music, audiobooks, books, comics — backed by every
-configured indexer (plus any a plugin registers, see `AddIndexer` below). With
-`Indexers: []` these catalogs still appear in the manifest; they just return nothing,
-same as the rest of a stock server.
+configured indexer (plus any a plugin registers, see `AddIndexer` below), but only once
+at least one indexer exists. With `Indexers: []` and no plugin-registered indexer, the
+manifest declares none of these catalogs at all, rather than advertising six shelves
+that can never return anything.
 
 Add `Debrid` to make a search result playable: resolving a release asks the configured
 debrid service (TorBox or Real-Debrid today) for a direct link. **If the release isn't
@@ -135,10 +136,11 @@ shortly" notice — there is no fallback that downloads it for you.** Retrying t
 search later, once the debrid service has finished caching it, is currently the only way
 to get a playable link for an uncached release.
 
-`DownloadClient` (qBittorrent or Transmission) and `Ranking` (seeders, size bounds,
-preferred resolution/language/format, banned terms) feed the same pipeline but are not
+`DownloadClient` (qBittorrent or Transmission) feeds the same pipeline but is not
 exercised by anything the host calls today — no route hands a release to a download
-client yet. **`Ranking` applies only to the single-best ranked path (`GrabAsync`) and does not filter what search catalogs return; see "Search, out of the box" above.**
+client yet. `Ranking` (seeders, size bounds, preferred resolution/language/format,
+banned terms) has no such gap: it's applied to both the single-best ranked path
+(`GrabAsync`) and the search catalogs described above.
 
 ## The torrent pipeline (`EverythingBox.Server.Core`)
 
