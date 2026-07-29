@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace EverythingBox.Server.Plugins;
 
 public sealed record LoadedPlugin(
-    string Key, string DisplayName, IReadOnlyCollection<IMediaSource> Sources, IReadOnlyCollection<ITorrentProvider> Indexers);
+    string Key, string DisplayName, IReadOnlyCollection<IMediaSource> Sources, IReadOnlyCollection<ITorrentProvider> Indexers, IReadOnlyCollection<IMetadataSource> MetadataSources);
 
 /// <summary>
 /// Discovers plugins under plugins/&lt;key&gt;/ and loads each into its own context.
@@ -149,9 +149,9 @@ public sealed class PluginHost(ILogger<PluginHost> log)
             }
 
             var displayName = plugin.DisplayName;
-            log.LogInformation("Plugin '{Key}' ({Name}) registered {Sources} source(s) and {Indexers} indexer(s).",
-                key, displayName, registry.Sources.Count, registry.Indexers.Count);
-            return new LoadedPlugin(key, displayName, registry.Sources, registry.Indexers);
+            log.LogInformation("Plugin '{Key}' ({Name}) registered {Sources} source(s), {Indexers} indexer(s), and {Metadata} metadata source(s).",
+                key, displayName, registry.Sources.Count, registry.Indexers.Count, registry.MetadataSources.Count);
+            return new LoadedPlugin(key, displayName, registry.Sources, registry.Indexers, registry.MetadataSources);
         }
         catch (Exception ex)
         {

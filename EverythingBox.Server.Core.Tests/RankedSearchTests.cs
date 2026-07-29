@@ -94,4 +94,46 @@ public class RankedSearchTests
         var results = await grabber.SearchRankedAsync(new MovieRequest { Title = "Nothing" }, CancellationToken.None);
         Assert.Empty(results);
     }
+
+    [Fact]
+    public async Task Ranked_search_applies_size_bounds()
+    {
+        // MinSizeBytes and MaxSizeBytes must be enforced; a refactor could silently drop them.
+        var tooSmall = new TorrentResult
+        {
+            Title = "Some Movie 2020 - Tiny",
+            ProviderName = "fixed",
+            InfoHash = "0000000000000000000000000000000000000000",
+            MagnetUri = new Uri("magnet:?xt=urn:btih:0000000000000000000000000000000000000000"),
+            Seeders = 50,
+            SizeBytes = 100_000_000, // 100 MB
+        };
+        var inRange = new TorrentResult
+        {
+            Title = "Some Movie 2020 720p",
+            ProviderName = "fixed",
+            InfoHash = "1111111111111111111111111111111111111111",
+            MagnetUri = new Uri("magnet:?xt=urn:btih:1111111111111111111111111111111111111111"),
+            Seeders = 50,
+            SizeBytes = 2_000_000_000, // 2 GB
+        };
+        var tooLarge = new TorrentResult
+        {
+            Title = "Some Movie 2020 - Huge",
+            ProviderName = "fixed",
+            InfoHash = "2222222222222222222222222222222222222222",
+            MagnetUri = new Uri("magnet:?xt=urn:btih:2222222222222222222222222222222222222222"),
+            Seeders = 50,
+            SizeBytes = 20_000_000_000, // 20 GB
+        };
+
+        var grabber = Grabber(
+            new RankingOptions { MinSeeders = 0, MinSizeBytes = 500_000_000, MaxSizeBytes = 10_000_000_000 },
+            tooSmall, inRange, tooLarge);
+
+        var results = await grabber.SearchRankedAsync(new MovieRequest { Title = "Some Movie" }, CancellationToken.None);
+
+        Assert.Single(results);
+        Assert.Equal("Some Movie 2020 720p", results[0].Title);
+    }
 }

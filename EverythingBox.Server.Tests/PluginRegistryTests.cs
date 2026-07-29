@@ -21,6 +21,22 @@ file sealed class ThrowingNameIndexer : ITorrentProvider
         => Task.FromResult<IReadOnlyList<TorrentResult>>([]);
 }
 
+file sealed class FakeMetadata(string name) : IMetadataSource
+{
+    public string Name => name;
+    public IReadOnlyList<string> SupportedMediaTypes { get; } = ["movie"];
+    public Task<IReadOnlyList<MetadataItem>> BrowseAsync(string mediaType, string? query, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<MetadataItem>>([]);
+}
+
+file sealed class ThrowingNameMetadata : IMetadataSource
+{
+    public string Name => throw new InvalidOperationException("name boom");
+    public IReadOnlyList<string> SupportedMediaTypes => throw new InvalidOperationException("types boom");
+    public Task<IReadOnlyList<MetadataItem>> BrowseAsync(string mediaType, string? query, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<MetadataItem>>([]);
+}
+
 public class PluginRegistryTests
 {
     [Fact]
@@ -98,5 +114,38 @@ public class PluginRegistryTests
         registry.AddIndexer(new FakeIndexer("same"));
         registry.AddIndexer(new FakeIndexer("same"));
         Assert.Equal(2, registry.Indexers.Count);
+    }
+
+    [Fact]
+    public void Registers_a_metadata_source()
+    {
+        var registry = new PluginRegistry();
+        registry.AddMetadata(new FakeMetadata("alpha"));
+        Assert.Single(registry.MetadataSources);
+    }
+
+    [Fact]
+    public void Rejects_a_null_metadata_source()
+        => Assert.Throws<ArgumentNullException>(() => new PluginRegistry().AddMetadata(null!));
+
+    [Fact]
+    public void A_metadata_source_whose_members_throw_does_not_escape_registration()
+    {
+        // Name and SupportedMediaTypes are plugin code. Registration must not read them.
+        var registry = new PluginRegistry();
+        Assert.Null(Record.Exception(() => registry.AddMetadata(new ThrowingNameMetadata())));
+    }
+
+    [Fact]
+    public void Metadata_indexers_and_sources_are_three_separate_registrations()
+    {
+        var registry = new PluginRegistry();
+        registry.AddSource(new FakeSource("alpha"));
+        registry.AddIndexer(new FakeIndexer("alpha"));
+        registry.AddMetadata(new FakeMetadata("alpha"));
+
+        Assert.Single(registry.Sources);
+        Assert.Single(registry.Indexers);
+        Assert.Single(registry.MetadataSources);
     }
 }

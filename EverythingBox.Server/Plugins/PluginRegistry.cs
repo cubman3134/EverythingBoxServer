@@ -18,7 +18,7 @@ public sealed class PluginRegistry : IPluginRegistry
 
     /// <summary>Metadata sources registered so far. Consumed by the host to pair
     /// browsing with the pipeline.</summary>
-    public IReadOnlyCollection<IMetadataSource> Metadata => _metadata;
+    public IReadOnlyCollection<IMetadataSource> MetadataSources => _metadata;
 
     public void AddSource(IMediaSource source)
     {
@@ -39,6 +39,11 @@ public sealed class PluginRegistry : IPluginRegistry
         _indexers.Add(provider);
     }
 
+    // Deliberately does NOT read metadata.Name or metadata.SupportedMediaTypes. These
+    // are plugin-authored code and can throw (the host learned this the hard way in
+    // milestone 1, where reading a plugin property outside a try/catch let one bad
+    // plugin 500 the manifest for everyone). Do not "helpfully" add a member check here
+    // — it reintroduces that hazard.
     public void AddMetadata(IMetadataSource metadata)
     {
         ArgumentNullException.ThrowIfNull(metadata);
