@@ -23,4 +23,11 @@
     <InternalsVisibleTo Include="EverythingBox.Server.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- In-process BitTorrent, so an uncached release can be fetched directly rather
+         than waiting on debrid. HOST ONLY: Core is BCL-only by design and two tests
+         enforce that, which is exactly why ITorrentDownloader is an interface. -->
+    <PackageReference Include="MonoTorrent" Version="3.0.2" />
+  </ItemGroup>
+
 </Project>
