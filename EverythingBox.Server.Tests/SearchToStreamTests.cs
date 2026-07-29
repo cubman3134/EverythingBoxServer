@@ -124,6 +124,24 @@ public class SearchToStreamTests
     }
 
     [Fact]
+    public async Task Resolving_a_multi_file_release_never_hands_back_the_whole_torrent_zip_first()
+    {
+        // C1, exercised through the real HTTP surface: StubTorBoxHandler reports release
+        // one with two files, which makes the real TorBoxService prepend a whole-torrent
+        // zip at index 0 — exactly the shape that made a configured indexer's default
+        // stream unplayable. ?n=0 (the client's default) must land on a real media file.
+        var client = _factory.CreateClient();
+        var catalog = await client.GetFromJsonAsync<JsonElement>("/catalog/idx:movies/search=example.json");
+        var id = catalog.GetProperty("items").EnumerateArray().First().GetProperty("id").GetString();
+
+        var stream = await client.GetFromJsonAsync<JsonElement>($"/stream/movie/{id}.json");
+
+        var url = stream.GetProperty("url").GetString();
+        Assert.EndsWith(".mkv", url);
+        Assert.DoesNotContain(".zip", url);
+    }
+
+    [Fact]
     public async Task An_uncached_release_returns_the_caching_notice_rather_than_a_bare_no_source()
     {
         var client = _factory.CreateClient();
@@ -185,9 +203,11 @@ file sealed class QueryCapturingHandler(Action<string> onIndexerQuery) : Delegat
 /// Answers exactly the three calls <c>TorBoxService.ResolveAsync</c> makes for a cached-only
 /// (<c>MaxWait = TimeSpan.Zero</c>) resolution: <c>createtorrent</c> (dedupes by info hash — the
 /// magnet embeds it, so the hash in the request body says which of the two fixture releases this
-/// is), <c>mylist</c> (reports release one as already finished — an instant "cached" result — and
-/// release two as still downloading, which is Pending immediately since MaxWait is zero), and
-/// <c>requestdl</c> (one direct link, for release one only — TorBoxService never asks for a link
+/// is), <c>mylist</c> (reports release one as already finished — an instant "cached" result, with
+/// MORE THAN ONE file so TorBoxService.RequestLinksAsync also fetches a whole-torrent zip link and
+/// inserts it at index 0 — the exact real-world shape C1 fixed — and release two as still
+/// downloading, which is Pending immediately since MaxWait is zero), and <c>requestdl</c> (one
+/// link per file plus the zip link, for release one only — TorBoxService never asks for a link
 /// for a release <c>mylist</c> reported as not ready).
 /// </para>
 /// </summary>
@@ -227,8 +247,15 @@ file sealed class StubTorBoxHandler : DelegatingHandler
                 {
                     download_finished = ready,
                     download_present = ready,
+                    // Two files (not one) so TorBoxService.RequestLinksAsync also requests
+                    // a whole-torrent zip link and inserts it at index 0 — the real shape
+                    // that made C1 true for every multi-file release before it was fixed.
                     files = ready
-                        ? new object[] { new { id = 11, name = "release-one.mkv", size = 1_500_000_000L } }
+                        ? new object[]
+                        {
+                            new { id = 11, name = "release-one.mkv", size = 1_500_000_000L },
+                            new { id = 12, name = "release-one-sample.mkv", size = 50_000_000L },
+                        }
                         : [],
                 },
             });
@@ -236,7 +263,16 @@ file sealed class StubTorBoxHandler : DelegatingHandler
 
         if (path.EndsWith("requestdl", StringComparison.OrdinalIgnoreCase))
         {
-            return Json(new { success = true, data = "https://example.test/download/release-one.mkv" });
+            if (QueryValue(uri, "zip_link") == "true")
+                return Json(new { success = true, data = "https://example.test/download/release-one.zip" });
+
+            var url = QueryValue(uri, "file_id") switch
+            {
+                "11" => "https://example.test/download/release-one.mkv",
+                "12" => "https://example.test/download/release-one-sample.mkv",
+                _ => "https://example.test/download/unknown",
+            };
+            return Json(new { success = true, data = url });
         }
 
         return new HttpResponseMessage(HttpStatusCode.NotFound);

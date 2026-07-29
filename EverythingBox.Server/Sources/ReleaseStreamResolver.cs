@@ -1,4 +1,5 @@
 using EverythingBox.Server.Abstractions;
+using EverythingBox.Server.Core.Selection;
 using Microsoft.Extensions.Logging;
 
 namespace EverythingBox.Server.Sources;
@@ -88,15 +89,67 @@ public sealed class ReleaseStreamResolver
                 return null;
 
             case DebridStatus.Resolved:
-                if (index < 0 || index >= result.Links.Count)
+                var narrowed = Narrow(request, result.Links);
+                if (index < 0 || index >= narrowed.Count)
                     return null;
 
-                var link = result.Links[index];
+                var link = narrowed[index];
                 return new SourceStream(link.Url.ToString(), MimeFor(link.FileName));
 
             default:
                 throw new InvalidOperationException($"Unhandled DebridStatus: {result.Status}");
         }
+    }
+
+    private static readonly string[] WholeArchiveExtensions = [".zip", ".rar", ".7z"];
+
+    /// <summary>
+    /// Narrows debrid's raw per-file links down to what the request actually wants,
+    /// before <paramref name="index"/> ever picks one. Two passes:
+    /// <list type="number">
+    ///   <item><see cref="MediaFileMatcher.SelectForRequest"/> — the episode/track/
+    ///   book/comic picker Core already has, which narrows a season pack to one
+    ///   episode, an album to one track, etc.</item>
+    ///   <item><see cref="DeprioritizeWholeArchives"/> — covers what step 1 leaves
+    ///   untouched: movie, audiobook, non-specific TV/music requests, all of which
+    ///   fall through Core's matcher unchanged (including whatever a debrid service
+    ///   prepended, e.g. TorBoxService's whole-torrent zip at index 0).</item>
+    /// </list>
+    /// </summary>
+    private static IReadOnlyList<DebridLink> Narrow(MediaRequest request, IReadOnlyList<DebridLink> links)
+    {
+        var matched = MediaFileMatcher.SelectForRequest(request, links);
+        return DeprioritizeWholeArchives(matched);
+    }
+
+    /// <summary>
+    /// Pushes whole-torrent archive links (see TorBoxService.RequestLinksAsync's
+    /// ".zip of everything" convenience link) after every real media file, rather
+    /// than removing them outright. Deliberately a reorder, not a filter: a request
+    /// that genuinely wants an archive — a ROM or comic pack matched by extension —
+    /// already has <see cref="MediaFileMatcher"/> narrow the candidates down to
+    /// nothing BUT archives, so there is nothing non-archive to prefer and this is a
+    /// no-op; the archive still comes back, just still at its earlier position. What
+    /// this rules out is the one thing that must never happen: index 0 handing back
+    /// "everything, zipped" when a real file was sitting right next to it.
+    /// </summary>
+    private static IReadOnlyList<DebridLink> DeprioritizeWholeArchives(IReadOnlyList<DebridLink> links)
+    {
+        if (links.Count <= 1)
+            return links;
+
+        var nonArchive = links.Where(l => !IsWholeArchive(l.FileName)).ToList();
+        if (nonArchive.Count == 0 || nonArchive.Count == links.Count)
+            return links;
+
+        var archive = links.Where(l => IsWholeArchive(l.FileName)).ToList();
+        return [.. nonArchive, .. archive];
+    }
+
+    private static bool IsWholeArchive(string fileName)
+    {
+        var extension = Path.GetExtension(fileName);
+        return extension.Length > 0 && WholeArchiveExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
     }
 
     private static string MimeFor(string fileName)

@@ -29,6 +29,22 @@ file sealed class ThrowingGrabber : ITorrentGrabber
         => throw new HttpRequestException("indexer unreachable");
 }
 
+/// <summary>Records the <see cref="MediaRequest"/> it was resolved with, so a test can
+/// assert an item's id round-tripped its catalog's media type into the rebuilt
+/// request (C1) rather than always producing a bare GeneralRequest.</summary>
+file sealed class RecordingDebrid : IDebridService
+{
+    public string Name => "recording";
+    public MediaRequest? LastRequest { get; private set; }
+
+    public Task<DebridResult> ResolveAsync(TorrentResult torrent, MediaRequest? request = null, CancellationToken cancellationToken = default)
+    {
+        LastRequest = request;
+        return Task.FromResult(DebridResult.Resolved(Name, "id", cached: true,
+            [new DebridLink("picked.mkv", new Uri("https://example.test/picked.mkv"), 10)]));
+    }
+}
+
 public class IndexerSearchSourceTests
 {
     private static TorrentResult Release(string title) => new()
@@ -204,5 +220,42 @@ public class IndexerSearchSourceTests
         var detail = await source.DetailAsync(item.Id, Ctx, CancellationToken.None);
 
         Assert.Empty(detail.Items);
+    }
+
+    [Fact]
+    public async Task An_items_id_carries_its_media_type_so_resolving_rebuilds_the_matching_request()
+    {
+        // C1: an id minted from the series catalog must rebuild a TvRequest at resolve
+        // time, not a media-type-less GeneralRequest — otherwise ReleaseStreamResolver's
+        // per-file narrowing (season/episode matching) never engages for a season pack.
+        var grabber = new RecordingGrabber(Release("Some Series S01"));
+        var debrid = new RecordingDebrid();
+        var source = Source(grabber, debrid);
+
+        var item = (await source.SearchAsync("series", "some", Ctx, CancellationToken.None)).Items.Single();
+        var stream = await source.ResolveAsync(item.Id, 0, Ctx, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.IsType<TvRequest>(debrid.LastRequest);
+    }
+
+    [Fact]
+    public async Task An_items_id_omits_the_download_url_when_a_magnet_is_available()
+    {
+        // I1: DownloadUrl often embeds the indexer manager's own API key and hostname
+        // (Prowlarr/Jackett enclosure URLs do). MagnetResolver only ever falls back to
+        // DownloadUrl when both MagnetUri and InfoHash are absent, so once a magnet is
+        // present the id must not carry the download URL at all — encoding it would leak
+        // it to the client and into every request-path log line.
+        var release = Release("Some Release 1080p") with
+        {
+            DownloadUrl = new Uri("https://indexer.example.test/download?apikey=super-secret-key"),
+        };
+        var grabber = new RecordingGrabber(release);
+
+        var item = (await Source(grabber).SearchAsync("movies", "some", Ctx, CancellationToken.None)).Items.Single();
+
+        Assert.DoesNotContain("super-secret-key", item.Id);
+        Assert.DoesNotContain("indexer.example.test", item.Id);
     }
 }

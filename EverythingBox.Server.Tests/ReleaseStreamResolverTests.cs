@@ -131,6 +131,74 @@ public class ReleaseStreamResolverTests
         var stream = await resolver.ResolveAsync(Release(), new MovieRequest { Title = "x" }, 0, CancellationToken.None);
         Assert.Equal(expected, stream!.Mime);
     }
+
+    // --- C1: the whole-torrent zip a debrid service prepends must never be index 0 ---
+
+    private static DebridResult TorBoxShapedResult() => Resolved(
+        new DebridLink("Some.Release.zip", new Uri("https://example.test/whole.zip"), 3_000_000),
+        new DebridLink("Some.Release.S01E01.mkv", new Uri("https://example.test/e1.mkv"), 1_500_000),
+        new DebridLink("Some.Release.S01E02.mkv", new Uri("https://example.test/e2.mkv"), 1_500_000));
+
+    [Fact]
+    public async Task A_torbox_shaped_multi_file_result_does_not_resolve_index_zero_to_the_zip()
+    {
+        // Shaped exactly like TorBoxService.RequestLinksAsync's output for a multi-file
+        // torrent: the whole-torrent zip inserted at index 0, then the real files. A
+        // season-pack request (no Episode) is one of the cases MediaFileMatcher itself
+        // leaves untouched, so this is exactly the gap the resolver's own narrowing has
+        // to cover.
+        var resolver = Resolver(TorBoxShapedResult());
+        var request = new TvRequest { Title = "Some Release" };
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.NotEqual("https://example.test/whole.zip", stream!.Url);
+        Assert.Equal("https://example.test/e1.mkv", stream.Url);
+    }
+
+    [Fact]
+    public async Task The_index_parameter_still_walks_real_candidates_not_the_archive()
+    {
+        // Reject-and-retry (?n=1, ?n=2, ...) must walk the narrowed, real files —
+        // re-offering the same archive at every index would defeat the whole feature.
+        var resolver = Resolver(TorBoxShapedResult());
+        var request = new TvRequest { Title = "Some Release" };
+
+        var stream = await resolver.ResolveAsync(Release(), request, 1, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/e2.mkv", stream!.Url);
+    }
+
+    [Fact]
+    public async Task A_single_file_result_is_unaffected_by_narrowing()
+    {
+        var resolver = Resolver(Resolved(new DebridLink("Solo.Release.mkv", new Uri("https://example.test/solo.mkv"), 1_000)));
+        var request = new TvRequest { Title = "Solo Release" }; // no Episode — would otherwise fall through unmatched
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.Equal("https://example.test/solo.mkv", stream!.Url);
+    }
+
+    [Fact]
+    public async Task A_request_that_genuinely_wants_an_archive_still_gets_one()
+    {
+        // A ROM request can legitimately want the .zip itself (many emulator cores
+        // consume zipped ROMs directly). MediaFileMatcher narrows to the requested
+        // extension first; the resolver's archive-deprioritization must not then hide
+        // the only files left just because they're all zips.
+        var resolver = Resolver(Resolved(
+            new DebridLink("Retro Pack (Disc 1).zip", new Uri("https://example.test/disc1.zip"), 200),
+            new DebridLink("Retro Pack (Disc 2).zip", new Uri("https://example.test/disc2.zip"), 100)));
+        var request = new GeneralRequest { Title = "Retro Pack", Kind = MediaType.PcGame, FileType = "zip" };
+
+        var stream = await resolver.ResolveAsync(Release(), request, 0, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.EndsWith(".zip", stream!.Url);
+    }
 }
 
 file sealed class ThrowingDebrid : IDebridService

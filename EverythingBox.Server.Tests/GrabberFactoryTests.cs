@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EverythingBox.Server.Tests;
 
-file sealed class FakeIndexer(string name) : ITorrentProvider
+file sealed class FakeIndexer(string name, TorrentResult? result = null) : ITorrentProvider
 {
     public string Name => name;
 
@@ -15,7 +15,19 @@ file sealed class FakeIndexer(string name) : ITorrentProvider
         SupportedMediaTypes = new HashSet<MediaType>(Enum.GetValues<MediaType>()),
     };
     public Task<IReadOnlyList<TorrentResult>> SearchAsync(MediaRequest request, CancellationToken cancellationToken = default)
-        => Task.FromResult<IReadOnlyList<TorrentResult>>([]);
+        => Task.FromResult<IReadOnlyList<TorrentResult>>(result is null ? [] : [result]);
+}
+
+/// <summary>A debrid double that tags every <see cref="DebridResult"/> it produces with
+/// its own identity, so a test can prove a grabber actually resolves through THIS
+/// instance rather than merely through "an" <see cref="IDebridService"/> of the same
+/// shape.</summary>
+file sealed class MarkedDebrid(string marker) : IDebridService
+{
+    public string Name => marker;
+
+    public Task<DebridResult> ResolveAsync(TorrentResult torrent, MediaRequest? request = null, CancellationToken cancellationToken = default)
+        => Task.FromResult(DebridResult.Resolved(Name, "id", cached: true, []));
 }
 
 public class GrabberFactoryTests
@@ -133,8 +145,16 @@ public class GrabberFactoryTests
         Assert.Single(grabber.Providers);
     }
 
+    private static TorrentResult FindableRelease() => new()
+    {
+        Title = "Test Movie 2020 1080p",
+        ProviderName = "fake",
+        MagnetUri = new Uri("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"),
+        Seeders = 10,
+    };
+
     [Fact]
-    public void A_download_client_with_blank_kind_is_skipped_rather_than_throwing()
+    public async Task A_download_client_with_blank_kind_is_skipped_rather_than_throwing()
     {
         // Same degradation pattern as indexer/debrid: missing Kind is a user mistake.
         var config = new ServerConfig
@@ -143,13 +163,19 @@ public class GrabberFactoryTests
         };
 
         var (grabber, _) = Build(config);
-        // Grabber builds successfully; download client is not wired in (checked indirectly
-        // via the fact that GrabAndDownloadAsync would throw if there was no client).
-        Assert.NotNull(grabber);
+
+        // The grabber must build successfully — but "skipped" has to mean the client is
+        // genuinely not wired in, not merely that Build() didn't throw. GrabAndDownloadAsync
+        // throws InvalidOperationException specifically when no download client is configured
+        // (checked before it ever searches a provider), so that's the one call that actually
+        // distinguishes "skipped" from "wired in but happens to look fine here".
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => grabber.GrabAndDownloadAsync(new MovieRequest { Title = "x" }));
+        Assert.Contains("No download client configured", ex.Message);
     }
 
     [Fact]
-    public void A_download_client_with_unparseable_base_url_is_skipped_rather_than_throwing()
+    public async Task A_download_client_with_unparseable_base_url_is_skipped_rather_than_throwing()
     {
         // Same degradation pattern: malformed BaseUrl is a user mistake.
         var config = new ServerConfig
@@ -158,11 +184,14 @@ public class GrabberFactoryTests
         };
 
         var (grabber, _) = Build(config);
-        Assert.NotNull(grabber);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => grabber.GrabAndDownloadAsync(new MovieRequest { Title = "x" }));
+        Assert.Contains("No download client configured", ex.Message);
     }
 
     [Fact]
-    public void An_unknown_download_client_kind_is_skipped_rather_than_throwing()
+    public async Task An_unknown_download_client_kind_is_skipped_rather_than_throwing()
     {
         // Same degradation pattern: unknown client kind is a user mistake.
         var config = new ServerConfig
@@ -171,30 +200,34 @@ public class GrabberFactoryTests
         };
 
         var (grabber, _) = Build(config);
-        Assert.NotNull(grabber);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => grabber.GrabAndDownloadAsync(new MovieRequest { Title = "x" }));
+        Assert.Contains("No download client configured", ex.Message);
     }
 
     [Fact]
-    public void The_debrid_service_is_shared_between_plugins_and_grabber()
+    public async Task The_debrid_service_is_shared_between_plugins_and_grabber()
     {
-        // F1 fix: ensure the debrid instance visible to plugins (via IServerServices.Debrid)
-        // is the same instance used inside the grabber. Build debrid once, then pass it to
-        // a second Build call that produces the grabber.
-        var config = new ServerConfig { Debrid = new DebridConfig { Provider = "torbox", ApiKey = "test-key" } };
-        var http = new HttpClient();
+        // F1 fix: the debrid instance IServerServices.Debrid hands to plugins must be the
+        // EXACT instance the grabber resolves through — not a second, independently built
+        // debrid that merely looks equivalent. A pair of Assert.NotNull calls (the original
+        // shape of this test) would pass even if GrabberFactory quietly built its own debrid
+        // from config instead of using the one handed to it — the regression this test exists
+        // to catch. Prove identity instead: tag a fake debrid with a unique marker and check
+        // the grabber's own resolved result carries THAT marker, not one it built for itself.
+        var marker = Guid.NewGuid().ToString();
+        var debrid = new MarkedDebrid(marker);
+        var provider = new FakeIndexer("from-plugin", FindableRelease());
 
-        // Build debrid once.
-        var debrid = GrabberFactory.BuildDebrid(config, http, NullLoggerFactory.Instance);
-        Assert.NotNull(debrid);
+        // Build(..., debrid) is the overload Program.cs uses once BuildDebrid has already
+        // produced the shared instance — it must wire THIS debrid in, not build its own.
+        var grabber = GrabberFactory.Build(new ServerConfig(), new HttpClient(), [provider], NullLoggerFactory.Instance, debrid);
 
-        // Build grabber with the same debrid instance.
-        var grabber = GrabberFactory.Build(config, http, [], NullLoggerFactory.Instance, debrid);
-        Assert.NotNull(grabber);
+        var result = await grabber.GrabAndResolveAsync(new MovieRequest { Title = "Test Movie" });
 
-        // The debrid reference passed to Build is the same one used inside the grabber.
-        // We verify this by checking that GrabAndResolveAsync works (i.e., the grabber
-        // has the debrid wired in). If a different debrid were used, this test would
-        // still pass, but a production scenario where one debrid is configured for plugins
-        // and another is internally created would be caught by a logging assertion.
+        Assert.True(result.Found);
+        Assert.NotNull(result.Debrid);
+        Assert.Equal(marker, result.Debrid!.ServiceName);
     }
 }

@@ -106,14 +106,22 @@ public sealed class IndexerSearchSource : IMediaSource
 
     public async Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
     {
-        if (DecodeRelease(itemId) is not { } release)
+        if (DecodeRelease(itemId) is not { } decoded)
             return null;
 
         // The decoded id carries no season/episode/track selection of its own — a
-        // release-search result is the whole download, not one file picked out of it —
-        // so a bare GeneralRequest is enough context for the resolver's per-file logic.
-        var request = new GeneralRequest { Title = release.Title, Kind = MediaType.Other };
-        return await _resolver.ResolveAsync(release, request, index, ct);
+        // release-search result is the whole download, not one file picked out of it
+        // — but it DOES now carry which catalog it was found on, so the resolver's
+        // per-file narrowing gets the same request shape (TvRequest, ComicRequest, ...)
+        // the search side used, not a media-type-less catch-all. An id encoded before
+        // this carried a media type (or one from a source that can't map its protocol
+        // string) decodes with MediaType null, and falls back to exactly the old
+        // behaviour: a bare GeneralRequest is still enough context for the resolver's
+        // per-file logic to do no harm.
+        var request = decoded.MediaType is { } type
+            ? BuildRequest(type, decoded.Release.Title)
+            : new GeneralRequest { Title = decoded.Release.Title, Kind = MediaType.Other };
+        return await _resolver.ResolveAsync(decoded.Release, request, index, ct);
     }
 
     private CatalogDescriptor? FindCatalog(string catalogId) =>
@@ -136,7 +144,7 @@ public sealed class IndexerSearchSource : IMediaSource
 
     private static CatalogItem ToItem(TorrentResult result, string mediaType) =>
         new(
-            Id: EncodeId(result),
+            Id: EncodeId(result, mediaType),
             Title: result.Title,
             Subtitle: Describe(result),
             MediaType: mediaType);
@@ -173,9 +181,22 @@ public sealed class IndexerSearchSource : IMediaSource
         [JsonPropertyName("d")] public string? DownloadUrl { get; set; }
         [JsonPropertyName("s")] public long? SizeBytes { get; set; }
         [JsonPropertyName("sd")] public int? Seeders { get; set; }
+
+        /// <summary>The catalog's addon-protocol media type string (e.g. "series"),
+        /// so <see cref="ResolveAsync"/> can rebuild the same concrete
+        /// <see cref="MediaRequest"/> subclass the search side used, instead of a
+        /// media-type-less <see cref="GeneralRequest"/> that can't tell a season pack
+        /// from an album. Absent on ids encoded before this field existed; decoding
+        /// treats that the same as an unrecognized value — MediaType comes back null.</summary>
+        [JsonPropertyName("mt")] public string? MediaType { get; set; }
     }
 
-    private static string EncodeId(TorrentResult result)
+    /// <summary>A release decoded from a client-supplied id, plus the media type it
+    /// was searched under (null for a pre-existing id, or one whose protocol string
+    /// <see cref="MediaTypeNames"/> no longer recognizes).</summary>
+    private readonly record struct DecodedRelease(TorrentResult Release, MediaType? MediaType);
+
+    private static string EncodeId(TorrentResult result, string mediaType)
     {
         var record = new ReleaseRecord
         {
@@ -183,20 +204,32 @@ public sealed class IndexerSearchSource : IMediaSource
             Provider = result.ProviderName,
             InfoHash = result.InfoHash,
             Magnet = result.MagnetUri?.ToString(),
-            DownloadUrl = result.DownloadUrl?.ToString(),
+            // A DownloadUrl often embeds the indexer manager's own API key and
+            // hostname (Prowlarr/Jackett enclosure URLs do) — encoding it into every
+            // item id would leak that secret into the client and into every
+            // request-path log line (Program.cs only redacts the access token).
+            // MagnetResolver (see EverythingBox.Server.Core.Debrid.MagnetResolver)
+            // only ever falls back to DownloadUrl when both MagnetUri and InfoHash
+            // are absent, so it's safe — and strictly smaller — to omit it here
+            // whenever either of those is present.
+            DownloadUrl = NeedsDownloadUrl(result) ? result.DownloadUrl?.ToString() : null,
             SizeBytes = result.SizeBytes,
             Seeders = result.Seeders,
+            MediaType = mediaType,
         };
 
         var json = JsonSerializer.SerializeToUtf8Bytes(record);
         return Convert.ToBase64String(json).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
-    /// <summary>Decodes a client-supplied id back into a <see cref="TorrentResult"/>.
+    private static bool NeedsDownloadUrl(TorrentResult result) =>
+        result.MagnetUri is null && string.IsNullOrWhiteSpace(result.InfoHash);
+
+    /// <summary>Decodes a client-supplied id back into a <see cref="DecodedRelease"/>.
     /// An id arrives from the client and is never trusted: malformed base64, truncated
     /// input, valid-base64-but-non-JSON content, or JSON of the wrong shape all return
     /// null here — none of them throw.</summary>
-    private static TorrentResult? DecodeRelease(string? id)
+    private static DecodedRelease? DecodeRelease(string? id)
     {
         if (string.IsNullOrEmpty(id))
             return null;
@@ -226,7 +259,7 @@ public sealed class IndexerSearchSource : IMediaSource
         if (record is null || string.IsNullOrEmpty(record.Title) || string.IsNullOrEmpty(record.Provider))
             return null;
 
-        return new TorrentResult
+        var release = new TorrentResult
         {
             Title = record.Title,
             ProviderName = record.Provider,
@@ -236,6 +269,9 @@ public sealed class IndexerSearchSource : IMediaSource
             SizeBytes = record.SizeBytes,
             Seeders = record.Seeders,
         };
+
+        var mediaType = MediaTypeNames.TryParseProtocol(record.MediaType, out var type) ? type : (MediaType?)null;
+        return new DecodedRelease(release, mediaType);
     }
 
     private static Uri? TryParseUri(string? value) =>
