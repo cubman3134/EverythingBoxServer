@@ -17,6 +17,10 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <!-- GrabberFactoryTests asserts directly on TorrentGrabber (grabber.Providers /
+         grabber.Options), which lives in Core; add the using globally rather than
+         editing that test file's imports, which the task brief specifies verbatim. -->
+    <Using Include="EverythingBox.Server.Core" />
   </ItemGroup>
 
   <ItemGroup>

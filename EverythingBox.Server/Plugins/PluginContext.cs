@@ -10,7 +10,7 @@ public sealed class PluginContext : IPluginContext
     private readonly ServerConfig _config;
     private readonly string _key;
 
-    public PluginContext(string key, ServerConfig config, ILoggerFactory loggers, HttpClient http, string cacheRoot)
+    public PluginContext(string key, ServerConfig config, ILoggerFactory loggers, HttpClient http, string cacheRoot, IServerServices server)
     {
         _key = key;
         _config = config;
@@ -18,6 +18,7 @@ public sealed class PluginContext : IPluginContext
         Http = http;
         CacheDirectory = Path.Combine(cacheRoot, key);
         Directory.CreateDirectory(CacheDirectory);
+        Server = server;
     }
 
     public ILoggerFactory Loggers { get; }
@@ -25,4 +26,6 @@ public sealed class PluginContext : IPluginContext
     public string CacheDirectory { get; }
 
     public T? GetConfig<T>() where T : class => _config.PluginSection<T>(_key);
+
+    public IServerServices Server { get; }
 }

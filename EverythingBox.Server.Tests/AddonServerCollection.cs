@@ -23,8 +23,15 @@ namespace EverythingBox.Server.Tests;
 /// <c>[assembly: CollectionBehavior(DisableTestParallelization = true)]</c> in
 /// <c>AssemblyInfo.cs</c>, which serialises the whole suite regardless.
 /// </summary>
+/// <summary>
+/// Also provides <see cref="SearchServerFactory"/> as a second, independent shared fixture —
+/// xUnit constructs one instance per <see cref="ICollectionFixture{TFixture}"/> interface here,
+/// so this and <see cref="PluginServerFactory"/> are separate host instances that happen to share
+/// this collection's non-parallel scheduling, which is exactly what their EBS_* environment-variable
+/// writes need.
+/// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class AddonServerCollection : ICollectionFixture<PluginServerFactory>
+public sealed class AddonServerCollection : ICollectionFixture<PluginServerFactory>, ICollectionFixture<SearchServerFactory>
 {
     public const string Name = "addon-server";
 }

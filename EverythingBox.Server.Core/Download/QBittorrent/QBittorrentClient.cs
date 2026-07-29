@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.RegularExpressions;
 using EverythingBox.Server.Abstractions;
 
@@ -16,6 +17,7 @@ public sealed class QBittorrentClient : IDownloadClient
 
     private readonly HttpClient _http;
     private readonly QBittorrentOptions _options;
+    private readonly SemaphoreSlim _loginLock = new(1, 1);
     private string? _sid;
 
     public QBittorrentClient(HttpClient http, QBittorrentOptions options)
@@ -38,6 +40,39 @@ public sealed class QBittorrentClient : IDownloadClient
         if (!await EnsureAuthenticatedAsync(cancellationToken).ConfigureAwait(false))
             return AddTorrentResult.Failed(Name, "authentication failed");
 
+        var response = await SendAddAsync(link, options, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (response.StatusCode == HttpStatusCode.Forbidden)
+            {
+                // The cached SID may simply have expired (qBittorrent's default WebUI
+                // session lifetime is 3600s). Clear it, log in again, and retry once
+                // before concluding this is a real permissions problem.
+                _sid = null;
+                response.Dispose();
+
+                if (!await EnsureAuthenticatedAsync(cancellationToken).ConfigureAwait(false))
+                    return AddTorrentResult.Failed(Name, "authentication failed");
+
+                response = await SendAddAsync(link, options, cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode == HttpStatusCode.Forbidden)
+                    return AddTorrentResult.Failed(Name, "add failed: session expired and re-authentication was rejected");
+            }
+
+            if (!response.IsSuccessStatusCode)
+                return AddTorrentResult.Failed(Name, $"add failed: HTTP {(int)response.StatusCode}");
+
+            return AddTorrentResult.Ok(Name, InfoHashOf(torrent));
+        }
+        finally
+        {
+            response.Dispose();
+        }
+    }
+
+    private async Task<HttpResponseMessage> SendAddAsync(
+        string link, DownloadOptions? options, CancellationToken cancellationToken)
+    {
         using var form = new MultipartFormDataContent();
         void Field(string name, string? value)
         {
@@ -62,11 +97,7 @@ public sealed class QBittorrentClient : IDownloadClient
         };
         Authorize(request);
 
-        using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-            return AddTorrentResult.Failed(Name, $"add failed: HTTP {(int)response.StatusCode}");
-
-        return AddTorrentResult.Ok(Name, InfoHashOf(torrent));
+        return await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<bool> EnsureAuthenticatedAsync(CancellationToken cancellationToken)
@@ -77,29 +108,42 @@ public sealed class QBittorrentClient : IDownloadClient
         if (_sid is not null)
             return true;
 
-        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        // Guard the cached SID against concurrent first calls: without this, two
+        // callers can both observe a null SID and both log in at once.
+        await _loginLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            ["username"] = _options.Username,
-            ["password"] = _options.Password ?? string.Empty,
-        });
+            if (_sid is not null)
+                return true;
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, Url("/api/v2/auth/login"))
+            using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["username"] = _options.Username,
+                ["password"] = _options.Password ?? string.Empty,
+            });
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, Url("/api/v2/auth/login"))
+            {
+                Content = form,
+            };
+            // qBittorrent enforces a same-origin Referer to guard against CSRF.
+            request.Headers.Referrer = _options.BaseUrl;
+
+            using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                return false;
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (!body.Contains("Ok", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            _sid = ParseSid(response);
+            return true;
+        }
+        finally
         {
-            Content = form,
-        };
-        // qBittorrent enforces a same-origin Referer to guard against CSRF.
-        request.Headers.Referrer = _options.BaseUrl;
-
-        using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-            return false;
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        if (!body.Contains("Ok", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        _sid = ParseSid(response);
-        return true;
+            _loginLock.Release();
+        }
     }
 
     private void Authorize(HttpRequestMessage request)

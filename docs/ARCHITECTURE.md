@@ -10,13 +10,22 @@ know where any media comes from — that arrives entirely as plugins.
 EverythingBox.Server.Abstractions/   the only assembly plugins reference
   IPlugin, IPluginRegistry, IPluginContext         (Abstractions/IPlugin.cs)
   IMediaSource                                     (Abstractions/IMediaSource.cs)
+  IServerServices                                  (Abstractions/IServerServices.cs)
+  MediaTypeNames                                   (Abstractions/MediaTypeNames.cs)
   CatalogDescriptor, MediaTypeDescriptor, CatalogItem, SourceCatalog,
   SourceStream, SourceContext, ProxyResponse, WarmUpResult             (Abstractions/Catalog.cs)
   ServerApi                                        (Abstractions/ServerApi.cs)
+  ITorrentGrabber, ITorrentProvider, IDebridService, IDownloadClient,
+  RankingOptions                                   (Abstractions/Pipeline/)
+  MediaRequest and its subclasses (MovieRequest, TvRequest, ...)       (Abstractions/Requests/)
+  TorrentResult, DebridResult, GrabResult                              (Abstractions/Results/)
 
 EverythingBox.Server/                the host
   Program.cs                          composition root and route mounting
-  Plugins/PluginHost, PluginRegistry, PluginContext, PluginLoadContext
+  GrabberFactory.cs                   builds the torrent pipeline from ServerConfig
+  Plugins/PluginHost, PluginRegistry, PluginContext, PluginLoadContext, ServerServices
+  Sources/IndexerSearchSource.cs      the idx: search catalogs (see "Search, out of the box")
+  Sources/ReleaseStreamResolver.cs    turns a chosen release into a stream via IDebridService
   Routing/SourceRouter
   AddonEndpoints                      manifest/catalog/detail/meta/stream/proxy/files routes
   ManifestBuilder, SafeUrlGuard, FileCache, ServerConfig
@@ -29,11 +38,11 @@ tests/TestPlugin.Good, TestPlugin.Bad, TestPlugin.Dup
 
 EverythingBox.Server.Core/           standalone torrent search/parse/rank/resolve
                                       pipeline library — BCL-only, no PackageReference,
-                                      enforced by CoreDependencyTests. Not referenced by
-                                      the host or wired into the addon protocol; a
-                                      plugin author can build on it directly. See
+                                      enforced by CoreDependencyTests. The host
+                                      (GrabberFactory.cs) wires it up from config; a
+                                      plugin author can also build on it directly. See
                                       "The torrent pipeline" below.
-EverythingBox.Server.Core.Tests/     xUnit tests for Core (163 tests)
+EverythingBox.Server.Core.Tests/     xUnit tests for Core
 ```
 
 **Namespace convention.** `EverythingBox.Server.Abstractions` is deliberately *flat*: every
@@ -65,6 +74,11 @@ public interface IPlugin
 public interface IPluginRegistry
 {
     void AddSource(IMediaSource source);
+
+    // Register an indexer instead of a whole source: it inherits the shared pipeline's
+    // dedupe, release parsing, ranking, cached-first ordering, and single-file extraction
+    // for free. Merged with every config-defined Indexers entry into the same grabber.
+    void AddIndexer(ITorrentProvider provider);
 }
 
 public interface IPluginContext
@@ -73,12 +87,35 @@ public interface IPluginContext
     HttpClient Http { get; }              // shared; the host owns its lifetime, plugins must not dispose it
     string CacheDirectory { get; }        // plugin-private, created before Configure runs
     T? GetConfig<T>() where T : class;    // this plugin's own config section, or null if absent
+    IServerServices Server { get; }       // host capabilities a plugin can borrow — see below
 }
 ```
 
-There is one registration tier today: `IMediaSource`. A source owns its own catalogs,
-its own search, and its own stream resolution end to end — there is no separate
-"indexer" tier and no shared pipeline a source plugs into.
+There are two registration tiers today. `IMediaSource` (`AddSource`) owns its own
+catalogs, its own search, and its own stream resolution end to end — the tier every
+shipped plugin (`EverythingBox.Server.SampleSource`) uses. `ITorrentProvider`
+(`AddIndexer`) is smaller: it plugs into the shared `EverythingBox.Server.Core` pipeline
+instead of implementing search itself, the same pipeline a config-defined `Indexers`
+entry feeds — see "The torrent pipeline" below.
+
+### `IServerServices`
+
+Reached through `IPluginContext.Server` (`Plugins/ServerServices.cs` implements it):
+
+```csharp
+public interface IServerServices
+{
+    ITorrentGrabber Grabber { get; }   // fed by every indexer, config- and plugin-registered alike
+    IDebridService? Debrid { get; }    // null when the server has none configured
+    IFileCache Files { get; }
+}
+```
+
+`Grabber` must not be called from `IPlugin.Configure` — the host cannot build the real
+grabber until every plugin has finished registering its indexers, so a call made during
+registration throws `InvalidOperationException` rather than silently returning one with
+zero indexers. Hold the reference during `Configure` and call it later, while serving a
+request.
 
 ### `IMediaSource`
 
@@ -118,11 +155,48 @@ bytes back; the host does not need to know why a given source requires proxying.
 
 ## Sources the host ships
 
-Zero. The host has no built-in `IMediaSource`. `EverythingBox.Server.SampleSource` is a
-separate, optional plugin project — `LocalFolderSource` — that ships as a worked
+One: `IndexerSearchSource` (`Sources/IndexerSearchSource.cs`), constructed directly in
+`Program.cs` and appended after every plugin's own sources (so a plugin can never be
+shadowed by it — see "Search, out of the box" below). It carries no content of its own;
+with `Indexers: []` and no plugin-registered indexer, its catalogs appear in the
+manifest and simply return nothing, the same "installed but empty" shape a fresh
+`plugins/` folder has.
+
+Beyond that, zero — no plugin ships with the host. `EverythingBox.Server.SampleSource`
+is a separate, optional plugin project — `LocalFolderSource` — that ships as a worked
 example: it scans the folders in its config, lists media files it recognizes by
 extension, and serves them through `OpenAsync`/the proxy route. It is not loaded by the
 host unless its build output is placed under `plugins/local/` like any other plugin.
+
+## Search, out of the box
+
+`IndexerSearchSource` (`Sources/IndexerSearchSource.cs`, key `idx`) exposes one
+search-only catalog per media type the pipeline understands — movies, series, music,
+audiobooks, books, comics — backed by an `ITorrentGrabber` built from every configured
+`Indexers` entry plus whatever indexers plugins register via `AddIndexer`. It is an
+ordinary `IMediaSource`: `SourceRouter` reaches it the same way it reaches every other
+source, by splitting `"idx:{payload}"` on the colon — there is no special-cased routing.
+
+A catalog is search-only: opening it with no query returns a "search to see results"
+placeholder rather than firing a blank query at every indexer. A query is translated to
+the matching `MediaRequest` subclass via `MediaTypeNames` (movie catalog → `MovieRequest`,
+series → `TvRequest`, etc.), sent through `ITorrentGrabber.SearchAsync`, and every
+result becomes one `CatalogItem` whose id opaquely encodes the underlying
+`TorrentResult` (title, provider, hash, magnet/download URL, size, seeders), so it
+round-trips through the client without any server-side state.
+
+`Sources/ReleaseStreamResolver.cs` resolves a chosen item: it calls the configured
+`IDebridService.ResolveAsync` and maps the result — `Resolved` becomes a playable
+`{ url, mime }`, `Pending` becomes a notice-only stream (`{ streams: [], notice }`,
+"still caching" or similar), `Failed` or no configured debrid becomes an empty streams
+response, the same shape `SourceStream` and the stream route already use for every other
+source. **There is deliberately no self-download fallback** — an uncached release comes
+back as a notice, not a download queued on the host's own hardware; see "Planned" below.
+
+`GrabberFactory.cs` is what builds the `ITorrentGrabber` and `IDebridService` these two
+sources use, from `ServerConfig`'s `Indexers`/`Debrid`/`DownloadClient`/`Ranking` keys —
+see "The torrent pipeline" below for what each key does and how a malformed entry
+degrades.
 
 ## Routing
 
@@ -228,11 +302,12 @@ hand the client a URL directly instead of routing through its own proxy.
 
 ## The torrent pipeline (`EverythingBox.Server.Core`)
 
-A separate, standalone library — not referenced by the host, not wired into the addon
-protocol above, no `PackageReference` (`EverythingBox.Server.Core.csproj`, enforced by
-`CoreDependencyTests.cs`). It exists for a plugin author who wants a search →
-parse → rank → resolve pipeline for torrent-backed media rather than building one from
-scratch. Nothing in this repository constructs one today.
+A separate, standalone library — no `PackageReference` (`EverythingBox.Server.Core.csproj`,
+enforced by `CoreDependencyTests.cs`) — for the search → parse → rank → resolve pipeline
+torrent-backed media needs. The host wires it up via `GrabberFactory.cs`
+(`EverythingBox.Server/GrabberFactory.cs`) and exposes it as the `idx:` search catalogs
+described under "Search, out of the box" above; a plugin author can also build directly
+on the library, the same as before this wiring existed.
 
 `TorrentGrabber` (`TorrentGrabber.cs`) is the entry point, built via its constructor or
 the fluent `GrabberBuilder` (`GrabberBuilder.cs`):
@@ -258,15 +333,20 @@ handle the HTTP plumbing; `ExampleDirectProvider.cs` is a skeleton showing the s
 `Providers/Torznab/` (`TorznabProvider.cs`, `TorznabOptions.cs`,
 `TorznabQueryBuilder.cs`, `TorznabFeedParser.cs`) is the built-in adapter for any
 Torznab-speaking indexer manager — configure `TorznabOptions.BaseUrl` against a Prowlarr
-or Jackett endpoint and it searches whatever that manager aggregates. Nothing constructs
-a `TorznabProvider` in this repository; there is no `Indexers` config key yet.
+or Jackett endpoint and it searches whatever that manager aggregates. `GrabberFactory.cs`
+constructs one `TorznabProvider` per `ServerConfig.Indexers` entry with a parseable
+`BaseUrl` (a blank or unparseable one is logged and skipped, not a startup failure).
 
 **Parsing and ranking**: `Parsing/DefaultReleaseParser.cs` extracts resolution, source,
 codecs, season/episode, year, language, group, and audio format from a release title by
 regex, best-effort — unknown fields are left null rather than guessed.
 `Ranking/DefaultTorrentRanker.cs` filters (downloadable, min seeders, size bounds,
 banned terms, optional relevance match) then scores the survivors on quality signals
-from the parsed info, with seeders as the tiebreaker.
+from the parsed info, with seeders as the tiebreaker. `GrabberFactory.cs` passes
+`ServerConfig.Ranking` straight through as `GrabberOptions.Ranking`; note that
+`IndexerSearchSource`'s search catalogs call `ITorrentGrabber.SearchAsync` (the merged,
+unranked results), not `GrabAsync`, so `Ranking` does not currently filter or reorder
+what a search catalog shows — it affects only a caller that goes through `GrabAsync`.
 
 **Debrid** (`Debrid/`): `IDebridService` implementations `RealDebridService`
 (`RealDebrid/RealDebridService.cs`, options in `RealDebridOptions.cs`) and
@@ -275,13 +355,21 @@ implements `ICachedAvailabilityChecker` and `IDebridLibrary`) turn a grabbed rel
 into direct download links. `MagnetResolver.cs` produces a magnet link from a result's
 magnet, info hash, or `.torrent` file, and `Torrents/TorrentInfo.cs` is a minimal
 bencode reader that extracts a v1 BitTorrent info hash from raw `.torrent` bytes without
-a BitTorrent library.
+a BitTorrent library. `GrabberFactory.cs` builds one of these from `ServerConfig.Debrid`
+— `Provider` selects which (`"torbox"` or `"realdebrid"`, case-insensitive); a missing
+`ApiKey` or an unrecognized `Provider` is logged and skipped, leaving the server with no
+debrid service rather than refusing to start. This is the same instance handed to
+`Sources/ReleaseStreamResolver.cs` and to every plugin via `IServerServices.Debrid` — see
+"Search, out of the box" above.
 
 **Download clients** (`Download/`): `IDownloadClient` implementations
 `QBittorrentClient` (`QBittorrent/QBittorrentClient.cs`, options in
 `QBittorrentOptions.cs`) and `TransmissionClient` (`Transmission/TransmissionClient.cs`,
 options in `TransmissionOptions.cs`) hand a release to a running qBittorrent or
-Transmission instance.
+Transmission instance. `GrabberFactory.cs` builds one of these from
+`ServerConfig.DownloadClient` the same way it builds a debrid service, but nothing in the
+host currently calls `GrabAndDownloadAsync` — no route hands a resolved release to a
+download client yet.
 
 **Selection and infrastructure**: `Selection/MediaFileMatcher.cs` narrows a multi-file
 release's per-file links down to the one a request asked for (an episode out of a
@@ -294,10 +382,12 @@ without downloading the whole archive, using only `System.IO.Compression`.
 `Retry-After`. `Consoles/ConsoleCatalog.cs` is an unrelated factual table of retro game
 consoles (names, aliases, ROM extensions) useful to an emulator front end.
 
-None of this is reachable through the addon protocol described above — no route, no
-plugin in this repository, and no `ServerConfig` section constructs any of it. It is a
-library, present and tested (`EverythingBox.Server.Core.Tests/`), waiting for the
-indexer/metadata plugin tier described under Planned to wire it up.
+Reachable through the addon protocol above via the `idx:` search catalogs (see "Search,
+out of the box"), and directly by a plugin author who wants more than that — see
+`EverythingBox.Server.Core.Tests/` for the library's own test coverage. What is NOT yet
+reachable: browsing (the catalogs are search-only until `IMetadataSource` exists), a
+self-download fallback for an uncached release, and archive-packaged releases — see
+Planned below.
 
 ## The cleanliness gate
 
@@ -308,31 +398,31 @@ This repository ships the plugin host, not any source. That is a property worth
 enforcing mechanically rather than by discipline: a name added and later deleted is
 still public, so the history check matters more than the working-tree one.
 
-Prowlarr and Jackett are allowlisted. They are indexer managers a user could point a
-future plugin at, not sources themselves, and supporting that kind of infrastructure is
-the point.
+Prowlarr and Jackett are allowlisted. They are indexer managers a user can point a
+config `Indexers` entry or a plugin's `AddIndexer` at, not sources themselves, and
+supporting that kind of infrastructure is the point.
 
 ## Planned — not yet implemented
 
 Everything in this section describes where the project is going, not what exists in
 this codebase today. None of it is callable, configurable, or partially wired up unless
-explicitly noted. The pipeline library these will wire up to already exists — see
-"The torrent pipeline" above — but nothing below it does yet.
+explicitly noted. The indexer tier, `IServerServices`, and the `idx:` search catalogs
+described above are no longer planned — they exist; what remains is genuinely absent.
 
-- **A torrent-indexer plugin tier**: `AddIndexer` on `IPluginRegistry`, feeding the
-  `EverythingBox.Server.Core` pipeline instead of each plugin owning search end to end
-  the way `IMediaSource` does.
-- **A metadata-source tier** (`AddMetadata`/`IMetadataSource`) for movie/series browsing
-  decoupled from any one indexer.
-- **A richer `IPluginContext`**, likely an `IServerServices Server` member, so a plugin
-  can call back into shared pipeline services instead of implementing resolution itself.
-- **The `idx:` route** in `SourceRouter`, and the generic `IndexerSearchSource` /
-  `MetadataBackedVideoSource` sources built on the indexer/metadata tiers above.
-- **Config sections** — `Indexers`, `Debrid`, `DownloadClient`, `Ranking`, `Download` —
-  so an indexer, a debrid account, and a download client can actually be configured on a
-  running server. `ServerConfig` (`EverythingBox.Server/ServerConfig.cs`) has none of
-  these today.
+- **A metadata-source tier** (`AddMetadata`/`IMetadataSource`) for movie/series
+  **browsing** decoupled from any one indexer, and the `MetadataBackedVideoSource` built
+  on top of it. Today's `idx:` catalogs are search-only (see "Search, out of the box").
+- **A MonoTorrent-backed self-download fallback** for an uncached debrid release.
+  `Sources/ReleaseStreamResolver.cs` deliberately has none today: an uncached release
+  returns a "still caching" notice, and retrying the same search later — once the debrid
+  service finishes caching it on its own — is currently the only way to get a link.
+- **A SharpCompress-backed archive reader and `ArchiveNormalizer`**, so an
+  archive-packaged release (`.zip`/`.rar`/`.7z`) can be browsed and streamed
+  member-by-member the way a single video/audio/document file already can.
 - **Retrying a source whose search throws**, or a required-source / retry-until-deadline
   policy for `WarmUpAsync`. Today `WarmUpAsync` is a single best-effort call at startup
   (see the failure-containment table above) and a throwing `SearchAsync`/`ResolveAsync`/etc.
   simply degrades that one request to its route's empty shape — there is no retry.
+
+All three of the first group are host-side (`EverythingBox.Server`), not
+`EverythingBox.Server.Core`, because each needs a package Core is not allowed to take.

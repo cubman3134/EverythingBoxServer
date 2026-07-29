@@ -117,6 +117,86 @@ public class QBittorrentClientTests
         Assert.Contains("x.torrent", handler.Bodies[0]);
     }
 
+    [Fact]
+    public async Task ReAuthenticatesOnceWhenTheSessionHasExpired()
+    {
+        // First login succeeds, the add 403s (expired session), the client logs in again
+        // and the retried add succeeds.
+        var logins = 0;
+        var adds = 0;
+        var handler = new StubHandler((request, _) =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/auth/login"))
+            {
+                logins++;
+                var ok = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("Ok.") };
+                ok.Headers.TryAddWithoutValidation("Set-Cookie", $"SID=session{logins}; path=/");
+                return ok;
+            }
+
+            adds++;
+            return adds == 1
+                ? new HttpResponseMessage(HttpStatusCode.Forbidden)
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("Ok.") };
+        });
+
+        var client = new QBittorrentClient(new HttpClient(handler), Options());
+        var result = await client.AddAsync(Magnet(), new DownloadOptions());
+
+        Assert.True(result.Success);
+        Assert.Equal(2, logins);
+        Assert.Equal(2, adds);
+    }
+
+    [Fact]
+    public async Task GivesUpAfterOneReAuthentication()
+    {
+        // A genuinely wrong password must fail fast, not loop.
+        var logins = 0;
+        var handler = new StubHandler((request, _) =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/auth/login"))
+            {
+                logins++;
+                var ok = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("Ok.") };
+                ok.Headers.TryAddWithoutValidation("Set-Cookie", $"SID=session{logins}; path=/");
+                return ok;
+            }
+            return new HttpResponseMessage(HttpStatusCode.Forbidden);
+        });
+
+        var client = new QBittorrentClient(new HttpClient(handler), Options());
+        var result = await client.AddAsync(Magnet(), new DownloadOptions());
+
+        Assert.False(result.Success);
+        Assert.Equal(2, logins);
+        Assert.Contains("session expired", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SendsBothPausedAndStoppedSoItWorksAcrossMajorVersions()
+    {
+        // qB renamed the field; sending both is what makes one client work with 4.x and 5.x.
+        // Nothing covered this before, so the compatibility branch could be dropped silently.
+        var handler = new StubHandler((request, _) =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/auth/login"))
+            {
+                var ok = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("Ok.") };
+                ok.Headers.TryAddWithoutValidation("Set-Cookie", "SID=session1; path=/");
+                return ok;
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("Ok.") };
+        });
+
+        var client = new QBittorrentClient(new HttpClient(handler), Options());
+        await client.AddAsync(Magnet(), new DownloadOptions { Paused = true });
+
+        var addBody = handler.Bodies[^1];
+        Assert.Contains("paused", addBody);
+        Assert.Contains("stopped", addBody);
+    }
+
     /// <summary>Records every request/body and replies via a supplied responder.</summary>
     private sealed class StubHandler(Func<HttpRequestMessage, string, HttpResponseMessage> responder) : HttpMessageHandler
     {

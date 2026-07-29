@@ -24,6 +24,13 @@ public interface IPlugin
 public interface IPluginRegistry
 {
     void AddSource(IMediaSource source);
+
+    /// <summary>
+    /// Register an indexer. It inherits the whole pipeline — dedupe, release parsing,
+    /// ranking, cached-first ordering and single-file extraction — without implementing
+    /// any of it. This is the smaller of the two plugin tiers and usually the right one.
+    /// </summary>
+    void AddIndexer(ITorrentProvider provider);
 }
 
 public interface IPluginContext
@@ -38,4 +45,7 @@ public interface IPluginContext
 
     /// <summary>This plugin's own section of the server config, or null if absent.</summary>
     T? GetConfig<T>() where T : class;
+
+    /// <summary>Host capabilities a plugin can borrow instead of rebuilding.</summary>
+    IServerServices Server { get; }
 }

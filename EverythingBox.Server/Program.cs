@@ -1,8 +1,10 @@
 using System.Net.Http.Headers;
 using EverythingBox.Server;
 using EverythingBox.Server.Abstractions;
+using EverythingBox.Server.Core;
 using EverythingBox.Server.Plugins;
 using EverythingBox.Server.Routing;
+using EverythingBox.Server.Sources;
 
 var config = ServerConfig.Load();
 
@@ -12,9 +14,22 @@ builder.WebHost.UseUrls(config.Listen);
 builder.Services.AddSingleton(config);
 builder.Services.AddSingleton<ManifestBuilder>();
 
-builder.Services.AddSingleton(_ =>
+// Registered as its own singleton — separately from the HttpClient built on top of it below —
+// so GrabberFactory can wrap the SAME transport in RetryHandler for every indexer/debrid/
+// download-client call, rather than those calls silently going out over an unrelated
+// HttpClientHandler of GrabberFactory's own making. HttpClient does not expose whatever handler
+// it was built with, so this is the only way to actually share one transport with it; see
+// GrabberFactory.WrapWithRetry's doc comment for what broke before this existed (a test-installed
+// fake handler on the shared HttpClient below was silently never consulted for any pipeline
+// call — SearchToStreamTests is what caught it).
+builder.Services.AddSingleton<HttpMessageHandler>(_ => new HttpClientHandler());
+
+builder.Services.AddSingleton(sp =>
 {
-    var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+    var http = new HttpClient(sp.GetRequiredService<HttpMessageHandler>(), disposeHandler: false)
+    {
+        Timeout = TimeSpan.FromSeconds(60),
+    };
     http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("EverythingBoxServer", "1.0"));
     return http;
 });
@@ -28,13 +43,64 @@ builder.Services.AddSingleton(sp =>
     var host = sp.GetRequiredService<PluginHost>();
     var loggers = sp.GetRequiredService<ILoggerFactory>();
     var http = sp.GetRequiredService<HttpClient>();
+    var transport = sp.GetRequiredService<HttpMessageHandler>();
+    var files = sp.GetRequiredService<FileCache>();
     var cacheRoot = Path.Combine(config.ResolvedFilesCacheDir, "plugins");
+    var log = loggers.CreateLogger<SourceRouter>();
+
+    // Debrid depends only on config (never on what a plugin registers), so it can be built
+    // up front and handed to every plugin's IServerServices.Debrid as-is. Build it once here
+    // and pass it to both the plugin system and the grabber below, ensuring there is exactly
+    // one debrid instance for the entire process.
+    var debrid = GrabberFactory.BuildDebrid(config, http, loggers, transport);
+
+    // Plugins register indexers during Configure, but Configure is also where a plugin
+    // receives IServerServices — which holds the grabber built FROM those indexers. Handing
+    // out a real, eagerly-built grabber here would mean building it before any plugin has
+    // registered anything. DeferredTorrentGrabber breaks the cycle: a plugin may stash the
+    // ITorrentGrabber reference during registration and call it later while serving a
+    // request (see IServerServices.Grabber for the rule stated where a plugin author will
+    // see it) — but calling it FROM Configure throws immediately instead of silently
+    // building and permanently caching a grabber with zero indexers. SetGrabber below is
+    // called exactly once, after host.Load returns, once every plugin's indexers are known.
+    var deferredGrabber = new DeferredTorrentGrabber();
+    var services = new ServerServices(deferredGrabber, debrid, files);
 
     var plugins = host.Load(
         config.ResolvedPluginsDirectory,
-        plugin => new PluginContext(plugin.Key, config, loggers, http, cacheRoot));
+        plugin => new PluginContext(plugin.Key, config, loggers, http, cacheRoot, services));
 
-    return new SourceRouter(plugins.SelectMany(p => p.Sources), loggers.CreateLogger<SourceRouter>());
+    // Now that every plugin's Configure has run, every indexer is known — build the real
+    // grabber (config indexers + plugin indexers, one merged provider list) and bind it.
+    // Pass the pre-built debrid so it's the same instance everywhere.
+    var pluginIndexers = plugins.SelectMany(p => p.Indexers).ToList();
+    var grabber = GrabberFactory.Build(config, http, pluginIndexers, loggers, debrid, transport);
+    deferredGrabber.SetGrabber(grabber);
+
+    log.LogInformation(
+        "Torrent pipeline ready: {Total} indexer(s) ({Configured} from config, {FromPlugins} from plugins); debrid: {Debrid}",
+        grabber.Providers.Count, config.Indexers.Count, pluginIndexers.Count, debrid?.Name ?? "none");
+
+    // IndexerSearchSource is what makes a stock server useful without installing any
+    // plugin: it exposes every configured indexer (config + plugins, already merged into
+    // `grabber` above) as search-only catalogs. It is built with `deferredGrabber`, not
+    // the concrete `grabber`, because SearchAsync/ResolveAsync run later, while serving a
+    // request — by then SetGrabber above has bound the real grabber; calling through the
+    // deferred wrapper during THIS factory would throw by design.
+    //
+    // ReleaseStreamResolver is constructed exactly once, right here, because this whole
+    // factory lambda is itself only ever invoked once (AddSingleton below caches the
+    // result) — so its constructor's "no debrid configured" log line fires exactly once,
+    // never once per request.
+    //
+    // Appended AFTER every plugin source so a plugin can never be shadowed by it: if a
+    // plugin also declares key "idx", SourceRouter's duplicate-key handling keeps the
+    // first registration (the plugin's) and logs+drops this one instead.
+    var resolver = new ReleaseStreamResolver(debrid, loggers.CreateLogger<ReleaseStreamResolver>());
+    var indexerSource = new IndexerSearchSource(deferredGrabber, resolver, loggers.CreateLogger<IndexerSearchSource>());
+
+    var sources = plugins.SelectMany(p => p.Sources).Append(indexerSource);
+    return new SourceRouter(sources, log);
 });
 
 var app = builder.Build();

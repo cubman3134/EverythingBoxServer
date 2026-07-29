@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using EverythingBox.Server.Abstractions;
 
 namespace EverythingBox.Server;
 
@@ -20,6 +21,15 @@ public sealed class ServerConfig
 
     /// <summary>One opaque section per plugin, keyed by plugin key.</summary>
     public Dictionary<string, JsonElement> Plugins { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Torznab endpoints. Ships EMPTY — this server configures no indexer for you.</summary>
+    public List<IndexerConfig> Indexers { get; set; } = [];
+
+    public DebridConfig? Debrid { get; set; }
+
+    public DownloadClientConfig? DownloadClient { get; set; }
+
+    public RankingOptions Ranking { get; set; } = new();
 
     public string ResolvedPluginsDirectory =>
         Environment.GetEnvironmentVariable("EBS_PLUGINS_DIR") is { Length: > 0 } fromEnv ? fromEnv
@@ -77,4 +87,31 @@ public sealed class ManifestConfig
     public string Accent { get; set; } = "#3E8E7E";
 
     public ManifestOptions ToOptions() => new(Id, Name, Version, Description, Accent);
+}
+
+/// <summary>One Torznab indexer endpoint (e.g. a Prowlarr or Jackett instance).</summary>
+public sealed class IndexerConfig
+{
+    public string Name { get; set; } = "";
+    public string BaseUrl { get; set; } = "";
+    public string ApiKey { get; set; } = "";
+}
+
+/// <summary>The debrid service to resolve releases through, if any.</summary>
+public sealed class DebridConfig
+{
+    /// <summary>"torbox" or "realdebrid", matched case-insensitively.</summary>
+    public string Provider { get; set; } = "";
+    public string ApiKey { get; set; } = "";
+}
+
+/// <summary>The download client to hand releases to, if any.</summary>
+public sealed class DownloadClientConfig
+{
+    /// <summary>"qbittorrent" or "transmission", matched case-insensitively.</summary>
+    public string Kind { get; set; } = "";
+    public string BaseUrl { get; set; } = "";
+    public string Username { get; set; } = "";
+    public string Password { get; set; } = "";
+    public string Category { get; set; } = "";
 }

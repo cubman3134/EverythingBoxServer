@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using EverythingBox.Server.Abstractions;
@@ -16,9 +17,10 @@ namespace EverythingBox.Server.Core;
 /// for a fluent setup.
 /// </para>
 /// </summary>
-public sealed class TorrentGrabber
+public sealed class TorrentGrabber : ITorrentGrabber
 {
-    private readonly IReadOnlyList<ITorrentProvider> _providers;
+    private readonly List<ITorrentProvider> _providers;
+    private readonly ReadOnlyCollection<ITorrentProvider> _providersReadOnly;
     private readonly ITorrentRanker _ranker;
     private readonly IReleaseParser _parser;
     private readonly GrabberOptions _options;
@@ -36,6 +38,7 @@ public sealed class TorrentGrabber
         IProviderPerformanceTracker? providerTracker = null)
     {
         _providers = providers.ToList();
+        _providersReadOnly = _providers.AsReadOnly();
         _ranker = ranker ?? new DefaultTorrentRanker();
         _parser = parser ?? new DefaultReleaseParser();
         _options = options ?? new GrabberOptions();
@@ -43,6 +46,12 @@ public sealed class TorrentGrabber
         _debridService = debridService;
         _providerTracker = providerTracker;
     }
+
+    /// <summary>The providers this grabber was constructed with.</summary>
+    public IReadOnlyList<ITorrentProvider> Providers => _providersReadOnly;
+
+    /// <summary>The options this grabber was constructed with.</summary>
+    public GrabberOptions Options => _options;
 
     /// <summary>Search, rank, and return the single best match plus alternatives.</summary>
     public async Task<GrabResult> GrabAsync(
@@ -284,16 +293,23 @@ public sealed class TorrentGrabber
     private async Task<QueryResult> QueryProviderAsync(
         ITorrentProvider provider, MediaRequest request, CancellationToken token, CancellationToken callerToken)
     {
+        // provider.Name is plugin-authored code and can throw. Read it once, defensively,
+        // before anything else — including before the try below — so every exit out of this
+        // method (success, timeout, or a genuine provider exception) uses the same captured,
+        // safe value. Reading provider.Name again from inside the catch blocks would let a
+        // throwing Name escape unguarded and take down every other provider's results in the
+        // same batch, not just this one's.
+        var name = SafeProviderName(provider);
         var stopwatch = Stopwatch.StartNew();
         try
         {
             var found = await provider.SearchAsync(request, token).ConfigureAwait(false);
-            return new QueryResult(provider.Name, found, null, stopwatch.Elapsed);
+            return new QueryResult(name, found, null, stopwatch.Elapsed);
         }
         catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
         {
             // Timed out, or stopped early by a quick grab — reported, not fatal.
-            return new QueryResult(provider.Name, [], "stopped before completing", stopwatch.Elapsed);
+            return new QueryResult(name, [], "stopped before completing", stopwatch.Elapsed);
         }
         catch (OperationCanceledException)
         {
@@ -301,8 +317,22 @@ public sealed class TorrentGrabber
         }
         catch (Exception ex)
         {
-            return new QueryResult(provider.Name, [], ex.Message, stopwatch.Elapsed);
+            return new QueryResult(name, [], ex.Message, stopwatch.Elapsed);
         }
+    }
+
+    /// <summary>
+    /// Core's own equivalent of the host's PluginDiagnostics.SafeLabel — Core cannot
+    /// reference the host, so this is a local, narrower copy of the same idea: a provider's
+    /// Name is plugin-authored and can throw, and a diagnostic read of it must never itself
+    /// throw. Falls back to the runtime type when Name is unavailable.
+    /// </summary>
+    private static string SafeProviderName(ITorrentProvider? provider)
+    {
+        if (provider is null) return "<null provider>";
+
+        try { return provider.Name; }
+        catch { return provider.GetType().FullName ?? "<unknown provider>"; }
     }
 
     private IReadOnlyList<ITorrentProvider> Prioritize(IReadOnlyList<ITorrentProvider> capable)

@@ -10,5 +10,19 @@
     "Description": "Media from the sources you configure.",
     "Accent": "#3E8E7E"
   },
-  "Plugins": {}
+  "Plugins": {},
+
+  // Torznab endpoints (e.g. Prowlarr, Jackett). Empty by default — this server ships no indexer.
+  "Indexers": [],
+  // "Indexers": [
+  //   { "Name": "prowlarr", "BaseUrl": "http://localhost:9696/1/api", "ApiKey": "" }
+  // ],
+
+  // Optional. Provider is "torbox" or "realdebrid". Leave ApiKey blank to disable.
+  "Debrid": { "Provider": "", "ApiKey": "" },
+
+  // Optional. Kind is "qbittorrent" or "transmission".
+  "DownloadClient": { "Kind": "", "BaseUrl": "", "Username": "", "Password": "", "Category": "" },
+
+  "Ranking": { "MinSeeders": 1, "BannedTerms": [] }
 }
