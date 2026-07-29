@@ -27,6 +27,30 @@ file sealed class ThrowingMetadata : IMetadataSource
         => throw new HttpRequestException("metadata upstream is down");
 }
 
+file sealed class ThrowingEpisodesMetadata : IMetadataSource
+{
+    public string Name => "throwing-episodes";
+    public IReadOnlyList<string> SupportedMediaTypes { get; } = ["series"];
+
+    public Task<IReadOnlyList<MetadataItem>> BrowseAsync(string mediaType, string? query, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<MetadataItem>>([new MetadataItem("s1", "Some Show", "series")]);
+
+    public Task<IReadOnlyList<MetadataEpisode>> EpisodesAsync(string seriesId, CancellationToken ct)
+        => throw new HttpRequestException("metadata upstream is down");
+}
+
+file sealed class EpisodeMetadata(MetadataItem series, MetadataEpisode[] episodes) : IMetadataSource
+{
+    public string Name => "episodes";
+    public IReadOnlyList<string> SupportedMediaTypes { get; } = ["series"];
+
+    public Task<IReadOnlyList<MetadataItem>> BrowseAsync(string mediaType, string? query, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<MetadataItem>>([series]);
+
+    public Task<IReadOnlyList<MetadataEpisode>> EpisodesAsync(string seriesId, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<MetadataEpisode>>(episodes);
+}
+
 file sealed class RecordingGrabber(params TorrentResult[] results) : ITorrentGrabber
 {
     public MediaRequest? LastRequest { get; private set; }
@@ -43,6 +67,16 @@ file sealed class RecordingGrabber(params TorrentResult[] results) : ITorrentGra
     }
 }
 
+/// <summary>Resolves a fixed set of debrid links keyed by release title — the test
+/// harness passes a null debrid in most of this file's tests (short-circuits before
+/// file narrowing), so the walk tests need a stub that actually returns links.</summary>
+file sealed class KeyedDebrid(IReadOnlyDictionary<string, DebridResult> byTitle) : IDebridService
+{
+    public string Name => "keyed";
+    public Task<DebridResult> ResolveAsync(TorrentResult torrent, MediaRequest? request = null, CancellationToken cancellationToken = default)
+        => Task.FromResult(byTitle[torrent.Title]);
+}
+
 public class MetadataBackedVideoSourceTests
 {
     private static readonly SourceContext Ctx = new();
@@ -55,6 +89,9 @@ public class MetadataBackedVideoSourceTests
             NullLogger<MetadataBackedVideoSource>.Instance);
 
     private static MetadataItem Film(string title, int year) => new("m1", title, "movie", Year: year);
+
+    private static IMetadataSource StubWithEpisodes(MetadataItem series, params MetadataEpisode[] episodes)
+        => new EpisodeMetadata(series, episodes);
 
     [Fact]
     public void Its_key_is_meta_and_needs_no_special_routing()
@@ -179,5 +216,154 @@ public class MetadataBackedVideoSourceTests
             .SearchAsync("nosuchcatalog", null, Ctx, CancellationToken.None);
 
         Assert.Empty(catalog.Items);
+    }
+
+    [Fact]
+    public async Task A_series_item_is_marked_expandable()
+    {
+        var series = new MetadataItem("s1", "Some Show", "series", Year: 2019);
+        var catalog = await Source([new StubMetadata("a", ["series"], series)])
+            .SearchAsync("series", null, Ctx, CancellationToken.None);
+
+        Assert.True(Assert.Single(catalog.Items).Expandable);
+    }
+
+    [Fact]
+    public async Task A_movie_item_is_not_expandable()
+    {
+        var catalog = await Source([new StubMetadata("a", ["movie"], Film("Some Film", 2020))])
+            .SearchAsync("movies", null, Ctx, CancellationToken.None);
+
+        Assert.False(Assert.Single(catalog.Items).Expandable);
+    }
+
+    [Fact]
+    public async Task Expanding_a_series_lists_its_episodes()
+    {
+        var stub = StubWithEpisodes(
+            new MetadataItem("s1", "Some Show", "series"),
+            new MetadataEpisode("e1", 1, 1, "Pilot"),
+            new MetadataEpisode("e2", 1, 2, "Second"));
+
+        var source = Source([stub]);
+        var series = (await source.SearchAsync("series", null, Ctx, CancellationToken.None)).Items.Single();
+
+        var detail = await source.DetailAsync(series.Id, Ctx, CancellationToken.None);
+
+        Assert.Equal(2, detail.Items.Count);
+        Assert.Contains("Pilot", detail.Items[0].Title);
+    }
+
+    [Fact]
+    public async Task Resolving_an_episode_asks_for_that_season_and_episode()
+    {
+        var grabber = new RecordingGrabber();
+        var stub = StubWithEpisodes(
+            new MetadataItem("s1", "Some Show", "series"),
+            new MetadataEpisode("e1", 3, 2, "The One"));
+
+        var source = Source([stub], grabber);
+        var series = (await source.SearchAsync("series", null, Ctx, CancellationToken.None)).Items.Single();
+        var episode = (await source.DetailAsync(series.Id, Ctx, CancellationToken.None)).Items.Single();
+
+        await source.ResolveAsync(episode.Id, 0, Ctx, CancellationToken.None);
+
+        var request = Assert.IsType<TvRequest>(grabber.LastRequest);
+        Assert.Equal("Some Show", request.Title);
+        Assert.Equal(3, request.Season);
+        Assert.Equal(2, request.Episode);
+    }
+
+    [Fact]
+    public async Task A_series_that_reports_no_episodes_expands_to_an_empty_detail()
+    {
+        // A source declaring "series" but not implementing EpisodesAsync gets the default.
+        var source = Source([new StubMetadata("a", ["series"], new MetadataItem("s1", "Some Show", "series"))]);
+        var series = (await source.SearchAsync("series", null, Ctx, CancellationToken.None)).Items.Single();
+
+        var detail = await source.DetailAsync(series.Id, Ctx, CancellationToken.None);
+
+        Assert.Empty(detail.Items);
+    }
+
+    [Fact]
+    public async Task Expanding_something_that_is_not_a_series_is_empty_rather_than_an_error()
+    {
+        var source = Source([new StubMetadata("a", ["movie"], Film("Some Film", 2020))]);
+        var movie = (await source.SearchAsync("movies", null, Ctx, CancellationToken.None)).Items.Single();
+
+        Assert.Empty((await source.DetailAsync(movie.Id, Ctx, CancellationToken.None)).Items);
+    }
+
+    [Fact]
+    public async Task A_metadata_source_that_throws_while_expanding_is_contained()
+    {
+        var source = Source([new ThrowingEpisodesMetadata()]);
+        var series = (await source.SearchAsync("series", null, Ctx, CancellationToken.None)).Items.Single();
+
+        Assert.Empty((await source.DetailAsync(series.Id, Ctx, CancellationToken.None)).Items);
+    }
+
+    // --- ?n= walks files within a release before moving to the next candidate ---
+
+    [Fact]
+    public async Task Resolving_walks_files_within_a_release_before_moving_to_the_next_candidate()
+    {
+        var candidateA = new TorrentResult { Title = "Release A", ProviderName = "test-indexer" };
+        var candidateB = new TorrentResult { Title = "Release B", ProviderName = "test-indexer" };
+        var grabber = new RecordingGrabber(candidateA, candidateB);
+        var debrid = new KeyedDebrid(new Dictionary<string, DebridResult>
+        {
+            ["Release A"] = DebridResult.Resolved("keyed", "id-a", cached: true,
+            [
+                new DebridLink("a1.mkv", new Uri("https://example.test/a1.mkv"), 100),
+                new DebridLink("a2.mkv", new Uri("https://example.test/a2.mkv"), 100),
+            ]),
+            ["Release B"] = DebridResult.Resolved("keyed", "id-b", cached: true,
+            [
+                new DebridLink("b1.mkv", new Uri("https://example.test/b1.mkv"), 100),
+            ]),
+        });
+        var resolver = new ReleaseStreamResolver(debrid, NullLogger<ReleaseStreamResolver>.Instance);
+        var source = new MetadataBackedVideoSource(
+            [new StubMetadata("a", ["movie"], Film("Some Film", 2020))],
+            grabber, resolver, NullLogger<MetadataBackedVideoSource>.Instance);
+        var item = (await source.SearchAsync("movies", null, Ctx, CancellationToken.None)).Items.Single();
+
+        var n0 = await source.ResolveAsync(item.Id, 0, Ctx, CancellationToken.None);
+        var n1 = await source.ResolveAsync(item.Id, 1, Ctx, CancellationToken.None);
+        var n2 = await source.ResolveAsync(item.Id, 2, Ctx, CancellationToken.None);
+
+        // n=0 and n=1 are two different files from the SAME release (A) — only once
+        // both are exhausted does n=2 fall through to release B.
+        Assert.Equal("https://example.test/a1.mkv", n0!.Url);
+        Assert.Equal("https://example.test/a2.mkv", n1!.Url);
+        Assert.Equal("https://example.test/b1.mkv", n2!.Url);
+    }
+
+    [Fact]
+    public async Task Walking_past_every_candidates_files_returns_null_rather_than_throwing()
+    {
+        var candidate = new TorrentResult { Title = "Only Release", ProviderName = "test-indexer" };
+        var grabber = new RecordingGrabber(candidate);
+        var debrid = new KeyedDebrid(new Dictionary<string, DebridResult>
+        {
+            ["Only Release"] = DebridResult.Resolved("keyed", "id", cached: true,
+            [
+                new DebridLink("only.mkv", new Uri("https://example.test/only.mkv"), 100),
+            ]),
+        });
+        var resolver = new ReleaseStreamResolver(debrid, NullLogger<ReleaseStreamResolver>.Instance);
+        var source = new MetadataBackedVideoSource(
+            [new StubMetadata("a", ["movie"], Film("Some Film", 2020))],
+            grabber, resolver, NullLogger<MetadataBackedVideoSource>.Instance);
+        var item = (await source.SearchAsync("movies", null, Ctx, CancellationToken.None)).Items.Single();
+
+        SourceStream? stream = null;
+        var thrown = await Record.ExceptionAsync(async () =>
+            stream = await source.ResolveAsync(item.Id, 5, Ctx, CancellationToken.None));
+
+        Assert.Null(thrown);
+        Assert.Null(stream);
     }
 }

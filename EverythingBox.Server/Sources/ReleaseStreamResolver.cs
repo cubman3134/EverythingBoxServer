@@ -119,6 +119,55 @@ public sealed class ReleaseStreamResolver
         }
     }
 
+    /// <summary>
+    /// Resolves every playable option for <paramref name="release"/> in a single debrid
+    /// round trip, rather than one round trip per index. A caller that needs to walk
+    /// files within a release before moving on to the next candidate release (see
+    /// <see cref="Sources.MetadataBackedVideoSource"/>) uses this to learn how many
+    /// options a release yields without resolving each one separately — resolving a
+    /// release a second time just to ask "how many?" would double the round trips this
+    /// method exists to avoid.
+    /// <para>
+    /// No configured debrid, a thrown exception, or a failed resolution all yield an
+    /// empty list — nothing to walk into. A still-caching release yields a single
+    /// notice option. A resolved release yields one option per narrowed link, in the
+    /// same order <see cref="ResolveAsync"/> would index into.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<SourceStream>> ResolveAllAsync(TorrentResult release, MediaRequest request, CancellationToken cancellationToken)
+    {
+        if (_debrid is null)
+            return [];
+
+        DebridResult result;
+        try
+        {
+            result = await _debrid.ResolveAsync(release, request, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Debrid resolution threw for '{Title}'; treating as unplayable.", release.Title);
+            return [];
+        }
+
+        switch (result.Status)
+        {
+            case DebridStatus.Pending:
+                return [SourceStream.FromNotice(result.Message ?? "Still caching; try again shortly.")];
+
+            case DebridStatus.Failed:
+                _logger.LogInformation("Debrid resolution failed for '{Title}': {Message}", release.Title, result.Message);
+                return [];
+
+            case DebridStatus.Resolved:
+                var narrowed = Narrow(request, result.Links);
+                return narrowed.Select(link => new SourceStream(link.Url.ToString(), MimeFor(link.FileName))).ToList();
+
+            default:
+                throw new InvalidOperationException($"Unhandled DebridStatus: {result.Status}");
+        }
+    }
+
     // Single-extension whole-archive shapes, matched via Path.GetExtension. ".iso" is
     // deliberately absent: unlike zip/rar/7z/tar, a disc image is frequently the actual
     // deliverable a game or retro request wants (GeneralRequest.FileType="iso"), so
