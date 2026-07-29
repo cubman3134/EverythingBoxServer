@@ -18,6 +18,12 @@ file sealed class RecordingGrabber(params TorrentResult[] results) : ITorrentGra
         LastRequest = request;
         return Task.FromResult<IReadOnlyList<TorrentResult>>(results);
     }
+
+    public Task<IReadOnlyList<TorrentResult>> SearchRankedAsync(MediaRequest request, CancellationToken cancellationToken = default)
+    {
+        LastRequest = request;
+        return Task.FromResult<IReadOnlyList<TorrentResult>>(results);
+    }
 }
 
 file sealed class ThrowingGrabber : ITorrentGrabber
@@ -26,6 +32,9 @@ file sealed class ThrowingGrabber : ITorrentGrabber
         => throw new HttpRequestException("indexer unreachable");
 
     public Task<IReadOnlyList<TorrentResult>> SearchAsync(MediaRequest request, CancellationToken cancellationToken = default)
+        => throw new HttpRequestException("indexer unreachable");
+
+    public Task<IReadOnlyList<TorrentResult>> SearchRankedAsync(MediaRequest request, CancellationToken cancellationToken = default)
         => throw new HttpRequestException("indexer unreachable");
 }
 

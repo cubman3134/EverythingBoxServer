@@ -52,6 +52,9 @@ public sealed class DeferredTorrentGrabber : ITorrentGrabber
     public Task<IReadOnlyList<TorrentResult>> SearchAsync(MediaRequest request, CancellationToken cancellationToken = default)
         => Grabber.SearchAsync(request, cancellationToken);
 
+    public Task<IReadOnlyList<TorrentResult>> SearchRankedAsync(MediaRequest request, CancellationToken cancellationToken = default)
+        => Grabber.SearchRankedAsync(request, cancellationToken);
+
     // A plain Volatile.Read, not a lock: once SetGrabber has run, every later call on any
     // thread is ordinary delegation on the hot path, with no per-call synchronization.
     private ITorrentGrabber Grabber => Volatile.Read(ref _grabber) ?? throw new InvalidOperationException(

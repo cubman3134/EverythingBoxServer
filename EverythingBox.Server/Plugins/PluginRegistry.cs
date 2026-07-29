@@ -8,12 +8,17 @@ public sealed class PluginRegistry : IPluginRegistry
 {
     private readonly Dictionary<string, IMediaSource> _sources = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ITorrentProvider> _indexers = [];
+    private readonly List<IMetadataSource> _metadata = [];
 
     public IReadOnlyCollection<IMediaSource> Sources => _sources.Values;
 
     /// <summary>Indexers registered so far. Consumed by the host to feed the pipeline
     /// that backs <see cref="IServerServices.Grabber"/>.</summary>
     public IReadOnlyCollection<ITorrentProvider> Indexers => _indexers;
+
+    /// <summary>Metadata sources registered so far. Consumed by the host to pair
+    /// browsing with the pipeline.</summary>
+    public IReadOnlyCollection<IMetadataSource> Metadata => _metadata;
 
     public void AddSource(IMediaSource source)
     {
@@ -32,6 +37,12 @@ public sealed class PluginRegistry : IPluginRegistry
     {
         ArgumentNullException.ThrowIfNull(provider);
         _indexers.Add(provider);
+    }
+
+    public void AddMetadata(IMetadataSource metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        _metadata.Add(metadata);
     }
 
     internal static void ValidateKey(string key, string paramName)
