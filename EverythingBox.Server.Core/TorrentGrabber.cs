@@ -44,6 +44,12 @@ public sealed class TorrentGrabber : ITorrentGrabber
         _providerTracker = providerTracker;
     }
 
+    /// <summary>The providers this grabber was constructed with.</summary>
+    public IReadOnlyList<ITorrentProvider> Providers => _providers;
+
+    /// <summary>The options this grabber was constructed with.</summary>
+    public GrabberOptions Options => _options;
+
     /// <summary>Search, rank, and return the single best match plus alternatives.</summary>
     public async Task<GrabResult> GrabAsync(
         MediaRequest request,

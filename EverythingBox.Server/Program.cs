@@ -31,6 +31,14 @@ builder.Services.AddSingleton(sp =>
     var http = sp.GetRequiredService<HttpClient>();
     var files = sp.GetRequiredService<FileCache>();
     var cacheRoot = Path.Combine(config.ResolvedFilesCacheDir, "plugins");
+    var log = loggers.CreateLogger<SourceRouter>();
+
+    // Debrid depends only on config (never on what a plugin registers), so it can be built
+    // up front and handed to every plugin's IServerServices.Debrid as-is — unlike the
+    // grabber below, there is no ordering problem to solve for it. The grabber returned by
+    // this first call is a throwaway: it only knows about config-configured indexers, since
+    // no plugin has loaded yet.
+    var (_, debrid) = GrabberFactory.Build(config, http, [], loggers);
 
     // Plugins register indexers during Configure, but Configure is also where a plugin
     // receives IServerServices — which holds the grabber built FROM those indexers. Handing
@@ -41,19 +49,24 @@ builder.Services.AddSingleton(sp =>
     // see it) — but calling it FROM Configure throws immediately instead of silently
     // building and permanently caching a grabber with zero indexers. SetGrabber below is
     // called exactly once, after host.Load returns, once every plugin's indexers are known.
-    var grabber = new DeferredTorrentGrabber();
-    var services = new ServerServices(grabber, debrid: null, files);
+    var deferredGrabber = new DeferredTorrentGrabber();
+    var services = new ServerServices(deferredGrabber, debrid, files);
 
     var plugins = host.Load(
         config.ResolvedPluginsDirectory,
         plugin => new PluginContext(plugin.Key, config, loggers, http, cacheRoot, services));
 
-    var grabberBuilder = new GrabberBuilder();
-    foreach (var indexer in plugins.SelectMany(p => p.Indexers))
-        grabberBuilder.AddProvider(indexer);
-    grabber.SetGrabber(grabberBuilder.Build());
+    // Now that every plugin's Configure has run, every indexer is known — build the real
+    // grabber (config indexers + plugin indexers, one merged provider list) and bind it.
+    var pluginIndexers = plugins.SelectMany(p => p.Indexers).ToList();
+    var (grabber, _) = GrabberFactory.Build(config, http, pluginIndexers, loggers);
+    deferredGrabber.SetGrabber(grabber);
 
-    return new SourceRouter(plugins.SelectMany(p => p.Sources), loggers.CreateLogger<SourceRouter>());
+    log.LogInformation(
+        "Torrent pipeline ready: {Total} indexer(s) ({Configured} from config, {FromPlugins} from plugins); debrid: {Debrid}",
+        grabber.Providers.Count, config.Indexers.Count, pluginIndexers.Count, debrid?.Name ?? "none");
+
+    return new SourceRouter(plugins.SelectMany(p => p.Sources), log);
 });
 
 var app = builder.Build();
