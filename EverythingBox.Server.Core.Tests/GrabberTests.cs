@@ -96,6 +96,41 @@ public class GrabberTests
         Assert.Contains(result.Errors, e => e.ProviderName == "slow");
     }
 
+    // C2: provider.Name is plugin-authored and can throw. QueryProviderAsync used to read
+    // it fresh inside its own catch handlers, so a throwing Name escaped unguarded and
+    // propagated out of SearchAsync — taking down every other provider's results in the
+    // same batch, not just the bad one's. A name must be captured once, defensively, and
+    // reused for every exit path including the catch.
+    [Fact]
+    public async Task A_provider_with_a_throwing_Name_does_not_take_down_the_whole_search()
+    {
+        var good = new ListProvider("good", [Res("The Matrix 1999 1080p BluRay", "H1", 10)]);
+        var badName = new NameThrowingProvider();
+
+        var grabber = new TorrentGrabber([good, badName]);
+
+        var results = await grabber.SearchAsync(Matrix);
+
+        Assert.Single(results);
+        Assert.Equal("H1", results[0].InfoHash);
+    }
+
+    [Fact]
+    public async Task A_provider_with_a_throwing_Name_is_reported_under_a_safe_placeholder_not_crashing_GrabAsync()
+    {
+        var good = new ListProvider("good", [Res("The Matrix 1999 1080p BluRay", "H1", 10)]);
+        var badName = new NameThrowingProvider();
+
+        var grabber = new TorrentGrabber([good, badName]);
+        var result = await grabber.GrabAsync(Matrix);
+
+        Assert.True(result.Found);
+        Assert.Equal("H1", result.Best!.InfoHash);
+        Assert.Single(result.Errors);
+        Assert.NotNull(result.Errors[0].ProviderName);
+        Assert.NotEqual(string.Empty, result.Errors[0].ProviderName);
+    }
+
     // --- Quick grab --------------------------------------------------------
 
     [Fact]
@@ -249,5 +284,21 @@ public class GrabberTests
 
         public Task<IReadOnlyList<TorrentResult>> SearchAsync(MediaRequest request, CancellationToken cancellationToken = default)
             => throw new InvalidOperationException("provider exploded");
+    }
+
+    /// <summary>A provider whose Name getter itself throws — plugin-authored code can fail
+    /// on ANY member, not just SearchAsync. Also fails SearchAsync so its identity is
+    /// unavoidably read from the error path (QueryProviderAsync's catch blocks).</summary>
+    private sealed class NameThrowingProvider : ITorrentProvider
+    {
+        public string Name => throw new InvalidOperationException("Name exploded");
+
+        public ProviderCapabilities Capabilities { get; } = new()
+        {
+            SupportedMediaTypes = new HashSet<MediaType> { MediaType.Movie, MediaType.Tv, MediaType.Music },
+        };
+
+        public Task<IReadOnlyList<TorrentResult>> SearchAsync(MediaRequest request, CancellationToken cancellationToken = default)
+            => throw new InvalidOperationException("provider exploded too");
     }
 }

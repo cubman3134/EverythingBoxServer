@@ -35,24 +35,23 @@ builder.Services.AddSingleton(sp =>
     // Plugins register indexers during Configure, but Configure is also where a plugin
     // receives IServerServices — which holds the grabber built FROM those indexers. Handing
     // out a real, eagerly-built grabber here would mean building it before any plugin has
-    // registered anything. LazyTorrentGrabber breaks the cycle: `loaded` starts empty, a
-    // plugin may stash the ITorrentGrabber reference during registration, and the closure
-    // below only reads `loaded` (by then fully populated) the first time something actually
-    // calls Search/GrabAsync — which happens while serving a request, never during Configure.
-    List<LoadedPlugin> loaded = [];
-    var grabber = new LazyTorrentGrabber(() =>
-    {
-        var grabberBuilder = new GrabberBuilder();
-        foreach (var indexer in loaded.SelectMany(p => p.Indexers))
-            grabberBuilder.AddProvider(indexer);
-        return grabberBuilder.Build();
-    });
+    // registered anything. DeferredTorrentGrabber breaks the cycle: a plugin may stash the
+    // ITorrentGrabber reference during registration and call it later while serving a
+    // request (see IServerServices.Grabber for the rule stated where a plugin author will
+    // see it) — but calling it FROM Configure throws immediately instead of silently
+    // building and permanently caching a grabber with zero indexers. SetGrabber below is
+    // called exactly once, after host.Load returns, once every plugin's indexers are known.
+    var grabber = new DeferredTorrentGrabber();
     var services = new ServerServices(grabber, debrid: null, files);
 
     var plugins = host.Load(
         config.ResolvedPluginsDirectory,
         plugin => new PluginContext(plugin.Key, config, loggers, http, cacheRoot, services));
-    loaded.AddRange(plugins);
+
+    var grabberBuilder = new GrabberBuilder();
+    foreach (var indexer in plugins.SelectMany(p => p.Indexers))
+        grabberBuilder.AddProvider(indexer);
+    grabber.SetGrabber(grabberBuilder.Build());
 
     return new SourceRouter(plugins.SelectMany(p => p.Sources), loggers.CreateLogger<SourceRouter>());
 });

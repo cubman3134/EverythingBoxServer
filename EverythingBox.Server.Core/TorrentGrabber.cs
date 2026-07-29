@@ -284,16 +284,23 @@ public sealed class TorrentGrabber : ITorrentGrabber
     private async Task<QueryResult> QueryProviderAsync(
         ITorrentProvider provider, MediaRequest request, CancellationToken token, CancellationToken callerToken)
     {
+        // provider.Name is plugin-authored code and can throw. Read it once, defensively,
+        // before anything else — including before the try below — so every exit out of this
+        // method (success, timeout, or a genuine provider exception) uses the same captured,
+        // safe value. Reading provider.Name again from inside the catch blocks would let a
+        // throwing Name escape unguarded and take down every other provider's results in the
+        // same batch, not just this one's.
+        var name = SafeProviderName(provider);
         var stopwatch = Stopwatch.StartNew();
         try
         {
             var found = await provider.SearchAsync(request, token).ConfigureAwait(false);
-            return new QueryResult(provider.Name, found, null, stopwatch.Elapsed);
+            return new QueryResult(name, found, null, stopwatch.Elapsed);
         }
         catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
         {
             // Timed out, or stopped early by a quick grab — reported, not fatal.
-            return new QueryResult(provider.Name, [], "stopped before completing", stopwatch.Elapsed);
+            return new QueryResult(name, [], "stopped before completing", stopwatch.Elapsed);
         }
         catch (OperationCanceledException)
         {
@@ -301,8 +308,22 @@ public sealed class TorrentGrabber : ITorrentGrabber
         }
         catch (Exception ex)
         {
-            return new QueryResult(provider.Name, [], ex.Message, stopwatch.Elapsed);
+            return new QueryResult(name, [], ex.Message, stopwatch.Elapsed);
         }
+    }
+
+    /// <summary>
+    /// Core's own equivalent of the host's PluginDiagnostics.SafeLabel — Core cannot
+    /// reference the host, so this is a local, narrower copy of the same idea: a provider's
+    /// Name is plugin-authored and can throw, and a diagnostic read of it must never itself
+    /// throw. Falls back to the runtime type when Name is unavailable.
+    /// </summary>
+    private static string SafeProviderName(ITorrentProvider? provider)
+    {
+        if (provider is null) return "<null provider>";
+
+        try { return provider.Name; }
+        catch { return provider.GetType().FullName ?? "<unknown provider>"; }
     }
 
     private IReadOnlyList<ITorrentProvider> Prioritize(IReadOnlyList<ITorrentProvider> capable)
