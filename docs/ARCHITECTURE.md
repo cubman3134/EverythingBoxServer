@@ -19,13 +19,17 @@ EverythingBox.Server.Abstractions/   the only assembly plugins reference
   RankingOptions                                   (Abstractions/Pipeline/)
   MediaRequest and its subclasses (MovieRequest, TvRequest, ...)       (Abstractions/Requests/)
   TorrentResult, DebridResult, GrabResult                              (Abstractions/Results/)
+  IMetadataSource, MetadataItem, MetadataEpisode   (Abstractions/Metadata/IMetadataSource.cs)
 
 EverythingBox.Server/                the host
   Program.cs                          composition root and route mounting
   GrabberFactory.cs                   builds the torrent pipeline from ServerConfig
   Plugins/PluginHost, PluginRegistry, PluginContext, PluginLoadContext, ServerServices
   Sources/IndexerSearchSource.cs      the idx: search catalogs (see "Search, out of the box")
-  Sources/ReleaseStreamResolver.cs    turns a chosen release into a stream via IDebridService
+  Sources/MetadataBackedVideoSource.cs the meta: browse catalogs (see "Browse: the meta: catalogs")
+  Sources/ReleaseStreamResolver.cs    turns a chosen release into a stream via IDebridService;
+                                      ResolveAllAsync additionally resolves every playable
+                                      option in one debrid round trip (used by MetadataBackedVideoSource)
   Routing/SourceRouter
   AddonEndpoints                      manifest/catalog/detail/meta/stream/proxy/files routes
   ManifestBuilder, SafeUrlGuard, FileCache, ServerConfig
@@ -79,6 +83,11 @@ public interface IPluginRegistry
     // dedupe, release parsing, ranking, cached-first ordering, and single-file extraction
     // for free. Merged with every config-defined Indexers entry into the same grabber.
     void AddIndexer(ITorrentProvider provider);
+
+    // Register a metadata source: browsing decoupled from any one indexer. The host
+    // pairs it with the same shared pipeline via the built-in MetadataBackedVideoSource
+    // ("meta:" catalogs) — see "Browse: the meta: catalogs" below.
+    void AddMetadata(IMetadataSource metadata);
 }
 
 public interface IPluginContext
@@ -91,12 +100,15 @@ public interface IPluginContext
 }
 ```
 
-There are two registration tiers today. `IMediaSource` (`AddSource`) owns its own
+There are three registration tiers today. `IMediaSource` (`AddSource`) owns its own
 catalogs, its own search, and its own stream resolution end to end — the tier every
 shipped plugin (`EverythingBox.Server.SampleSource`) uses. `ITorrentProvider`
 (`AddIndexer`) is smaller: it plugs into the shared `EverythingBox.Server.Core` pipeline
 instead of implementing search itself, the same pipeline a config-defined `Indexers`
-entry feeds — see "The torrent pipeline" below.
+entry feeds — see "The torrent pipeline" below. `IMetadataSource` (`AddMetadata`) is
+smaller still: it supplies only what to browse (titles, and episodes for a series);
+the host's built-in `MetadataBackedVideoSource` pairs it with that same shared
+pipeline for locating and resolving a release — see "Browse: the meta: catalogs" below.
 
 ### `IServerServices`
 
@@ -155,12 +167,15 @@ bytes back; the host does not need to know why a given source requires proxying.
 
 ## Sources the host ships
 
-One: `IndexerSearchSource` (`Sources/IndexerSearchSource.cs`), constructed directly in
-`Program.cs` and appended after every plugin's own sources (so a plugin can never be
-shadowed by it — see "Search, out of the box" below). It carries no content of its own;
-with `Indexers: []` and no plugin-registered indexer, its catalogs appear in the
-manifest and simply return nothing, the same "installed but empty" shape a fresh
-`plugins/` folder has.
+Two, both constructed directly in `Program.cs` and appended after every plugin's own
+sources (so a plugin can never be shadowed by either): `IndexerSearchSource`
+(`Sources/IndexerSearchSource.cs`, key `idx`, see "Search, out of the box" below) and
+`MetadataBackedVideoSource` (`Sources/MetadataBackedVideoSource.cs`, key `meta`, see
+"Browse: the meta: catalogs" below). Neither carries content of its own: `idx:` needs
+at least one indexer (config or plugin-registered) before it declares any catalog, and
+`meta:` needs at least one registered `IMetadataSource` before it declares `meta:movies`
+or `meta:series`. With neither configured, neither source's catalogs appear in the
+manifest at all — the same "installed but empty" shape a fresh `plugins/` folder has.
 
 Beyond that, zero — no plugin ships with the host. `EverythingBox.Server.SampleSource`
 is a separate, optional plugin project — `LocalFolderSource` — that ships as a worked
@@ -180,7 +195,8 @@ source, by splitting `"idx:{payload}"` on the colon — there is no special-case
 A catalog is search-only: opening it with no query returns a "search to see results"
 placeholder rather than firing a blank query at every indexer. A query is translated to
 the matching `MediaRequest` subclass via `MediaTypeNames` (movie catalog → `MovieRequest`,
-series → `TvRequest`, etc.), sent through `ITorrentGrabber.SearchAsync`, and every
+series → `TvRequest`, etc.), sent through `ITorrentGrabber.SearchRankedAsync` (see
+"The torrent pipeline" below — `Ranking` applies here), and every
 result becomes one `CatalogItem` whose id opaquely encodes the underlying
 `TorrentResult` (title, provider, hash, magnet/download URL, size, seeders), so it
 round-trips through the client without any server-side state.
@@ -197,6 +213,49 @@ back as a notice, not a download queued on the host's own hardware; see "Planned
 sources use, from `ServerConfig`'s `Indexers`/`Debrid`/`DownloadClient`/`Ranking` keys —
 see "The torrent pipeline" below for what each key does and how a malformed entry
 degrades.
+
+## Browse: the `meta:` catalogs
+
+`MetadataBackedVideoSource` (`Sources/MetadataBackedVideoSource.cs`, key `meta`) turns
+every registered `IMetadataSource` (`AddMetadata`) into browsable `meta:movies` and
+`meta:series` catalogs — the "browse, then play" flow, as opposed to `idx:`'s
+search-only shelves. Like `idx:`, a shelf is only declared if something can fill it:
+`meta:movies` appears only when at least one registered `IMetadataSource.SupportedMediaTypes`
+includes `"movie"` (independently for `meta:series`/`"series"`); with no metadata
+plugin installed, neither catalog appears.
+
+`SearchAsync` asks every metadata source that supports the catalog's media type for
+`IMetadataSource.BrowseAsync`, and merges their `MetadataItem`s into one catalog; a
+series item comes back `Expandable: true`, a movie does not. `DetailAsync` expands a
+series id (one carrying no season/episode of its own) into its episodes via
+`IMetadataSource.EpisodesAsync`, called with the source's own id for that title —
+`MetadataItem.Id` — not the title string. An id that already carries a season and
+episode (an episode id, itself still media type `"series"`) has nothing further to
+expand and returns empty, the same as a movie id would.
+
+`ResolveAsync` is where `meta:` meets the torrent pipeline: a movie id or an episode id
+(a bare series id is not resolvable — it has no single release) becomes a `MovieRequest`
+or `TvRequest` and is searched via `ITorrentGrabber.SearchRankedAsync` — best-first,
+ranked candidates, same as `GrabAsync` uses, unlike `idx:`'s own catalogs which call
+the same method (see "Search, out of the box" above). `index` walks playable *files*
+before moving to the next candidate release: for each ranked release in turn,
+`ReleaseStreamResolver.ResolveAllAsync` resolves every option that release's debrid
+round trip yields in one call (Pending wraps as a single notice option, Failed yields
+none, Resolved yields one option per narrowed link — see `ReleaseStreamResolverTests`
+for both branches), and `index` is consumed against that count before falling through
+to the next candidate. This lets a user reject one file (an unwanted quality, a season
+pack's wrong episode) and land on the next real option without abandoning the whole
+release.
+
+Every `IMetadataSource` call above (`SupportedMediaTypes`, `BrowseAsync`,
+`EpisodesAsync`) is guarded the same way plugin-authored code is guarded everywhere
+else in this host: a throw degrades to "skip this source", never takes the whole
+catalog or expansion down.
+
+**Metadata only supplies what to browse.** Locating and resolving a release still goes
+through the `Indexers`/`Debrid` config described above — a metadata plugin with no
+indexer configured browses fine but resolves nothing, the same "installed but
+nothing to serve" shape `idx:` has with no indexer.
 
 ## Routing
 
@@ -221,8 +280,8 @@ All routes below except `/` and `/health` are mounted under an optional token pr
 | `GET /manifest.json` | Built by `ManifestBuilder` from every loaded source |
 | `GET /catalog/{catalogId}.json` | `SourceRouter.TryResolve` → `IMediaSource.SearchAsync` |
 | `GET /catalog/{catalogId}/{extra}.json` | Same, with `search=...` parsed out of `{extra}` |
-| `GET /detail/{type}/{id}.json` | `IMediaSource.DetailAsync` |
-| `GET /meta/{type}/{id}.json` | Always an empty object — no metadata source exists yet |
+| `GET /detail/{type}/{id}.json` | `IMediaSource.DetailAsync` — for `meta:`, expands a series into its episodes |
+| `GET /meta/{type}/{id}.json` | Always an empty object — unrelated to `IMetadataSource`/the `meta:` catalogs above; no source populates a rich detail panel here yet |
 | `GET /stream/{type}/{id}.json?n=&dl=` | `IMediaSource.ResolveAsync`, then `SafeUrlGuard` |
 | `GET /proxy/{sourceKey}/{id}/{name}` | `IMediaSource.OpenAsync`, relayed with range support |
 | `GET /files/{name}` | Serves a file `FileCache` already built, with range support |
@@ -314,7 +373,8 @@ the fluent `GrabberBuilder` (`GrabberBuilder.cs`):
 
 ```
 GrabAsync            search every capable ITorrentProvider, dedupe, parse, rank, return best + alternatives
-SearchAsync          same, without ranking — the merged raw results
+SearchAsync          same, without ranking or filtering — the merged raw results
+SearchRankedAsync     same, ranked and filtered (best first, ineligible removed) — every survivor, not just the best
 GrabAndDownloadAsync  GrabAsync, then IDownloadClient.AddAsync on the winner
 GrabAndResolveAsync   GrabAsync, then IDebridService.ResolveAsync on the winner
 ```
@@ -343,10 +403,14 @@ regex, best-effort — unknown fields are left null rather than guessed.
 `Ranking/DefaultTorrentRanker.cs` filters (downloadable, min seeders, size bounds,
 banned terms, optional relevance match) then scores the survivors on quality signals
 from the parsed info, with seeders as the tiebreaker. `GrabberFactory.cs` passes
-`ServerConfig.Ranking` straight through as `GrabberOptions.Ranking`; note that
-`IndexerSearchSource`'s search catalogs call `ITorrentGrabber.SearchAsync` (the merged,
-unranked results), not `GrabAsync`, so `Ranking` does not currently filter or reorder
-what a search catalog shows — it affects only a caller that goes through `GrabAsync`.
+`ServerConfig.Ranking` straight through as `GrabberOptions.Ranking`. Both
+`IndexerSearchSource`'s search catalogs and `MetadataBackedVideoSource`'s browse
+catalogs call `ITorrentGrabber.SearchRankedAsync` — search, dedupe, parse, then rank
+and filter via the same `DefaultTorrentRanker` `GrabAsync` uses, just returning every
+surviving candidate instead of only the best one — so `Ranking` filters and reorders
+what both a search catalog and a browse resolution see. `SearchAsync` (the merged,
+unranked results, ineligible candidates included) remains available on
+`ITorrentGrabber` for a caller that wants the raw list instead.
 
 **Debrid** (`Debrid/`): `IDebridService` implementations `RealDebridService`
 (`RealDebrid/RealDebridService.cs`, options in `RealDebridOptions.cs`) and
@@ -383,11 +447,11 @@ without downloading the whole archive, using only `System.IO.Compression`.
 consoles (names, aliases, ROM extensions) useful to an emulator front end.
 
 Reachable through the addon protocol above via the `idx:` search catalogs (see "Search,
-out of the box"), and directly by a plugin author who wants more than that — see
+out of the box") and the `meta:` browse catalogs (see "Browse: the `meta:` catalogs"),
+and directly by a plugin author who wants more than that — see
 `EverythingBox.Server.Core.Tests/` for the library's own test coverage. What is NOT yet
-reachable: browsing (the catalogs are search-only until `IMetadataSource` exists), a
-self-download fallback for an uncached release, and archive-packaged releases — see
-Planned below.
+reachable: a self-download fallback for an uncached release, and archive-packaged
+releases — see Planned below.
 
 ## The cleanliness gate
 
@@ -406,12 +470,10 @@ supporting that kind of infrastructure is the point.
 
 Everything in this section describes where the project is going, not what exists in
 this codebase today. None of it is callable, configurable, or partially wired up unless
-explicitly noted. The indexer tier, `IServerServices`, and the `idx:` search catalogs
-described above are no longer planned — they exist; what remains is genuinely absent.
+explicitly noted. The indexer tier, the metadata tier, `IServerServices`, and the
+`idx:`/`meta:` catalogs described above are no longer planned — they exist; what
+remains is genuinely absent.
 
-- **A metadata-source tier** (`AddMetadata`/`IMetadataSource`) for movie/series
-  **browsing** decoupled from any one indexer, and the `MetadataBackedVideoSource` built
-  on top of it. Today's `idx:` catalogs are search-only (see "Search, out of the box").
 - **A MonoTorrent-backed self-download fallback** for an uncached debrid release.
   `Sources/ReleaseStreamResolver.cs` deliberately has none today: an uncached release
   returns a "still caching" notice, and retrying the same search later — once the debrid
@@ -424,5 +486,5 @@ described above are no longer planned — they exist; what remains is genuinely 
   (see the failure-containment table above) and a throwing `SearchAsync`/`ResolveAsync`/etc.
   simply degrades that one request to its route's empty shape — there is no retry.
 
-All three of the first group are host-side (`EverythingBox.Server`), not
-`EverythingBox.Server.Core`, because each needs a package Core is not allowed to take.
+The first two are host-side (`EverythingBox.Server`), not `EverythingBox.Server.Core`,
+because each needs a package Core is not allowed to take.

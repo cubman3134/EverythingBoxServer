@@ -83,6 +83,35 @@ public class ReleaseStreamResolverTests
         Assert.Null(await resolver.ResolveAsync(Release(), new MovieRequest { Title = "x" }, 0, CancellationToken.None));
     }
 
+    // --- ResolveAllAsync's Pending/Failed branches — MetadataBackedVideoSource is the
+    // only caller (it walks a browse release's files before moving to the next
+    // candidate), and nothing else in this file exercises them: every test above this
+    // point calls ResolveAsync, not ResolveAllAsync. A reviewer mutating either branch
+    // (Pending returning [] instead of a single notice option, or Failed returning a
+    // bogus notice instead of []) left the suite fully green before these existed.
+
+    [Fact]
+    public async Task ResolveAllAsync_wraps_a_pending_release_as_a_single_notice_option()
+    {
+        var resolver = Resolver(DebridResult.Pending("stub", "id", "caching"));
+
+        var options = await resolver.ResolveAllAsync(Release(), new MovieRequest { Title = "x" }, CancellationToken.None);
+
+        var only = Assert.Single(options);
+        Assert.Equal("", only.Url);
+        Assert.False(string.IsNullOrWhiteSpace(only.Notice));
+    }
+
+    [Fact]
+    public async Task ResolveAllAsync_yields_nothing_for_a_failed_resolution()
+    {
+        var resolver = Resolver(DebridResult.Failed("stub", "nope"));
+
+        var options = await resolver.ResolveAllAsync(Release(), new MovieRequest { Title = "x" }, CancellationToken.None);
+
+        Assert.Empty(options);
+    }
+
     [Fact]
     public async Task A_debrid_service_that_throws_is_contained()
     {

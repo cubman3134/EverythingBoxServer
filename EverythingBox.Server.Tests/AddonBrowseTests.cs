@@ -34,9 +34,14 @@ public class AddonBrowseTests
         var json = await _factory.CreateClient().GetFromJsonAsync<JsonElement>("/manifest.json");
 
         Assert.Equal("media-source", json.GetProperty("type").GetString());
-        // The built-in IndexerSearchSource ("idx:*") is always registered alongside
-        // whatever plugins are installed, so "good:all" is no longer the only catalog —
-        // just the only one this fixture plugin contributes.
+        // PluginServerFactory configures neither an indexer nor a metadata source, so
+        // IndexerSearchSource/MetadataBackedVideoSource each declare zero catalogs here
+        // (a shelf is only declared if something can fill it) — "good:all" genuinely IS
+        // the only catalog in THIS fixture's manifest today. Filtering through
+        // PluginCatalogs anyway is what keeps this assertion correct if that ever
+        // changes, rather than claiming a "idx:"/"meta:" catalog is present-but-filtered
+        // when none exists at all — see BrowseToStreamTests.BrowseServerFactory for a
+        // fixture where both genuinely are non-empty.
         var catalog = PluginCatalogs(json).Single();
         Assert.Equal("good:all", catalog.GetProperty("id").GetString());
     }
