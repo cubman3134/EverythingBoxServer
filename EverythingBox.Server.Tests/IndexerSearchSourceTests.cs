@@ -107,6 +107,16 @@ public class IndexerSearchSourceTests
     }
 
     [Fact]
+    public void With_no_indexer_registered_it_declares_no_media_types_either()
+    {
+        // M2: MediaTypes used to be unconditional even though Catalogs was gated on
+        // indexerCount > 0 — a stock install advertised presentation hints for four
+        // media types with no catalog to appear on. Same discipline, both members.
+        var source = Source(new RecordingGrabber(), indexerCount: 0);
+        Assert.Empty(source.MediaTypes);
+    }
+
+    [Fact]
     public void With_an_indexer_registered_it_declares_all_six()
     {
         var source = Source(new RecordingGrabber(), indexerCount: 1);

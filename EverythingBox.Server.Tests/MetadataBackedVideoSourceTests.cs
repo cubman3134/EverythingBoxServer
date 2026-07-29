@@ -77,6 +77,22 @@ file sealed class KeyedDebrid(IReadOnlyDictionary<string, DebridResult> byTitle)
         => Task.FromResult(byTitle[torrent.Title]);
 }
 
+/// <summary>Counts debrid round trips and always fails — the I1 cap test's stand-in
+/// for "an expired/wrong debrid API key fails every candidate identically", the most
+/// common real-world way an unbounded candidate walk turns into hundreds of debrid
+/// calls for a single request.</summary>
+file sealed class CountingFailingDebrid : IDebridService
+{
+    public string Name => "counting";
+    public int CallCount { get; private set; }
+
+    public Task<DebridResult> ResolveAsync(TorrentResult torrent, MediaRequest? request = null, CancellationToken cancellationToken = default)
+    {
+        CallCount++;
+        return Task.FromResult(DebridResult.Failed("counting", "always fails"));
+    }
+}
+
 public class MetadataBackedVideoSourceTests
 {
     private static readonly SourceContext Ctx = new();
@@ -193,13 +209,20 @@ public class MetadataBackedVideoSourceTests
     [Fact]
     public async Task Resolving_uses_the_ranked_search_not_the_raw_one()
     {
-        // RecordingGrabber throws from SearchAsync — reaching it would fail loudly.
+        // RecordingGrabber throws from SearchAsync — but ResolveAsync catches whatever
+        // the grabber throws and returns null, so "no exception escaped" alone does NOT
+        // prove SearchRankedAsync was used: the mutation SearchRankedAsync -> SearchAsync
+        // would hit the throw, get caught, and return null too, looking identical from
+        // outside. Assert LastRequest was actually recorded, the same way
+        // IndexerSearchSourceTests.Searching_uses_the_ranked_pipeline_so_Ranking_config_applies
+        // does for its own SearchAsync/SearchRankedAsync split.
         var grabber = new RecordingGrabber();
         var source = Source([new StubMetadata("a", ["movie"], Film("Some Film", 2020))], grabber);
 
         var item = (await source.SearchAsync("movies", null, Ctx, CancellationToken.None)).Items.Single();
 
         Assert.Null(await Record.ExceptionAsync(() => source.ResolveAsync(item.Id, 0, Ctx, CancellationToken.None)));
+        Assert.NotNull(grabber.LastRequest);
     }
 
     [Theory]
@@ -242,8 +265,8 @@ public class MetadataBackedVideoSourceTests
     {
         var stub = StubWithEpisodes(
             new MetadataItem("s1", "Some Show", "series"),
-            new MetadataEpisode("e1", 1, 1, "Pilot"),
-            new MetadataEpisode("e2", 1, 2, "Second"));
+            new MetadataEpisode(1, 1, "Pilot"),
+            new MetadataEpisode(1, 2, "Second"));
 
         var source = Source([stub]);
         var series = (await source.SearchAsync("series", null, Ctx, CancellationToken.None)).Items.Single();
@@ -260,7 +283,7 @@ public class MetadataBackedVideoSourceTests
         var grabber = new RecordingGrabber();
         var stub = StubWithEpisodes(
             new MetadataItem("s1", "Some Show", "series"),
-            new MetadataEpisode("e1", 3, 2, "The One"));
+            new MetadataEpisode(3, 2, "The One"));
 
         var source = Source([stub], grabber);
         var series = (await source.SearchAsync("series", null, Ctx, CancellationToken.None)).Items.Single();
@@ -365,5 +388,88 @@ public class MetadataBackedVideoSourceTests
 
         Assert.Null(thrown);
         Assert.Null(stream);
+    }
+
+    // --- I1: the candidate walk is bounded, so one misconfiguration (or a season pack
+    // that narrows to zero files) can't turn a single request into hundreds of debrid
+    // round trips ---
+
+    [Fact]
+    public async Task Resolving_caps_how_many_candidates_it_will_walk_through_debrid()
+    {
+        // Every candidate fails identically — the same shape as an expired/wrong debrid
+        // API key, the most ordinary real-world cause. 50 is a fixed literal, not tied
+        // to MaxCandidatesToResolve, deliberately: it must stay far bigger than the cap
+        // even if the cap is later raised, so this test still bites if the cap is ever
+        // widened enough to matter (verified by temporarily setting the cap far above
+        // 50 and confirming this test then fails, expecting the smaller cap-based count
+        // but observing all 50 candidates resolved instead).
+        const int candidateCount = 50;
+        var candidates = Enumerable.Range(0, candidateCount)
+            .Select(i => new TorrentResult { Title = $"Release {i}", ProviderName = "test-indexer" })
+            .ToArray();
+        var grabber = new RecordingGrabber(candidates);
+        var debrid = new CountingFailingDebrid();
+        var resolver = new ReleaseStreamResolver(debrid, NullLogger<ReleaseStreamResolver>.Instance);
+        var source = new MetadataBackedVideoSource(
+            [new StubMetadata("a", ["movie"], Film("Some Film", 2020))],
+            grabber, resolver, NullLogger<MetadataBackedVideoSource>.Instance);
+        var item = (await source.SearchAsync("movies", null, Ctx, CancellationToken.None)).Items.Single();
+
+        var result = await source.ResolveAsync(item.Id, 0, Ctx, CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.Equal(MetadataBackedVideoSource.MaxCandidatesToResolve, debrid.CallCount);
+    }
+
+    [Fact]
+    public async Task The_cap_does_not_disturb_the_normal_walk_across_two_candidates()
+    {
+        // Same shape as Resolving_walks_files_within_a_release_before_moving_to_the_next_candidate,
+        // but explicit about why it also matters for I1: two candidates sit far under
+        // MaxCandidatesToResolve, so n=0/n=1/n=2 must behave exactly as before the cap
+        // was introduced — the cap must not make the ordinary case walk fewer files.
+        var candidateA = new TorrentResult { Title = "Release A", ProviderName = "test-indexer" };
+        var candidateB = new TorrentResult { Title = "Release B", ProviderName = "test-indexer" };
+        var grabber = new RecordingGrabber(candidateA, candidateB);
+        var debrid = new KeyedDebrid(new Dictionary<string, DebridResult>
+        {
+            ["Release A"] = DebridResult.Resolved("keyed", "id-a", cached: true,
+            [
+                new DebridLink("a1.mkv", new Uri("https://example.test/a1.mkv"), 100),
+                new DebridLink("a2.mkv", new Uri("https://example.test/a2.mkv"), 100),
+            ]),
+            ["Release B"] = DebridResult.Resolved("keyed", "id-b", cached: true,
+            [
+                new DebridLink("b1.mkv", new Uri("https://example.test/b1.mkv"), 100),
+            ]),
+        });
+        var resolver = new ReleaseStreamResolver(debrid, NullLogger<ReleaseStreamResolver>.Instance);
+        var source = new MetadataBackedVideoSource(
+            [new StubMetadata("a", ["movie"], Film("Some Film", 2020))],
+            grabber, resolver, NullLogger<MetadataBackedVideoSource>.Instance);
+        var item = (await source.SearchAsync("movies", null, Ctx, CancellationToken.None)).Items.Single();
+
+        var n0 = await source.ResolveAsync(item.Id, 0, Ctx, CancellationToken.None);
+        var n1 = await source.ResolveAsync(item.Id, 1, Ctx, CancellationToken.None);
+        var n2 = await source.ResolveAsync(item.Id, 2, Ctx, CancellationToken.None);
+
+        Assert.Equal("https://example.test/a1.mkv", n0!.Url);
+        Assert.Equal("https://example.test/a2.mkv", n1!.Url);
+        Assert.Equal("https://example.test/b1.mkv", n2!.Url);
+    }
+
+    // --- I3: an item whose own MediaType disagrees with the catalog it's browsed
+    // under is dropped, not silently mis-shelved ---
+
+    [Fact]
+    public async Task An_item_whose_media_type_does_not_match_the_browsed_catalog_is_excluded()
+    {
+        var mismatched = new MetadataItem("s1", "Wrongly Typed", "series");
+        var source = Source([new StubMetadata("a", ["movie"], mismatched)]);
+
+        var catalog = await source.SearchAsync("movies", null, Ctx, CancellationToken.None);
+
+        Assert.Empty(catalog.Items);
     }
 }

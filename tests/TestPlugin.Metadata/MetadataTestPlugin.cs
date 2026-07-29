@@ -20,8 +20,8 @@ public sealed class TestMetadataSource : IMetadataSource
 
     private static readonly MetadataEpisode[] Episodes =
     [
-        new MetadataEpisode("e1", 1, 1, "Pilot"),
-        new MetadataEpisode("e2", 1, 2, "Second"),
+        new MetadataEpisode(1, 1, "Pilot"),
+        new MetadataEpisode(1, 2, "Second"),
     ];
 
     public Task<IReadOnlyList<MetadataItem>> BrowseAsync(string mediaType, string? query, CancellationToken ct) =>

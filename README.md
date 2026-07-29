@@ -163,9 +163,12 @@ public interface IMetadataSource
 }
 ```
 
-`MetadataItem` carries an id, title, media type, and optionally a year, poster URL,
-and overview; `MetadataEpisode` carries an id, season, episode, title, and optionally
-an overview.
+`MetadataItem` carries an id, title, media type, and optionally a year and poster URL
+— `MediaType` is the protocol string this item actually is ("movie", "series"), and
+the host shelves it by that, not by whichever catalog it was returned from, so a
+source mixing types into one `BrowseAsync` call gets each item shelved correctly (or
+dropped, if it doesn't match). `MetadataEpisode` carries a season, episode, title, and
+optionally an overview — no id of its own; nothing downstream needs one.
 
 The host's built-in `meta:` source (`Sources/MetadataBackedVideoSource.cs`) pairs
 every registered `IMetadataSource` with the same indexer/debrid pipeline `idx:` uses:

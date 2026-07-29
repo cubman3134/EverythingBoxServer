@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using EverythingBox.Server;
 using EverythingBox.Server.Abstractions;
 using Microsoft.Extensions.Logging;
 
@@ -21,6 +22,20 @@ public sealed class MetadataBackedVideoSource : IMediaSource
     private readonly ITorrentGrabber _grabber;
     private readonly ReleaseStreamResolver _resolver;
     private readonly ILogger<MetadataBackedVideoSource> _logger;
+
+    /// <summary>Bounds how many ranked candidate releases a single <see cref="ResolveAsync"/>
+    /// walk will spend a debrid round trip on. Each candidate costs 1-3 HTTPS calls to a
+    /// paid third-party API on a 60-second-timeout client, and a candidate that yields zero
+    /// options (an unmatched season pack, or the release simply failing to resolve) does not
+    /// count against <c>remaining</c> — so with no cap, one ordinary misconfiguration (an
+    /// expired/wrong debrid API key, which fails every candidate identically) turns a single
+    /// `?n=0` request into a debrid call per ranked candidate, which can run into the
+    /// hundreds. 10 is chosen to keep the normal "reject a few bad candidates, try the next
+    /// index" flow fully usable (a user manually walking ?n=1, ?n=2, ... rarely goes past a
+    /// handful) while making the pathological all-candidates-fail case cheap: at most 10
+    /// debrid round trips per request, regardless of how many candidates were ranked.
+    /// Internal so tests can reference it rather than duplicating the literal.</summary>
+    internal const int MaxCandidatesToResolve = 10;
 
     public MetadataBackedVideoSource(
         IReadOnlyList<IMetadataSource> metadata,
@@ -79,11 +94,18 @@ public sealed class MetadataBackedVideoSource : IMediaSource
                 // One misbehaving metadata source must degrade to "skip it", never take
                 // the whole shelf down — the others still get to answer.
                 _logger.LogWarning(ex,
-                    "Metadata source failed to browse '{MediaType}'; skipping it.", descriptor.MediaType);
+                    "Metadata source '{Source}' failed to browse '{MediaType}'; skipping it.",
+                    PluginDiagnostics.SafeLabel(source), descriptor.MediaType);
                 continue;
             }
 
-            items.AddRange(results.Select(item => ToCatalogItem(item, descriptor.MediaType)));
+            // A source that returns an item whose own MediaType doesn't match the
+            // catalog it was asked to browse is dropped rather than shelved under the
+            // catalog's type — a source mixing types into one BrowseAsync call must
+            // not have them silently mis-shelved onto whatever catalog happened to ask.
+            items.AddRange(results
+                .Where(item => string.Equals(item.MediaType, descriptor.MediaType, StringComparison.OrdinalIgnoreCase))
+                .Select(ToCatalogItem));
         }
 
         return new SourceCatalog(descriptor.Name, items);
@@ -116,7 +138,8 @@ public sealed class MetadataBackedVideoSource : IMediaSource
                 // metadata source degrades to "skip it", never takes the whole
                 // expansion down.
                 _logger.LogWarning(ex,
-                    "Metadata source failed to list episodes for '{Title}'; skipping it.", decoded.Title);
+                    "Metadata source '{Source}' failed to list episodes for '{Title}'; skipping it.",
+                    PluginDiagnostics.SafeLabel(source), decoded.Title);
                 continue;
             }
 
@@ -168,7 +191,7 @@ public sealed class MetadataBackedVideoSource : IMediaSource
         // time: each release costs a debrid round trip, so nothing past the release
         // that satisfies `index` is ever touched.
         var remaining = index;
-        foreach (var candidate in candidates)
+        foreach (var candidate in candidates.Take(MaxCandidatesToResolve))
         {
             var options = await _resolver.ResolveAllAsync(candidate, request, ct);
             if (remaining < options.Count)
@@ -201,16 +224,20 @@ public sealed class MetadataBackedVideoSource : IMediaSource
         }
     }
 
-    private static CatalogItem ToCatalogItem(MetadataItem item, string mediaType) =>
+    // The item's OWN MediaType, not the catalog's — the caller has already filtered
+    // out any item whose type doesn't match the catalog it was browsed on, so by the
+    // time an item reaches here the two agree; using the item's own value keeps this
+    // helper correct even if that invariant ever loosens.
+    private static CatalogItem ToCatalogItem(MetadataItem item) =>
         new(
-            Id: EncodeId(item, mediaType),
+            Id: EncodeId(item),
             Title: item.Title,
             Subtitle: item.Year?.ToString() ?? "",
-            MediaType: mediaType,
+            MediaType: item.MediaType,
             ThumbnailUrl: item.PosterUrl,
             // A series is expandable into episodes; a movie is not — it's already
             // the whole thing.
-            Expandable: string.Equals(mediaType, "series", StringComparison.OrdinalIgnoreCase));
+            Expandable: string.Equals(item.MediaType, "series", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>An episode's id carries the SERIES title (not the episode's own
     /// title) plus season and episode — that's what <see cref="ResolveAsync"/> needs
@@ -261,12 +288,12 @@ public sealed class MetadataBackedVideoSource : IMediaSource
 
     private readonly record struct DecodedItem(string Title, int? Year, MediaType MediaType, string? SourceId, int? Season, int? Episode);
 
-    private static string EncodeId(MetadataItem item, string mediaType) =>
+    private static string EncodeId(MetadataItem item) =>
         Encode(new ItemRecord
         {
             Title = item.Title,
             Year = item.Year,
-            MediaType = mediaType,
+            MediaType = item.MediaType,
             SourceId = item.Id,
         });
 

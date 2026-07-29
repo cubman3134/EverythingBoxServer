@@ -47,6 +47,7 @@ public sealed class IndexerSearchSource : IMediaSource
         // advertise six shelves that can never return anything. Same discipline
         // MetadataBackedVideoSource applies to its own catalogs.
         Catalogs = indexerCount > 0 ? AllCatalogs : [];
+        MediaTypes = indexerCount > 0 ? AllMediaTypes : [];
     }
 
     public string Key => "idx";
@@ -55,14 +56,18 @@ public sealed class IndexerSearchSource : IMediaSource
 
     // movie/series are built into the client and must NOT be declared here — only the
     // types the client doesn't know natively need presentation hints, or they render
-    // as an unlabelled shelf.
-    public IReadOnlyList<MediaTypeDescriptor> MediaTypes { get; } =
+    // as an unlabelled shelf. Gated on indexerCount > 0 the same as Catalogs above — a
+    // stock install with no indexer configured must not advertise presentation hints
+    // for four media types that have no catalogs to appear on.
+    private static readonly IReadOnlyList<MediaTypeDescriptor> AllMediaTypes =
     [
         new MediaTypeDescriptor("music", "#C0392B", "\U0001F3B5", "audio", "poster"),
         new MediaTypeDescriptor("audiobook", "#5B7FE0", "\U0001F3A7", "audio", "poster"),
         new MediaTypeDescriptor("book", "#3E8E7E", "\U0001F4D7", "document", "poster"),
         new MediaTypeDescriptor("comic", "#E07A2E", "\U0001F4DA", "document", "poster"),
     ];
+
+    public IReadOnlyList<MediaTypeDescriptor> MediaTypes { get; }
 
     public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
         => SearchAsyncCore(catalogId, query, ct);
