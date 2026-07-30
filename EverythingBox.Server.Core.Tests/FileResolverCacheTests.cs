@@ -1,4 +1,4 @@
-using EverythingBox.Server.Core.Scraping;
+using EverythingBox.Server.Abstractions;
 using Xunit;
 
 namespace EverythingBox.Server.Core.Tests;

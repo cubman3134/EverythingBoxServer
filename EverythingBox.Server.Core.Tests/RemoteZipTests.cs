@@ -1,6 +1,6 @@
 using System.IO.Compression;
 using System.Text;
-using EverythingBox.Server.Core.Scraping;
+using EverythingBox.Server.Abstractions;
 
 namespace EverythingBox.Server.Core.Tests;
 

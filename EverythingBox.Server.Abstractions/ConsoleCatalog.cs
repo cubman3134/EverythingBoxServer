@@ -1,4 +1,4 @@
-namespace EverythingBox.Server.Core.Consoles;
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>A known console: its display name, alternate names, and ROM extensions.</summary>
 public sealed record RetroConsole(string Name, IReadOnlyList<string> Aliases, IReadOnlyList<string> Extensions);
@@ -9,6 +9,11 @@ public sealed record RetroConsole(string Name, IReadOnlyList<string> Aliases, IR
 /// normalising a console name/alias to its canonical form, or for detecting which
 /// console a free-text query is naming.
 /// </summary>
+/// <remarks>
+/// This lives in Abstractions, not Core, deliberately: a plugin references only the
+/// contract assembly, so a helper it needs cannot live in Core. It has no imports at
+/// all — a plain data table — so it carries no Core dependency.
+/// </remarks>
 public static class ConsoleCatalog
 {
     /// <summary>Built-in consoles, with common aliases and their ROM file extensions.</summary>

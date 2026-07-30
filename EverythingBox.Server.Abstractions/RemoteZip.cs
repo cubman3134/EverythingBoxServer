@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
 
-namespace EverythingBox.Server.Core.Scraping;
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>
 /// A read-only ZIP reader that works over HTTP range requests, so a single member
@@ -13,6 +13,12 @@ namespace EverythingBox.Server.Core.Scraping;
 /// still be pulled on its own. Supports stored and deflate entries and ZIP64; uses
 /// only the BCL.
 /// </summary>
+/// <remarks>
+/// This lives in Abstractions, not Core, deliberately: a plugin references only the
+/// contract assembly, so a helper it needs cannot live in Core. Uses only the BCL
+/// (<c>System.Buffers.Binary</c>, <c>System.IO.Compression</c>), so it carries no Core
+/// dependency.
+/// </remarks>
 public sealed class RemoteZip
 {
     private readonly IRangeSource _source;

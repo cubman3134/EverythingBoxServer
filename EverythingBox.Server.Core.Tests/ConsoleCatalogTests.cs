@@ -1,4 +1,4 @@
-using EverythingBox.Server.Core.Consoles;
+using EverythingBox.Server.Abstractions;
 
 namespace EverythingBox.Server.Core.Tests;
 
