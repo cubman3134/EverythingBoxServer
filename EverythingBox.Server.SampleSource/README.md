@@ -61,6 +61,21 @@ for a fuller skeleton, and `SearchQuery.Build`/`MagnetBuilder.Build` (also in
 `EverythingBox.Server.Abstractions/Providers/`) for shared helpers `BuildSearchQuery` and a
 magnet-producing `ParseResponse` can reuse instead of writing that logic from scratch.
 
+### Reusable helpers from the contract assembly
+
+A plugin can also use these helpers, which live in `EverythingBox.Server.Abstractions`:
+
+- **`RemoteZip`**: Read a single member out of a remote ZIP over HTTP range requests,
+  including nested zips, without downloading the whole archive. Useful for any plugin
+  that needs to extract a file from a large remote ZIP.
+- **`FileResolverCache`**: A size-bounded, LRU-evicted on-disk cache implementation of
+  `IResolverCache`. Use it to cache search results, metadata, or other data that changes
+  rarely and should persist across server restarts.
+- **`ConsoleCatalog`**: A factual table of retro game consoles with their canonical names,
+  common aliases, and ROM file extensions — useful for an emulator plugin normalizing
+  console names or detecting which system a query refers to. Access the built-in list via
+  `ConsoleCatalog.Defaults`.
+
 ## Build and install
 
 ```bash

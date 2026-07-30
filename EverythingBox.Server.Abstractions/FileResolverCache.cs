@@ -1,8 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
-using EverythingBox.Server.Abstractions;
 
-namespace EverythingBox.Server.Core.Scraping;
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>
 /// On-disk <see cref="IResolverCache"/> bounded by total size rather than age: each
@@ -13,6 +12,13 @@ namespace EverythingBox.Server.Core.Scraping;
 /// repeated/similar searches skip slow upstream round-trips. All operations are
 /// best-effort and never throw.
 /// </summary>
+/// <remarks>
+/// This lives in Abstractions, not Core, deliberately: a plugin references only the
+/// contract assembly, so a helper it needs cannot live in Core. Uses only the BCL
+/// (<c>System.Security.Cryptography</c>, <c>System.Text</c>) plus
+/// <see cref="IResolverCache"/>, itself an Abstractions type, so it carries no Core
+/// dependency.
+/// </remarks>
 public sealed class FileResolverCache : IResolverCache
 {
     private readonly string _directory;

@@ -257,12 +257,8 @@ var result = await grabber.GrabAndDownloadAsync(new MovieRequest { Title = "..."
   `GrabAndDownloadAsync`.
 - **Selection and caching**: `MediaFileMatcher` narrows a multi-file release down to
   the one file a request asked for (an episode out of a season pack, a track out of an
-  album). `FileResolverCache` is a size-bounded on-disk `IResolverCache`. `RemoteZip`
-  reads a single member out of a remote ZIP over HTTP range requests, including nested
-  zips, without downloading the archive. `RetryHandler` is an `HttpClient`
-  `DelegatingHandler` with exponential-backoff retry for transient failures.
-- **Also included**: `ConsoleCatalog`, a factual table of retro game consoles (names,
-  aliases, ROM extensions) useful to any emulator front end.
+  album). `RetryHandler` is an `HttpClient` `DelegatingHandler` with exponential-backoff
+  retry for transient failures.
 
 `EverythingBox.Server.Core` still takes no third-party package (see
 `CoreDependencyTests`); anything the pipeline needs beyond the BCL — an archive
