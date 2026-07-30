@@ -51,10 +51,10 @@ EverythingBox.Server.Core.Tests/     xUnit tests for Core
 
 **Namespace convention.** `EverythingBox.Server.Abstractions` is deliberately *flat*: every
 type lives in the single `EverythingBox.Server.Abstractions` namespace regardless of which
-folder (`Pipeline/`, `Requests/`, `Results/`) it's filed under, so a plugin author needs
+folder (`Pipeline/`, `Requests/`, `Results/`, etc.) it's filed under, so a plugin author needs
 exactly one `using`. `EverythingBox.Server.Core` does the opposite on purpose: its
 namespaces mirror its folders (`EverythingBox.Server.Core.Download.QBittorrent`,
-`EverythingBox.Server.Core.Scraping`, etc.), because it's a larger surface a consumer
+`EverythingBox.Server.Core.Debrid`, etc.), because it's a larger surface a consumer
 browses by area rather than referencing wholesale. Both are internally consistent today;
 this is the reasoning, recorded once rather than left implicit.
 
@@ -480,14 +480,17 @@ download client yet.
 
 **Selection and infrastructure**: `Selection/MediaFileMatcher.cs` narrows a multi-file
 release's per-file links down to the one a request asked for (an episode out of a
-season pack, a track out of an album). `Scraping/FileResolverCache.cs` is a
-size-bounded, LRU-evicted on-disk `IResolverCache`. `Scraping/RemoteZip.cs` reads a
-single member out of a remote ZIP over HTTP range requests — including nested zips —
-without downloading the whole archive, using only `System.IO.Compression`.
-`Http/RetryHandler.cs` is a `DelegatingHandler` that retries transient HTTP failures
-(429/502/503/504, network errors) with exponential backoff and jitter, honoring
-`Retry-After`. `Consoles/ConsoleCatalog.cs` is an unrelated factual table of retro game
-consoles (names, aliases, ROM extensions) useful to an emulator front end.
+season pack, a track out of an album). `Http/RetryHandler.cs` is a `DelegatingHandler`
+that retries transient HTTP failures (429/502/503/504, network errors) with exponential
+backoff and jitter, honoring `Retry-After`.
+
+**Reachable by plugins** (`EverythingBox.Server.Abstractions`): `FileResolverCache` is a
+size-bounded, LRU-evicted on-disk `IResolverCache`. `RemoteZip` reads a single member
+out of a remote ZIP over HTTP range requests — including nested zips — without
+downloading the whole archive, using only `System.IO.Compression`. `ConsoleCatalog` is
+a factual table of retro game consoles (names, aliases, ROM extensions) useful to an
+emulator front end; it carries a `RetroConsole` record type. These three live in the
+contract assembly so a plugin can reference them directly.
 
 Reachable through the addon protocol above via the `idx:` search catalogs (see "Search,
 out of the box") and the `meta:` browse catalogs (see "Browse: the `meta:` catalogs"),
