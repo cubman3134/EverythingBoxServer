@@ -20,6 +20,47 @@ See the root `README.md` ("Registering an indexer from a plugin" / "Registering 
 source from a plugin" / "Registering a provider tracker from a plugin") and
 `docs/ARCHITECTURE.md` for all three.
 
+### Writing an indexer: `DirectProviderBase`
+
+`AddIndexer` is usually the right tier for a single tracker/site, and most of that work is
+boilerplate: check whether the request's media type is supported, make the HTTP call,
+surface a failure. `EverythingBox.Server.Abstractions.DirectProviderBase` (in
+`EverythingBox.Server.Abstractions/Providers/DirectProviderBase.cs`) is the template for
+that shape — it lives in the contract assembly precisely so a plugin can inherit it.
+Implement three template methods and it handles the fetch and error containment for you:
+
+```csharp
+public sealed class MyIndexer : DirectProviderBase
+{
+    public MyIndexer(HttpClient httpClient) : base(httpClient) { }
+
+    public override string Name => "My Indexer";
+
+    public override ProviderCapabilities Capabilities { get; } = new()
+    {
+        SupportedMediaTypes = new HashSet<MediaType> { MediaType.Movie, MediaType.Tv },
+        ProvidesMagnet = true,
+    };
+
+    protected override string BuildSearchQuery(MediaRequest request) => ...;
+    protected override Uri BuildRequestUri(string query, MediaRequest request) => ...;
+    protected override IReadOnlyList<TorrentResult> ParseResponse(string body, MediaRequest request) => ...;
+}
+```
+
+Register the instance in `Configure`:
+
+```csharp
+registry.AddIndexer(new MyIndexer(context.Http));
+```
+
+`SearchAsync` (which `DirectProviderBase` implements for you) checks `Capabilities.Supports`,
+awaits the HTTP GET, and calls `ParseResponse` — a plugin never has to write that plumbing
+or its error handling itself. See `EverythingBox.Server.Core/Providers/ExampleDirectProvider.cs`
+for a fuller skeleton, and `SearchQuery.Build`/`MagnetBuilder.Build` (also in
+`EverythingBox.Server.Abstractions/Providers/`) for shared helpers `BuildSearchQuery` and a
+magnet-producing `ParseResponse` can reuse instead of writing that logic from scratch.
+
 ## Build and install
 
 ```bash

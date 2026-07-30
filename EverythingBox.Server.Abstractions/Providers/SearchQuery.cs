@@ -1,6 +1,4 @@
-using EverythingBox.Server.Abstractions;
-
-namespace EverythingBox.Server.Core.Providers;
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>
 /// Builds the free-text search term from a typed request — shared by the direct
