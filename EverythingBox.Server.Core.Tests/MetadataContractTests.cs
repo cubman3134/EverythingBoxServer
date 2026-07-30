@@ -32,16 +32,17 @@ public class MetadataContractTests
     }
 
     [Fact]
-    public void ApiVersion_is_1_3_now_that_the_registry_has_grown_again()
+    public void ApiVersion_is_1_4_now_that_the_contract_carries_the_provider_helpers()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(3, ServerApi.Current.Minor);
+        Assert.Equal(4, ServerApi.Current.Minor);
     }
 
     [Theory]
     [InlineData(1, 0)]
     [InlineData(1, 1)]
     [InlineData(1, 2)]
+    [InlineData(1, 3)]
     public void Plugins_built_against_any_earlier_minor_still_load(int major, int minor)
         => Assert.True(ServerApi.IsCompatible(new Version(major, minor)));
 }

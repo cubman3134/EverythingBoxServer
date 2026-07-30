@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace EverythingBox.Server.Core.Providers;
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>Builds magnet URIs from an info hash.</summary>
 public static class MagnetBuilder

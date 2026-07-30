@@ -1,6 +1,4 @@
-using EverythingBox.Server.Abstractions;
-
-namespace EverythingBox.Server.Core.Providers;
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>
 /// Base class for "direct" providers — those that talk to a single tracker/site
@@ -12,8 +10,14 @@ namespace EverythingBox.Server.Core.Providers;
 ///   <item><see cref="BuildRequestUri"/> — query to a full backend URL.</item>
 ///   <item><see cref="ParseResponse"/> — raw body to <see cref="TorrentResult"/>s.</item>
 /// </list>
-/// See <see cref="ExampleDirectProvider"/> for the shape of a concrete plugin.
+/// See <c>ExampleDirectProvider</c> (EverythingBox.Server.Core.Providers) for the shape of a concrete plugin.
 /// </summary>
+/// <remarks>
+/// This lives in Abstractions, not Core, deliberately: a plugin references only the
+/// contract assembly, so a base class in Core would be unreachable to the very
+/// authors it exists to serve. Everything it touches — MediaRequest, TorrentResult,
+/// ProviderCapabilities — is an Abstractions type, so it carries no Core dependency.
+/// </remarks>
 public abstract class DirectProviderBase : ITorrentProvider
 {
     protected DirectProviderBase(HttpClient httpClient)
