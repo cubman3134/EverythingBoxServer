@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using EverythingBox.Server.Abstractions;
-using EverythingBox.Server.Core.Selection;
 
 namespace EverythingBox.Server.Core.Debrid.RealDebrid;
 

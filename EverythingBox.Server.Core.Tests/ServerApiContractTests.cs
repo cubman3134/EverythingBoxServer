@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_5_now_that_the_contract_carries_the_scraping_and_console_helpers()
+    public void Version_is_1_6_now_that_the_contract_carries_the_matcher()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(5, ServerApi.Current.Minor);
+        Assert.Equal(6, ServerApi.Current.Minor);
     }
 
     [Fact]

@@ -1,6 +1,5 @@
 using EverythingBox.Server.Abstractions;
 using EverythingBox.Server.Core.Debrid;
-using EverythingBox.Server.Core.Selection;
 using Microsoft.Extensions.Logging;
 using MonoTorrent;
 using MonoTorrent.Client;

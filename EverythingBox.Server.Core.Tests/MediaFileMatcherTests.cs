@@ -1,5 +1,4 @@
 using EverythingBox.Server.Abstractions;
-using EverythingBox.Server.Core.Selection;
 using Xunit;
 
 namespace EverythingBox.Server.Core.Tests;
