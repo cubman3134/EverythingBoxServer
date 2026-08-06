@@ -3,7 +3,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using EverythingBox.Server.Abstractions;
-using EverythingBox.Server.Core.Selection;
 using Microsoft.Extensions.Logging;
 
 namespace EverythingBox.Server.Sources;

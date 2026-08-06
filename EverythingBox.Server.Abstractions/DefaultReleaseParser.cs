@@ -1,7 +1,6 @@
 using System.Text.RegularExpressions;
-using EverythingBox.Server.Abstractions;
 
-namespace EverythingBox.Server.Core.Parsing;
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>
 /// Regex-based release-title parser. Extracts resolution, source, codecs,

@@ -1,8 +1,6 @@
 using System.Text.RegularExpressions;
-using EverythingBox.Server.Abstractions;
-using EverythingBox.Server.Core.Parsing;
 
-namespace EverythingBox.Server.Core.Selection;
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>
 /// Narrows the per-file links a debrid service returns for a release down to the
@@ -10,6 +8,12 @@ namespace EverythingBox.Server.Core.Selection;
 /// or the single track out of an album. When the request isn't episode/track
 /// specific (or nothing matches), the files are returned unchanged.
 /// </summary>
+/// <remarks>
+/// This lives in Abstractions, not Core, deliberately: a plugin references only the
+/// contract assembly, so a helper it needs cannot live in Core. Pulls in
+/// <see cref="DefaultReleaseParser"/> as its default parser, which is also in
+/// Abstractions for the same reason — the pair moved together.
+/// </remarks>
 public static class MediaFileMatcher
 {
     private static readonly IReleaseParser SharedParser = new DefaultReleaseParser();
