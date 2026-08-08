@@ -59,6 +59,11 @@ the server starts with all-default config rather than failing — see the README
 `Indexers`, `Debrid`, `DownloadClient`, `Download`, `Ranking`, and the opaque
 `Plugins.<key>` section below).
 
+`everythingbox-server.example.json` ships alongside the built server (it's copied into
+`out/` by the publish step above) as a starting point — copy it to
+`everythingbox-server.json` next to the executable and fill in the sections you need;
+every key in it is commented with what it does and its default.
+
 A few settings matter specifically for a production deploy:
 
 - **`EBS_PLUGINS_DIR`** — overrides where the server looks for the `plugins/` folder
