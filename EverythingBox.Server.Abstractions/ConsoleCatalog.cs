@@ -85,7 +85,10 @@ public static class ConsoleCatalog
     /// <summary>The canonical console name for a name/alias (e.g. "NES" → "Nintendo
     /// Entertainment System"); the input trimmed if unrecognised.</summary>
     public static string CanonicalName(string console)
-        => Defaults.FirstOrDefault(c => Matches(c, console))?.Name ?? console.Trim();
+    {
+        var trimmed = console.Trim();
+        return Defaults.FirstOrDefault(c => Matches(c, trimmed))?.Name ?? trimmed;
+    }
 
     /// <summary>
     /// Detects a known console name/alias as a trailing word-run in free text (e.g.

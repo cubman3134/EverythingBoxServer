@@ -14,6 +14,21 @@ public class ConsoleCatalogTests
         => Assert.Equal(expected, ConsoleCatalog.CanonicalName(alias));
 
     [Fact]
+    public void Trims_surrounding_whitespace_before_matching_an_alias()
+        // Regression: the alias lookup used to match on the raw (untrimmed) input, so a
+        // padded alias like "  NES  " fell through to the unrecognised-name fallback
+        // instead of resolving to its canonical name.
+        => Assert.Equal("Nintendo Entertainment System", ConsoleCatalog.CanonicalName("  NES  "));
+
+    [Fact]
+    public void An_already_trimmed_name_still_resolves_normally()
+        => Assert.Equal("Nintendo Entertainment System", ConsoleCatalog.CanonicalName("NES"));
+
+    [Fact]
+    public void An_unrecognised_name_falls_back_to_its_trimmed_self()
+        => Assert.Equal("Not A Console", ConsoleCatalog.CanonicalName("  Not A Console  "));
+
+    [Fact]
     public void Prefers_the_longest_matching_console_name()
     {
         // "Super Famicom" (alias for Super Nintendo, 13 chars) must win over "Famicom" (alias for NES, 8 chars).
