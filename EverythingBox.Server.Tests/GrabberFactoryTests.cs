@@ -139,6 +139,32 @@ public class GrabberFactoryTests
     }
 
     [Fact]
+    public void Grabber_tuning_options_reach_the_grabber_via_the_production_Build_overload()
+    {
+        // The tuple-returning Build above is test-only. Program.cs calls the overload that
+        // takes a pre-built IDebridService? — its own `new GrabberOptions {}` is a SEPARATE
+        // copy of the tuning wiring, so a drop of QuickGrabScore/ProviderTimeout/
+        // PreferCachedReleases there would slip past every other test in this file. Assert the
+        // same tuning fields reach the grabber through the production overload too.
+        var config = new ServerConfig
+        {
+            Grabber = new GrabberConfig
+            {
+                QuickGrabScore = 73.25,
+                ProviderTimeoutSeconds = 19,
+                PreferCachedReleases = true,
+            },
+        };
+
+        var grabber = GrabberFactory.Build(
+            config, new HttpClient(), [], NullLoggerFactory.Instance, debrid: null);
+
+        Assert.Equal(73.25, grabber.Options.QuickGrabScore);
+        Assert.Equal(TimeSpan.FromSeconds(19), grabber.Options.ProviderTimeout);
+        Assert.True(grabber.Options.PreferCachedReleases);
+    }
+
+    [Fact]
     public void An_omitted_Grabber_block_preserves_the_engines_current_defaults()
     {
         // A stock config's Grabber section deserializes to `new()` — this must build the
