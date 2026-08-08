@@ -43,6 +43,12 @@ public sealed record SourceContext
     /// <summary>The client can fetch a URL itself via curl (desktop), so a host that
     /// rejects the client's TLS fingerprint can be handed over directly instead of proxied.</summary>
     public bool ClientCanCurl { get; init; }
+
+    /// <summary>Selected request headers forwarded to the source, case-insensitive. A plugin
+    /// reads its OWN header names from here (the host neither defines nor interprets them).
+    /// Sensitive headers (Authorization, Cookie, and hop-by-hop) are never forwarded. Null when
+    /// none were forwarded.</summary>
+    public IReadOnlyDictionary<string, string>? RequestHeaders { get; init; }
 }
 
 /// <summary>A byte stream the host relays on a source's behalf, for hosts the client

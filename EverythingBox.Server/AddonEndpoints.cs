@@ -12,13 +12,13 @@ public static class AddonEndpoints
             Results.Json(builder.Build(config.Manifest.ToOptions(), router.Sources)));
 
         app.MapGet($"{prefix}/catalog/{{catalogId}}.json",
-            (string catalogId, SourceRouter router, ILoggerFactory loggers, CancellationToken ct) =>
-                CatalogAsync(catalogId, null, router, loggers, ct));
+            (string catalogId, HttpContext http, SourceRouter router, ILoggerFactory loggers, CancellationToken ct) =>
+                CatalogAsync(catalogId, null, http, router, loggers, ct));
 
         // The extras segment is e.g. "search=batman&page=2".
         app.MapGet($"{prefix}/catalog/{{catalogId}}/{{extra}}.json",
             (string catalogId, string extra, HttpContext http, SourceRouter router, ILoggerFactory loggers, CancellationToken ct) =>
-                CatalogAsync(catalogId, ParseSearch(extra, http), router, loggers, ct));
+                CatalogAsync(catalogId, ParseSearch(extra, http), http, router, loggers, ct));
 
         app.MapGet($"{prefix}/detail/{{type}}/{{id}}.json", DetailAsync);
 
@@ -38,7 +38,7 @@ public static class AddonEndpoints
     /// behind a false-looking success — so it is deliberately left to propagate.
     /// </summary>
     internal static async Task<IResult> CatalogAsync(
-        string catalogId, string? query, SourceRouter router, ILoggerFactory loggers, CancellationToken ct)
+        string catalogId, string? query, HttpContext http, SourceRouter router, ILoggerFactory loggers, CancellationToken ct)
     {
         if (!router.TryResolve(catalogId, out var source, out var payload))
             return Results.Json(Empty());
@@ -48,7 +48,7 @@ public static class AddonEndpoints
         // even when SearchAsync itself succeeded.
         try
         {
-            var catalog = await source.SearchAsync(payload, query, new SourceContext(), ct);
+            var catalog = await source.SearchAsync(payload, query, new SourceContext { RequestHeaders = ForwardableHeaders(http) }, ct);
             return Results.Json(ToWire(catalog, source.Key));
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -135,7 +135,7 @@ public static class AddonEndpoints
 
     /// <summary>Same cancellation-vs-exception-type reasoning as <see cref="CatalogAsync"/>.</summary>
     internal static async Task<IResult> StreamAsync(
-        string type, string id, int? n, string? dl,
+        string type, string id, int? n, string? dl, HttpContext http,
         SourceRouter router, ILoggerFactory loggers, CancellationToken ct)
     {
         var log = loggers.CreateLogger("Stream");
@@ -146,7 +146,7 @@ public static class AddonEndpoints
             return Results.Json(NoStreams());
         }
 
-        var context = new SourceContext { ClientCanCurl = dl == "curl" };
+        var context = new SourceContext { ClientCanCurl = dl == "curl", RequestHeaders = ForwardableHeaders(http) };
 
         SourceStream? stream;
         try
@@ -317,6 +317,27 @@ public static class AddonEndpoints
     private static object NoStreams() => new { streams = Array.Empty<object>() };
 
     private static object Empty() => new { title = "", hasMore = false, items = Array.Empty<object>() };
+
+    /// <summary>Headers a plugin is never allowed to see: credentials (Authorization, Cookie,
+    /// Set-Cookie, Proxy-Authorization) and hop-by-hop headers that are meaningless once
+    /// removed from this specific client-to-host connection.</summary>
+    private static readonly HashSet<string> BlockedHeaders =
+        new(StringComparer.OrdinalIgnoreCase) { "Authorization", "Cookie", "Set-Cookie",
+            "Proxy-Authorization", "Connection", "Keep-Alive", "Transfer-Encoding", "TE",
+            "Trailer", "Upgrade", "Host" };
+
+    /// <summary>Curates the incoming request's headers for a plugin: everything except
+    /// <see cref="BlockedHeaders"/>, case-insensitive, or null when nothing is left to forward.</summary>
+    private static IReadOnlyDictionary<string, string>? ForwardableHeaders(HttpContext http)
+    {
+        Dictionary<string, string>? headers = null;
+        foreach (var h in http.Request.Headers)
+        {
+            if (BlockedHeaders.Contains(h.Key)) continue;
+            (headers ??= new(StringComparer.OrdinalIgnoreCase))[h.Key] = h.Value.ToString();
+        }
+        return headers;
+    }
 
     /// <summary>Prefixes every item id with its owner on the way out, so whatever the
     /// client sends back routes home. A plugin-returned null catalog, a catalog with a
