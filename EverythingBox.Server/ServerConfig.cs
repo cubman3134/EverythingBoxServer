@@ -31,6 +31,8 @@ public sealed class ServerConfig
 
     public RankingOptions Ranking { get; set; } = new();
 
+    public GrabberConfig Grabber { get; set; } = new();
+
     /// <summary>
     /// Fetching an uncached release ourselves rather than waiting on debrid. OFF by
     /// default: unlike every other path here, this joins a BitTorrent swarm from your
@@ -127,6 +129,22 @@ public sealed class DownloadClientConfig
     public string Username { get; set; } = "";
     public string Password { get; set; } = "";
     public string Category { get; set; } = "";
+}
+
+/// <summary>Grabber tuning knobs. Ships with engine-neutral defaults — an absent
+/// <c>Grabber</c> block in the config file deserializes to these same values, so
+/// omitting the section changes nothing about existing behavior.</summary>
+public sealed class GrabberConfig
+{
+    /// <summary>Early-exit search once a candidate scores at least this; null = search all
+    /// providers and pick the overall best (the engine default).</summary>
+    public double? QuickGrabScore { get; set; }
+
+    /// <summary>Per-provider search timeout (seconds). Default 30.</summary>
+    public int ProviderTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>Float debrid-cached releases to the front. Default false.</summary>
+    public bool PreferCachedReleases { get; set; }
 }
 
 public sealed class DownloadConfig

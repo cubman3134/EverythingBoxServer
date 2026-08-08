@@ -119,6 +119,39 @@ public class GrabberFactoryTests
     }
 
     [Fact]
+    public void Grabber_tuning_options_reach_the_grabber()
+    {
+        var config = new ServerConfig
+        {
+            Grabber = new GrabberConfig
+            {
+                QuickGrabScore = 85.5,
+                ProviderTimeoutSeconds = 12,
+                PreferCachedReleases = true,
+            },
+        };
+
+        var (grabber, _) = Build(config);
+
+        Assert.Equal(85.5, grabber.Options.QuickGrabScore);
+        Assert.Equal(TimeSpan.FromSeconds(12), grabber.Options.ProviderTimeout);
+        Assert.True(grabber.Options.PreferCachedReleases);
+    }
+
+    [Fact]
+    public void An_omitted_Grabber_block_preserves_the_engines_current_defaults()
+    {
+        // A stock config's Grabber section deserializes to `new()` — this must build the
+        // exact same GrabberOptions as before Grabber tuning existed at all, so a config
+        // written for an older engine keeps behaving identically after this upgrade.
+        var (grabber, _) = Build(new ServerConfig());
+
+        Assert.Null(grabber.Options.QuickGrabScore);
+        Assert.Equal(TimeSpan.FromSeconds(30), grabber.Options.ProviderTimeout);
+        Assert.False(grabber.Options.PreferCachedReleases);
+    }
+
+    [Fact]
     public void Providers_collection_is_genuinely_read_only()
     {
         // Providers property is typed IReadOnlyList but must actually be immutable,

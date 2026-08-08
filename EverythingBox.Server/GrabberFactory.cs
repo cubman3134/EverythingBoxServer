@@ -109,7 +109,15 @@ public static class GrabberFactory
         var debrid = BuildDebrid(config.Debrid, http, log);
         var downloadClient = BuildDownloadClient(config.DownloadClient, http, log);
 
-        var options = new GrabberOptions { Ranking = config.Ranking };
+        var options = new GrabberOptions
+        {
+            Ranking = config.Ranking,
+            QuickGrabScore = config.Grabber.QuickGrabScore,
+            ProviderTimeout = config.Grabber.ProviderTimeoutSeconds > 0
+                ? TimeSpan.FromSeconds(config.Grabber.ProviderTimeoutSeconds)
+                : TimeSpan.Zero,
+            PreferCachedReleases = config.Grabber.PreferCachedReleases,
+        };
 
         var builder = new GrabberBuilder().Configure(options);
         foreach (var provider in providers)
@@ -156,7 +164,15 @@ public static class GrabberFactory
 
         var downloadClient = BuildDownloadClient(config.DownloadClient, http, log);
 
-        var options = new GrabberOptions { Ranking = config.Ranking };
+        var options = new GrabberOptions
+        {
+            Ranking = config.Ranking,
+            QuickGrabScore = config.Grabber.QuickGrabScore,
+            ProviderTimeout = config.Grabber.ProviderTimeoutSeconds > 0
+                ? TimeSpan.FromSeconds(config.Grabber.ProviderTimeoutSeconds)
+                : TimeSpan.Zero,
+            PreferCachedReleases = config.Grabber.PreferCachedReleases,
+        };
 
         var builder = new GrabberBuilder().Configure(options);
         foreach (var provider in providers)
