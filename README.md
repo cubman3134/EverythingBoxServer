@@ -321,6 +321,11 @@ plugin's registry rejects a second registration, and if two different plugins ea
 register one, the first in load order wins and the rest are logged and dropped
 (`Program.cs`).
 
+## Deploying
+
+See [docs/DEPLOY.md](docs/DEPLOY.md) for how to publish the server, lay out a plugin's
+build output under `plugins/<key>/`, point it at a config file, and keep it running.
+
 ## Building
 
 ```bash
