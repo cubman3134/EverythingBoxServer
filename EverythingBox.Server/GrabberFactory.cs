@@ -63,19 +63,27 @@ public static class GrabberFactory
     /// like a server-configured one, then goes through the same provider→service mapping.
     /// </summary>
     /// <param name="transport">See the overload of <see cref="BuildDebrid(ServerConfig, HttpClient, ILoggerFactory, HttpMessageHandler?)"/>.</param>
+    /// <param name="maxWait">
+    /// How long the built service should poll an uncached release before giving up and
+    /// reporting it as still caching — see <see cref="Core.Debrid.TorBox.TorBoxOptions.MaxWait"/>/
+    /// <see cref="Core.Debrid.RealDebrid.RealDebridOptions.MaxWait"/>. Defaults to
+    /// <see cref="TimeSpan.Zero"/> ("cached-only"), matching the engine's behaviour before
+    /// <c>Debrid.WaitSeconds</c> existed.
+    /// </param>
     public static IDebridService? CreateDebrid(
         string? provider,
         string? apiKey,
         HttpClient httpClient,
         ILoggerFactory loggerFactory,
-        HttpMessageHandler? transport = null)
+        HttpMessageHandler? transport = null,
+        TimeSpan maxWait = default)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(loggerFactory);
 
         var log = loggerFactory.CreateLogger("EverythingBox.Server.GrabberFactory");
         var http = WrapWithRetry(httpClient, transport);
-        return CreateDebrid(provider, apiKey, http, log);
+        return CreateDebrid(provider, apiKey, http, log, maxWait);
     }
 
     /// <param name="transport">See the overload of <see cref="BuildDebrid(ServerConfig, HttpClient, ILoggerFactory, HttpMessageHandler?)"/>.</param>
@@ -226,7 +234,9 @@ public static class GrabberFactory
     }
 
     private static IDebridService? BuildDebrid(DebridConfig? debrid, HttpClient http, ILogger log) =>
-        debrid is null ? null : CreateDebrid(debrid.Provider, debrid.ApiKey, http, log);
+        debrid is null
+            ? null
+            : CreateDebrid(debrid.Provider, debrid.ApiKey, http, log, TimeSpan.FromSeconds(Math.Max(0, debrid.WaitSeconds)));
 
     /// <summary>
     /// The single provider→service mapping ("torbox"/"realdebrid") behind every debrid this
@@ -237,7 +247,10 @@ public static class GrabberFactory
     /// debrid is built exactly the way a server-configured one would be. Null for a blank
     /// provider, a blank key, or a provider this host doesn't recognize.
     /// </summary>
-    internal static IDebridService? CreateDebrid(string? provider, string? apiKey, HttpClient http, ILogger log)
+    /// <param name="maxWait">Threaded straight into <c>TorBoxOptions.MaxWait</c>/
+    /// <c>RealDebridOptions.MaxWait</c> — how long the built service polls an uncached
+    /// release before reporting it as still caching.</param>
+    internal static IDebridService? CreateDebrid(string? provider, string? apiKey, HttpClient http, ILogger log, TimeSpan maxWait)
     {
         if (string.IsNullOrWhiteSpace(provider))
             return null;
@@ -250,8 +263,8 @@ public static class GrabberFactory
 
         return provider.Trim().ToLowerInvariant() switch
         {
-            "torbox" => new TorBoxService(http, new TorBoxOptions { ApiKey = apiKey }),
-            "realdebrid" => new RealDebridService(http, new RealDebridOptions { ApiToken = apiKey }),
+            "torbox" => new TorBoxService(http, new TorBoxOptions { ApiKey = apiKey, MaxWait = maxWait }),
+            "realdebrid" => new RealDebridService(http, new RealDebridOptions { ApiToken = apiKey, MaxWait = maxWait }),
             _ => LogUnknown<IDebridService>(log, "debrid provider", provider),
         };
     }

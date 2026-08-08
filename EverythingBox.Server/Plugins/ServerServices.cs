@@ -21,13 +21,20 @@ namespace EverythingBox.Server.Plugins;
 /// <see cref="GrabberFactory.BuildDebrid(ServerConfig, HttpClient, ILoggerFactory, HttpMessageHandler?)"/>'s
 /// own <c>transport</c> parameter for why this needs to be the SAME handler rather than none.
 /// </param>
+/// <param name="debridWait">
+/// The server-configured <c>Debrid.WaitSeconds</c> (as a <see cref="TimeSpan"/>), handed to
+/// every debrid <see cref="CreateDebrid"/> builds so a plugin-requested (per-user) debrid
+/// waits for an uncached release exactly as long as the server's own config-driven one does.
+/// Defaults to <see cref="TimeSpan.Zero"/> — unchanged ("cached-only") behaviour.
+/// </param>
 public sealed class ServerServices(
     ITorrentGrabber grabber,
     IDebridService? debrid,
     IFileCache files,
     HttpClient? http = null,
     ILoggerFactory? loggerFactory = null,
-    HttpMessageHandler? transport = null) : IServerServices
+    HttpMessageHandler? transport = null,
+    TimeSpan debridWait = default) : IServerServices
 {
     public ITorrentGrabber Grabber { get; } = grabber;
     public IDebridService? Debrid { get; } = debrid;
@@ -40,6 +47,6 @@ public sealed class ServerServices(
             throw new InvalidOperationException(
                 "This ServerServices instance was not given an HttpClient/ILoggerFactory, so it cannot build a debrid service.");
 
-        return GrabberFactory.CreateDebrid(provider, apiKey, http, loggerFactory, transport);
+        return GrabberFactory.CreateDebrid(provider, apiKey, http, loggerFactory, transport, debridWait);
     }
 }

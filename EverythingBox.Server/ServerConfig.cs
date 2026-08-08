@@ -118,6 +118,11 @@ public sealed class DebridConfig
     /// <summary>"torbox" or "realdebrid", matched case-insensitively.</summary>
     public string Provider { get; set; } = "";
     public string ApiKey { get; set; } = "";
+
+    /// <summary>Seconds to block waiting for an uncached release to finish caching before
+    /// returning a still-caching notice. 0 (default) = don't wait — resolve instantly if
+    /// already cached, otherwise report pending right away.</summary>
+    public int WaitSeconds { get; set; }
 }
 
 /// <summary>The download client to hand releases to, if any.</summary>
