@@ -54,6 +54,30 @@ public static class GrabberFactory
         return BuildDebrid(config.Debrid, http, log);
     }
 
+    /// <summary>
+    /// Build a debrid service for a caller-supplied provider + key rather than from
+    /// <see cref="ServerConfig"/> — what <see cref="Plugins.ServerServices.CreateDebrid"/> (and
+    /// through it, <see cref="IServerServices.CreateDebrid"/>) calls. Wraps
+    /// <paramref name="httpClient"/> in the same <see cref="RetryHandler"/> the config-driven
+    /// overload above does, so a plugin-requested debrid retries transient failures exactly
+    /// like a server-configured one, then goes through the same provider→service mapping.
+    /// </summary>
+    /// <param name="transport">See the overload of <see cref="BuildDebrid(ServerConfig, HttpClient, ILoggerFactory, HttpMessageHandler?)"/>.</param>
+    public static IDebridService? CreateDebrid(
+        string? provider,
+        string? apiKey,
+        HttpClient httpClient,
+        ILoggerFactory loggerFactory,
+        HttpMessageHandler? transport = null)
+    {
+        ArgumentNullException.ThrowIfNull(httpClient);
+        ArgumentNullException.ThrowIfNull(loggerFactory);
+
+        var log = loggerFactory.CreateLogger("EverythingBox.Server.GrabberFactory");
+        var http = WrapWithRetry(httpClient, transport);
+        return CreateDebrid(provider, apiKey, http, log);
+    }
+
     /// <param name="transport">See the overload of <see cref="BuildDebrid(ServerConfig, HttpClient, ILoggerFactory, HttpMessageHandler?)"/>.</param>
     public static (TorrentGrabber Grabber, IDebridService? Debrid) Build(
         ServerConfig config,
@@ -185,22 +209,34 @@ public static class GrabberFactory
         });
     }
 
-    private static IDebridService? BuildDebrid(DebridConfig? debrid, HttpClient http, ILogger log)
+    private static IDebridService? BuildDebrid(DebridConfig? debrid, HttpClient http, ILogger log) =>
+        debrid is null ? null : CreateDebrid(debrid.Provider, debrid.ApiKey, http, log);
+
+    /// <summary>
+    /// The single provider→service mapping ("torbox"/"realdebrid") behind every debrid this
+    /// host ever builds. <see cref="BuildDebrid(DebridConfig?, HttpClient, ILogger)"/> (the
+    /// server's own config-driven debrid) and <see cref="Plugins.ServerServices.CreateDebrid"/>
+    /// (a plugin-supplied provider + key, via <see cref="IServerServices.CreateDebrid"/>) both
+    /// go through here rather than each keeping its own copy of the switch — so a plugin's
+    /// debrid is built exactly the way a server-configured one would be. Null for a blank
+    /// provider, a blank key, or a provider this host doesn't recognize.
+    /// </summary>
+    internal static IDebridService? CreateDebrid(string? provider, string? apiKey, HttpClient http, ILogger log)
     {
-        if (debrid is null || string.IsNullOrWhiteSpace(debrid.Provider))
+        if (string.IsNullOrWhiteSpace(provider))
             return null;
 
-        if (string.IsNullOrWhiteSpace(debrid.ApiKey))
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
-            log.LogWarning("Debrid provider '{Provider}' is configured with no API key; skipping it.", debrid.Provider);
+            log.LogWarning("Debrid provider '{Provider}' has no API key; skipping it.", provider);
             return null;
         }
 
-        return debrid.Provider.Trim().ToLowerInvariant() switch
+        return provider.Trim().ToLowerInvariant() switch
         {
-            "torbox" => new TorBoxService(http, new TorBoxOptions { ApiKey = debrid.ApiKey }),
-            "realdebrid" => new RealDebridService(http, new RealDebridOptions { ApiToken = debrid.ApiKey }),
-            _ => LogUnknown<IDebridService>(log, "debrid provider", debrid.Provider),
+            "torbox" => new TorBoxService(http, new TorBoxOptions { ApiKey = apiKey }),
+            "realdebrid" => new RealDebridService(http, new RealDebridOptions { ApiToken = apiKey }),
+            _ => LogUnknown<IDebridService>(log, "debrid provider", provider),
         };
     }
 

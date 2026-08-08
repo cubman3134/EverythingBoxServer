@@ -80,7 +80,7 @@ builder.Services.AddSingleton(sp =>
     // building and permanently caching a grabber with zero indexers. SetGrabber below is
     // called exactly once, after host.Load returns, once every plugin's indexers are known.
     var deferredGrabber = new DeferredTorrentGrabber();
-    var services = new ServerServices(deferredGrabber, debrid, files);
+    var services = new ServerServices(deferredGrabber, debrid, files, http, loggers, transport);
 
     var plugins = host.Load(
         config.ResolvedPluginsDirectory,

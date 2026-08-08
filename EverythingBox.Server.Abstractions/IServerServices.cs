@@ -24,4 +24,9 @@ public interface IServerServices
     IDebridService? Debrid { get; }
 
     IFileCache Files { get; }
+
+    /// <summary>Build a debrid service for a caller-supplied provider + key (e.g. a per-request
+    /// override), or null for an unknown provider or a blank key. The host owns which providers
+    /// exist; a plugin supplies the provider name and key it obtained however it likes.</summary>
+    IDebridService? CreateDebrid(string provider, string apiKey);
 }
