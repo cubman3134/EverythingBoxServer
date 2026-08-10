@@ -22,6 +22,14 @@ public sealed class RankingOptions
     public IReadOnlyList<string> PreferredLanguages { get; init; } = [];
 
     /// <summary>
+    /// Ordered release-group preference, best first (e.g. a repack or scene group name). A
+    /// result whose <see cref="ReleaseInfo.ReleaseGroup"/> matches an entry ranks higher;
+    /// earlier entries win. Case-insensitive. Empty (the default) leaves ranking unchanged —
+    /// an absent or unlisted group is never penalised.
+    /// </summary>
+    public IReadOnlyList<string> PreferredReleaseGroups { get; init; } = [];
+
+    /// <summary>
     /// Preferred subtitle languages, best first (TV/movies). A release advertising
     /// subtitles in one of these is boosted; empty means "don't care". Values are
     /// language names matching the parser's output, e.g. "English", "French".

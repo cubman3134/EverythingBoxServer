@@ -282,4 +282,83 @@ public class TorrentRankerTests
 
         Assert.Empty(ranked);
     }
+
+    private TorrentResult MatrixWithGroup(string group) =>
+        Make("The Matrix 1999", MediaType.Movie) with
+        { ParsedInfo = new ReleaseInfo { ReleaseGroup = group } };
+
+    [Fact]
+    public void PrefersHigherPriorityReleaseGroup()
+    {
+        var a = MatrixWithGroup("GroupA");
+        var b = MatrixWithGroup("GroupB");
+        var opts = new RankingOptions { PreferredReleaseGroups = ["GroupA", "GroupB"] };
+
+        // Input order b,a — result order must come from the preference, not the input.
+        var ranked = _ranker.Rank(new MovieRequest { Title = "The Matrix" }, [b, a], opts);
+
+        Assert.Equal("GroupA", ranked[0].Result.ParsedInfo!.ReleaseGroup);
+    }
+
+    [Fact]
+    public void ReversingThePreferenceReversesTheOrder()
+    {
+        var a = MatrixWithGroup("GroupA");
+        var b = MatrixWithGroup("GroupB");
+        var opts = new RankingOptions { PreferredReleaseGroups = ["GroupB", "GroupA"] };
+
+        var ranked = _ranker.Rank(new MovieRequest { Title = "The Matrix" }, [a, b], opts);
+
+        Assert.Equal("GroupB", ranked[0].Result.ParsedInfo!.ReleaseGroup);
+    }
+
+    [Fact]
+    public void ReleaseGroupMatchIsCaseInsensitive()
+    {
+        var hit = MatrixWithGroup("GroupA");
+        var miss = MatrixWithGroup("GroupB");
+        var opts = new RankingOptions { PreferredReleaseGroups = ["groupa"] };
+
+        var ranked = _ranker.Rank(new MovieRequest { Title = "The Matrix" }, [miss, hit], opts);
+
+        Assert.Equal("GroupA", ranked[0].Result.ParsedInfo!.ReleaseGroup);
+    }
+
+    [Fact]
+    public void UnlistedReleaseGroupIsNotPenalised()
+    {
+        // An unlisted group must score identically to no-preference — the term only ADDS.
+        var r = MatrixWithGroup("GroupZ");
+        var withPref = _ranker.Rank(
+            new MovieRequest { Title = "The Matrix" }, [r],
+            new RankingOptions { PreferredReleaseGroups = ["GroupA"] });
+        var noPref = _ranker.Rank(
+            new MovieRequest { Title = "The Matrix" }, [r], RankingOptions.Default);
+
+        Assert.Equal(noPref[0].Score, withPref[0].Score);
+    }
+
+    [Fact]
+    public void AbsentReleaseGroupIsNotPenalised()
+    {
+        var r = Make("The Matrix 1999", MediaType.Movie) with
+        { ParsedInfo = new ReleaseInfo { ReleaseGroup = null } };
+        var withPref = _ranker.Rank(
+            new MovieRequest { Title = "The Matrix" }, [r],
+            new RankingOptions { PreferredReleaseGroups = ["GroupA"] });
+        var noPref = _ranker.Rank(
+            new MovieRequest { Title = "The Matrix" }, [r], RankingOptions.Default);
+
+        Assert.Equal(noPref[0].Score, withPref[0].Score);
+    }
+
+    [Fact]
+    public void EmptyPreferredReleaseGroupsRanksNormally()
+    {
+        var r = MatrixWithGroup("GroupA");
+        var ranked = _ranker.Rank(
+            new MovieRequest { Title = "The Matrix" }, [r], RankingOptions.Default);
+
+        Assert.Single(ranked); // default list is empty → term contributes 0, result still ranks
+    }
 }

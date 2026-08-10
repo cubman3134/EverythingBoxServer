@@ -32,10 +32,10 @@ public class MetadataContractTests
     }
 
     [Fact]
-    public void ApiVersion_is_1_8_now_that_the_contract_carries_the_debrid_factory()
+    public void ApiVersion_is_1_9_now_that_ranking_carries_a_release_group_preference()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(8, ServerApi.Current.Minor);
+        Assert.Equal(9, ServerApi.Current.Minor);
     }
 
     [Theory]
@@ -47,6 +47,7 @@ public class MetadataContractTests
     [InlineData(1, 5)]
     [InlineData(1, 6)]
     [InlineData(1, 7)]
+    [InlineData(1, 8)]
     public void Plugins_built_against_any_earlier_minor_still_load(int major, int minor)
         => Assert.True(ServerApi.IsCompatible(new Version(major, minor)));
 }

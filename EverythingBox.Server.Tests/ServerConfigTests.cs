@@ -115,6 +115,15 @@ public class ServerConfigTests
         Assert.False(config.Download.Enabled);
     }
 
+    [Fact]
+    public void Ranking_binds_a_preferred_release_group_list()
+    {
+        var config = ServerConfig.FromJson(
+            """{ "Ranking": { "PreferredReleaseGroups": ["GroupA", "GroupB"] } }""");
+
+        Assert.Equal(new[] { "GroupA", "GroupB" }, config.Ranking.PreferredReleaseGroups);
+    }
+
     private static string RepositoryRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

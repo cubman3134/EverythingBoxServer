@@ -208,6 +208,7 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
                 Add(SubtitleScore(info.SubtitleLanguages, options), "subtitles");
             if (info.IsProper) Add(5, "proper");
             if (info.IsRepack) Add(5, "repack");
+            Add(ReleaseGroupScore(info.ReleaseGroup, options), $"release group {info.ReleaseGroup}");
             if (request is TvRequest { FullSeason: true } && info.Episodes.Count > 0)
                 Add(-15, "single episode but full season wanted");
             if (request.Year is { } y && info.Year == y)
@@ -235,6 +236,15 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
 
         // No preference: higher resolution wins by default.
         return (int)res.Value * 8;
+    }
+
+    private static double ReleaseGroupScore(string? group, RankingOptions options)
+    {
+        if (options.PreferredReleaseGroups.Count == 0 || string.IsNullOrWhiteSpace(group))
+            return 0; // no preference, or no group to match → neutral, never a penalty
+
+        var idx = IndexOfMatch(options.PreferredReleaseGroups, group);
+        return idx >= 0 ? (options.PreferredReleaseGroups.Count - idx) * 20 : 0; // unlisted → neutral
     }
 
     private static double SourceScore(ReleaseSource? source) => source switch

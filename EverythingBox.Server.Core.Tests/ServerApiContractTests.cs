@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_8_now_that_the_contract_carries_the_debrid_factory()
+    public void Version_is_1_9_now_that_ranking_carries_a_release_group_preference()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(8, ServerApi.Current.Minor);
+        Assert.Equal(9, ServerApi.Current.Minor);
     }
 
     [Fact]
