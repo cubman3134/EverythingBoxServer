@@ -131,6 +131,31 @@ public class GrabberTests
         Assert.NotEqual(string.Empty, result.Errors[0].ProviderName);
     }
 
+    // --- Provider-supplied ParsedInfo preservation -------------------------
+
+    // A provider can attach its own ParsedInfo (carrying a ReleaseGroup) so the ranker
+    // can score it. Prepare only parses a title when ParsedInfo is null, so a
+    // provider-supplied ParsedInfo must survive untouched through the ranked search.
+    // This is currently incidental; pin it so a future refactor cannot silently drop it.
+    [Fact]
+    public async Task Prepare_preserves_a_provider_supplied_ParsedInfo()
+    {
+        var preParsed = new TorrentResult
+        {
+            Title = "The Matrix 1999 1080p BluRay",
+            ProviderName = "p",
+            InfoHash = "PRE",
+            MagnetUri = new Uri("magnet:?xt=urn:btih:PRE"),
+            Seeders = 10,
+            ParsedInfo = new ReleaseInfo { ReleaseGroup = "GroupA" },
+        };
+
+        var grabber = new TorrentGrabber([new ListProvider("p", [preParsed])]);
+        var result = await grabber.GrabAsync(Matrix);
+
+        Assert.Equal("GroupA", result.Best!.ParsedInfo!.ReleaseGroup);
+    }
+
     // --- Quick grab --------------------------------------------------------
 
     [Fact]

@@ -47,6 +47,7 @@ public class MetadataContractTests
     [InlineData(1, 5)]
     [InlineData(1, 6)]
     [InlineData(1, 7)]
+    [InlineData(1, 8)]
     public void Plugins_built_against_any_earlier_minor_still_load(int major, int minor)
         => Assert.True(ServerApi.IsCompatible(new Version(major, minor)));
 }
