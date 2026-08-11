@@ -1,4 +1,3 @@
-using System.Text;
 using EverythingBox.Server.Abstractions;
 using Microsoft.Extensions.Logging;
 
@@ -32,12 +31,19 @@ public sealed class LocalLibrarySource : IMediaSource
     private readonly LibraryMetaCache _meta;
     private readonly ILogger _logger;
 
+    // Serving + file resolution + the enumeration containment backstop, over ALL configured roots.
+    private readonly SafeLocalFileServer _files;
+    // Directory resolution scoped to SERIES roots: a show folder must be under a series root.
+    private readonly SafeLocalFileServer _seriesDirs;
+
     public LocalLibrarySource(IReadOnlyList<string> movieRoots, IReadOnlyList<string> seriesRoots, IResolverCache? cache, ILogger logger)
     {
         _movieRoots = movieRoots;
         _seriesRoots = seriesRoots;
         _meta = new LibraryMetaCache(cache);
         _logger = logger;
+        _files = new SafeLocalFileServer([.. _movieRoots, .. _seriesRoots], MimeFor);
+        _seriesDirs = new SafeLocalFileServer(_seriesRoots, MimeFor);
     }
 
     public string Key => "locallib";
@@ -95,12 +101,12 @@ public sealed class LocalLibrarySource : IMediaSource
 
                 // The enumerator prevents junction escapes during listing via AttributesToSkip.
                 // This check is a deliberate backstop: if WalkOptions is ever loosened, both
-                // SearchAsync and ResolveSafePath enforce the same containment discipline via the
+                // SearchAsync and ResolveSafeFile enforce the same containment discipline via the
                 // one shared implementation, so they can never quietly diverge.
-                if (!IsContained(path)) continue;
+                if (!_files.IsContained(path)) continue;
 
                 var nfoPath = MovieNfo(path);
-                var meta = await _meta.GetOrComputeAsync(path, nfoPath,
+                var meta = await _meta.GetOrComputeAsync<ItemMeta>(path, nfoPath,
                     () =>
                     {
                         var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
@@ -117,7 +123,7 @@ public sealed class LocalLibrarySource : IMediaSource
                 if (items.Count >= MaxItems) { capped = true; break; }
 
                 items.Add(new CatalogItem(
-                    Id: EncodeId(path),
+                    Id: SafeLocalFileServer.EncodeId(path),
                     Title: title,
                     Subtitle: Path.GetFileName(Path.GetDirectoryName(path)) ?? string.Empty,
                     MediaType: "movie",
@@ -155,11 +161,11 @@ public sealed class LocalLibrarySource : IMediaSource
             foreach (var dir in Directory.EnumerateDirectories(root, "*", TopLevelDirs))
             {
                 ct.ThrowIfCancellationRequested();
-                if (!IsContained(dir)) continue;
+                if (!_files.IsContained(dir)) continue;
 
                 var tvshow = Path.Combine(dir, "tvshow.nfo");
                 var nfoPath = File.Exists(tvshow) ? tvshow : null;
-                var meta = await _meta.GetOrComputeAsync(dir, nfoPath,
+                var meta = await _meta.GetOrComputeAsync<ItemMeta>(dir, nfoPath,
                     () =>
                     {
                         var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
@@ -173,7 +179,7 @@ public sealed class LocalLibrarySource : IMediaSource
 
                 if (items.Count >= MaxItems) { capped = true; break; }
 
-                items.Add(new CatalogItem(Id: EncodeId(dir), Title: title, Subtitle: string.Empty,
+                items.Add(new CatalogItem(Id: SafeLocalFileServer.EncodeId(dir), Title: title, Subtitle: string.Empty,
                     MediaType: "series", ThumbnailUrl: PosterUrl(meta.PosterPath), Expandable: true));
             }
             if (capped) break;
@@ -187,7 +193,7 @@ public sealed class LocalLibrarySource : IMediaSource
     // a series root, per ResolveSafeDir) expands into that show's episodes.
     public async Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
     {
-        if (ResolveSafeDir(itemId) is not { } showDir)
+        if (_seriesDirs.ResolveSafeDir(itemId) is not { } showDir)
             return SourceCatalog.Empty("Local Library");
 
         var parser = new DefaultReleaseParser();
@@ -197,7 +203,7 @@ public sealed class LocalLibrarySource : IMediaSource
         {
             ct.ThrowIfCancellationRequested();
             if (!VideoExtensions.Contains(Path.GetExtension(path))) continue;
-            if (!IsContained(path)) continue;
+            if (!_files.IsContained(path)) continue;
 
             var info = parser.Parse(Path.GetFileNameWithoutExtension(path), MediaType.Tv);
             if (info.Season is not { } season || info.Episodes.Count == 0) continue;
@@ -209,7 +215,7 @@ public sealed class LocalLibrarySource : IMediaSource
 
             var epNfoPath = Path.ChangeExtension(path, ".nfo");
             var existsEpNfo = File.Exists(epNfoPath) ? epNfoPath : null;
-            var meta = await _meta.GetOrComputeAsync(path, existsEpNfo,
+            var meta = await _meta.GetOrComputeAsync<ItemMeta>(path, existsEpNfo,
                 () =>
                 {
                     var n = existsEpNfo is null ? null : NfoReader.TryRead(existsEpNfo);
@@ -221,7 +227,7 @@ public sealed class LocalLibrarySource : IMediaSource
             var epTitle = $"S{season:D2}E{episode:D2}" + (meta.NfoTitle is { } et ? $" - {et}" : "");
 
             episodes.Add((season, episode, new CatalogItem(
-                Id: EncodeId(path),
+                Id: SafeLocalFileServer.EncodeId(path),
                 Title: epTitle,
                 Subtitle: Path.GetFileName(path),
                 MediaType: "series",
@@ -240,10 +246,10 @@ public sealed class LocalLibrarySource : IMediaSource
     public async Task<SourceDetail?> MetaAsync(string itemId, SourceContext ctx, CancellationToken ct)
     {
         // A file id (movie/episode) → its own .nfo; a series folder id → tvshow.nfo.
-        if (ResolveSafePath(itemId) is { } file)
+        if (_files.ResolveSafeFile(itemId) is { } file)
         {
             var nfoPath = MovieNfo(file);
-            var meta = await _meta.GetOrComputeAsync(file, nfoPath,
+            var meta = await _meta.GetOrComputeAsync<ItemMeta>(file, nfoPath,
                 () =>
                 {
                     var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
@@ -255,11 +261,11 @@ public sealed class LocalLibrarySource : IMediaSource
             return new SourceDetail(
                 Title: title, Overview: meta.Plot, ImageUrl: PosterUrl(meta.PosterPath), Facts: facts);
         }
-        if (ResolveSafeDir(itemId) is { } dir)
+        if (_seriesDirs.ResolveSafeDir(itemId) is { } dir)
         {
             var tvshow = Path.Combine(dir, "tvshow.nfo");
             var nfoPath = File.Exists(tvshow) ? tvshow : null;
-            var meta = await _meta.GetOrComputeAsync(dir, nfoPath,
+            var meta = await _meta.GetOrComputeAsync<ItemMeta>(dir, nfoPath,
                 () =>
                 {
                     var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
@@ -285,11 +291,11 @@ public sealed class LocalLibrarySource : IMediaSource
 
     private string? PosterUrl(string? posterPath) => posterPath is null
         ? null
-        : $"proxy/{Key}/{EncodeId(posterPath)}/{Uri.EscapeDataString(Path.GetFileName(posterPath))}";
+        : $"proxy/{Key}/{SafeLocalFileServer.EncodeId(posterPath)}/{Uri.EscapeDataString(Path.GetFileName(posterPath))}";
 
     public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
     {
-        if (ResolveSafePath(itemId) is not { } path)
+        if (_files.ResolveSafeFile(itemId) is not { } path)
             return Task.FromResult<SourceStream?>(null);
 
         // A relative addon path: the host serves it from the proxy route (OpenAsync).
@@ -298,42 +304,7 @@ public sealed class LocalLibrarySource : IMediaSource
     }
 
     public Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
-    {
-        var path = ResolveSafePath(itemId);
-        if (path is null) return Task.FromResult<ProxyResponse?>(null);
-
-        var info = new FileInfo(path);
-        if (!info.Exists) return Task.FromResult<ProxyResponse?>(null);
-
-        var total = info.Length;
-        var mime = MimeFor(path);
-        var result = RangeRequest.Parse(rangeHeader, total);
-
-        if (result.Kind == RangeKind.Unsatisfiable)
-            return Task.FromResult<ProxyResponse?>(new ProxyResponse(Stream.Null, mime)
-            {
-                StatusCode = 416, AcceptRanges = "bytes", ContentRange = $"bytes */{total}", ContentLength = 0,
-            });
-
-        var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1, useAsync: true);
-
-        if (result.Kind == RangeKind.Partial)
-        {
-            file.Seek(result.Start, SeekOrigin.Begin);
-            // BoundedReadStream owns and disposes `file`; ProxyResponse disposes the BoundedReadStream.
-            return Task.FromResult<ProxyResponse?>(new ProxyResponse(new BoundedReadStream(file, result.Length), mime)
-            {
-                StatusCode = 206, ContentLength = result.Length, AcceptRanges = "bytes",
-                ContentRange = $"bytes {result.Start}-{result.Start + result.Length - 1}/{total}",
-            });
-        }
-
-        // Full: the FileStream IS the body — the host's ProxyResponse.DisposeAsync disposes it.
-        return Task.FromResult<ProxyResponse?>(new ProxyResponse(file, mime)
-        {
-            StatusCode = 200, ContentLength = total, AcceptRanges = "bytes",
-        });
-    }
+        => _files.OpenAsync(itemId, rangeHeader, ct);
 
     // A show's display title: the parsed NormalizedTitle of the folder name, falling back to the raw
     // folder name. Shared by ListShows and DetailAsync so a folder like "Breaking.Show.2008" reads the
@@ -372,159 +343,4 @@ public sealed class LocalLibrarySource : IMediaSource
         _ => "application/octet-stream",
     };
 
-    internal static string EncodeId(string absolutePath) =>
-        Convert.ToBase64String(Encoding.UTF8.GetBytes(absolutePath)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-
-    internal static string? TryDecodeId(string id)
-    {
-        try
-        {
-            var padded = id.Replace('-', '+').Replace('_', '/');
-            padded += new string('=', (4 - padded.Length % 4) % 4);
-            return Encoding.UTF8.GetString(Convert.FromBase64String(padded));
-        }
-        catch (FormatException)
-        {
-            return null;
-        }
-    }
-
-    // NTFS is case-insensitive-but-preserving; most non-Windows filesystems are case-sensitive,
-    // where two lexically-different-case paths are unrelated files. Pick the comparison the real
-    // filesystem uses rather than hardcoding one.
-    private static readonly StringComparison PathComparison =
-        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-
-    /// <summary>Decodes an id AND confirms it resolves to a real file inside a configured root — an
-    /// id arrives from the client, so it is never trusted on its own. Returns null for any bad id.
-    /// Under a delete race — the file removed after the File.Exists gate — the real-resolve step (or a
-    /// later stream open) may instead surface an I/O exception rather than null; that is harmless, as
-    /// the host maps any OpenAsync throw to a 404, and it matches the reviewed LocalFolderSource.</summary>
-    internal string? ResolveSafePath(string itemId)
-    {
-        if (TryDecodeId(itemId) is not { } decoded) return null;
-
-        string full;
-        try
-        {
-            // A string that decodes cleanly from base64 is not necessarily a path GetFullPath will
-            // accept — an id is client-controlled all the way down. Catch what GetFullPath documents
-            // itself as throwing, not Exception broadly, so an unrelated bug still surfaces.
-            full = Path.GetFullPath(decoded);
-        }
-        catch (Exception ex) when (ex is ArgumentException or PathTooLongException)
-        {
-            return null;
-        }
-
-        if (!File.Exists(full)) return null;
-
-        return IsContained(full) ? full : null;
-    }
-
-    /// <summary>Decodes an id and confirms it is a real directory strictly UNDER a configured SERIES
-    /// root — gating DetailAsync so an arbitrary or foreign folder id can never be enumerated. A show
-    /// is always a strict subfolder of a root, so the root itself is rejected. Null for any bad id, a
-    /// file, a series root, or a directory outside the series roots.</summary>
-    internal string? ResolveSafeDir(string itemId)
-    {
-        if (TryDecodeId(itemId) is not { } decoded) return null;
-
-        string full;
-        try { full = Path.GetFullPath(decoded); }
-        catch (Exception ex) when (ex is ArgumentException or PathTooLongException) { return null; }
-
-        if (!Directory.Exists(full)) return null;
-
-        var resolved = ResolveReal(full);
-        foreach (var root in _seriesRoots)
-        {
-            if (string.IsNullOrWhiteSpace(root)) continue;
-            string r;
-            try { r = Path.GetFullPath(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)); }
-            catch (Exception ex) when (ex is ArgumentException or PathTooLongException) { continue; }
-            var resolvedRoot = ResolveReal(r);
-            // A show is always a strict SUBFOLDER of a series root; the root itself is never a show.
-            // Accept only a directory strictly UNDER a root — an id forged for the root must not
-            // flatten the whole root into episodes. (FILE serving via ResolveSafePath/IsContained is
-            // unchanged: a file directly in a root must still serve.)
-            if (resolved.StartsWith(resolvedRoot + Path.DirectorySeparatorChar, PathComparison))
-                return resolved;
-        }
-        return null;
-    }
-
-    /// <summary>True if <paramref name="full"/> — a path already confirmed to exist — actually
-    /// resolves, after following every reparse point in its ancestor chain, to somewhere inside a
-    /// configured root (also resolved the same way). Shared by ResolveSafePath (a decoded client id)
-    /// and SearchAsync (every enumerated path) so opening and listing can never diverge.</summary>
-    private bool IsContained(string full)
-    {
-        // Path.GetFullPath only does LEXICAL normalization (collapses "..", ".", relative segments);
-        // it does NOT follow reparse points. A junction or symlink planted inside a configured root
-        // can point anywhere, and File.Exists/File.OpenRead/EnumerateFiles all transparently follow
-        // it — so the file actually served (or listed) can live entirely outside every configured
-        // root even though the lexical path looks contained. Resolve the candidate to where it
-        // really is — walking every directory in its ancestor chain, since the leaf OR any directory
-        // above it can be the link — and compare THAT against the roots (also resolved, so a
-        // legitimately-linked root still works).
-        var resolvedFull = ResolveReal(full);
-
-        foreach (var folder in _movieRoots.Concat(_seriesRoots))
-        {
-            if (string.IsNullOrWhiteSpace(folder)) continue;
-
-            string root;
-            try
-            {
-                // A configured folder is operator-entered config, not guaranteed to be a path
-                // GetFullPath accepts. Trim trailing separators before GetFullPath re-adds its own,
-                // or a folder configured with one ("D:\Media\Movies\") doubles up and nothing inside
-                // it ever matches. Skip an unusable entry rather than crashing every other lookup.
-                root = Path.GetFullPath(folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            }
-            catch (Exception ex) when (ex is ArgumentException or PathTooLongException)
-            {
-                continue;
-            }
-
-            var resolvedRoot = ResolveReal(root);
-
-            if (resolvedFull.StartsWith(resolvedRoot + Path.DirectorySeparatorChar, PathComparison) ||
-                resolvedFull.Equals(resolvedRoot, PathComparison))
-                return true;
-        }
-        return false;
-    }
-
-    /// <summary>Resolves a path to where it actually points on disk, the way the filesystem would
-    /// when opening it: walks the path one segment at a time from the root, resolving every directory
-    /// reparse point (junction/symlink) it passes through — not just the leaf — since the escape that
-    /// matters is a junction planted partway down the chain, not only at the end. Each resolved
-    /// target is itself already fully resolved (ResolveLinkTarget follows a chain to its final
-    /// destination). A path with no links anywhere resolves to itself.</summary>
-    private static string ResolveReal(string path)
-    {
-        var root = Path.GetPathRoot(path)!;
-        var segments = path[root.Length..]
-            .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
-
-        var resolved = root;
-        for (var i = 0; i < segments.Length; i++)
-        {
-            var candidate = Path.Combine(resolved, segments[i]);
-            var isLeaf = i == segments.Length - 1;
-
-            // Intermediate segments are always directories. The leaf may be a file (the common case,
-            // since callers already confirmed File.Exists) or itself a directory reparse point.
-            var target = isLeaf
-                ? File.ResolveLinkTarget(candidate, returnFinalTarget: true)?.FullName
-                  ?? Directory.ResolveLinkTarget(candidate, returnFinalTarget: true)?.FullName
-                : Directory.ResolveLinkTarget(candidate, returnFinalTarget: true)?.FullName;
-
-            resolved = target ?? candidate;
-        }
-
-        return resolved;
-    }
 }

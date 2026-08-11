@@ -1,24 +1,18 @@
 using System.Text.Json;
-using EverythingBox.Server.Abstractions;
 
-namespace EverythingBox.Server.LocalLibrary;
-
-/// <summary>The cached result of the expensive per-item parse: the raw .nfo fields and the located
-/// poster path. Callers format these into title/subtitle/panel, so one entry serves both the
-/// catalog scan and the meta panel.</summary>
-internal sealed record ItemMeta(string? NfoTitle, int? Year, string? Plot, string? PosterPath);
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>
-/// Memoizes an <see cref="ItemMeta"/> by (media path, media mtime, nfo mtime) so an unchanged file
-/// is not re-parsed on every browse. Backed by an optional <see cref="IResolverCache"/> — null
-/// (unit tests) means always compute. Best-effort: any cache error recomputes; nothing throws out.
+/// Memoizes a computed value by (media path, media mtime, nfo mtime) so an unchanged file is not
+/// re-parsed on every browse. Backed by an optional <see cref="IResolverCache"/> — null (unit tests)
+/// means always compute. Best-effort: any cache error recomputes; nothing throws out.
 /// </summary>
-internal sealed class LibraryMetaCache(IResolverCache? cache)
+public sealed class LibraryMetaCache(IResolverCache? cache)
 {
     private static readonly JsonSerializerOptions Json = new();
 
-    public async Task<ItemMeta> GetOrComputeAsync(
-        string mediaPath, string? nfoPath, Func<ItemMeta> compute, CancellationToken ct)
+    public async Task<T> GetOrComputeAsync<T>(
+        string mediaPath, string? nfoPath, Func<T> compute, CancellationToken ct)
     {
         if (cache is null) return compute();
 
@@ -31,7 +25,7 @@ internal sealed class LibraryMetaCache(IResolverCache? cache)
         try
         {
             var hit = await cache.GetAsync(key, ct).ConfigureAwait(false);
-            if (hit is not null && JsonSerializer.Deserialize<ItemMeta>(hit, Json) is { } cached)
+            if (hit is not null && JsonSerializer.Deserialize<T>(hit, Json) is { } cached)
                 return cached;
         }
         catch (Exception ex) when (ex is not OperationCanceledException) { /* miss → recompute below */ }
