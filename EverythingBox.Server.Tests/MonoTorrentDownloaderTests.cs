@@ -254,6 +254,14 @@ public class MonoTorrentDownloaderTests : IDisposable
     }
 
     [Fact]
+    public void SelectMembers_normalizes_separators_so_a_backslash_entry_matches_a_slash_path()
+    {
+        string[] files = ["dir/one.bin", "dir/two.bin"];
+        var picked = MonoTorrentDownloader.SelectMembers(files, f => f, new[] { "dir\\one.bin" });
+        Assert.Equal(new[] { "dir/one.bin" }, picked);
+    }
+
+    [Fact]
     public void A_TorrentResult_defaults_to_no_explicit_wanted_members()
     {
         // Additive field: existing producers that don't set it must get the empty default,

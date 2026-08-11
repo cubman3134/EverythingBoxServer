@@ -190,10 +190,12 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
     }
 
     /// <summary>
-    /// Which of the torrent's files to actually fetch, via the same
-    /// <see cref="MediaFileMatcher"/> the debrid path uses — so a request for one
-    /// episode doesn't pull a whole season pack. A null request (no media-type
-    /// context to narrow by) takes everything.
+    /// Which of the torrent's files to actually fetch. A non-empty
+    /// <see cref="TorrentResult.WantedMembers"/> short-circuits the heuristic — those explicit
+    /// members are selected directly (see <see cref="SelectMembers{T}"/>). Otherwise the
+    /// <see cref="MediaFileMatcher"/> the debrid path uses is the fallback, so a request for one
+    /// episode doesn't pull a whole season pack. A null request (no media-type context to narrow
+    /// by) and no explicit members takes everything.
     /// </summary>
     private static IReadOnlyList<ITorrentManagerFile> SelectWantedFiles(
         TorrentManager manager, MediaRequest? request, IReadOnlyList<string> wantedMembers)
@@ -221,18 +223,23 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
     internal static IReadOnlyList<T> SelectMembers<T>(
         IReadOnlyList<T> files, Func<T, string> pathOf, IReadOnlyList<string> wantedMembers)
     {
-        var wanted = new HashSet<string>(wantedMembers, StringComparer.OrdinalIgnoreCase);
+        var wanted = new HashSet<string>(
+            wantedMembers.Select(NormalizeSeparators), StringComparer.OrdinalIgnoreCase);
         return files.Where(f =>
         {
-            var path = pathOf(f);
+            var path = NormalizeSeparators(pathOf(f));
             return wanted.Contains(path) || wanted.Contains(FileName(path));
         }).ToList();
     }
 
-    // Last path segment, tolerant of both separators (torrent member paths use '/').
+    // Compare both sides on one canonical separator so a wanted entry written with backslashes
+    // still matches a torrent's '/'-separated member path.
+    private static string NormalizeSeparators(string path) => path.Replace('\\', '/');
+
+    // Last path segment. Input is already separator-normalized, so split on '/' only.
     private static string FileName(string path)
     {
-        var slash = path.LastIndexOfAny(['/', '\\']);
+        var slash = path.LastIndexOf('/');
         return slash >= 0 ? path[(slash + 1)..] : path;
     }
 
