@@ -154,9 +154,14 @@ effect before the downloader's next `ThrowIfCancellationRequested`):
 - **The idle clock starts at the first progress report** (which begins after the download starts,
   post-metadata), and every byte advance resets it — so a slow-but-progressing swarm is never
   abandoned, only a genuinely stalled one after the window.
-- Idle-cancel and total-timeout both surface as `OperationCanceledException` and are handled by the
-  existing catch (distinguished only for the log message); a genuine caller cancellation still
-  propagates as before (the `when (!cancellationToken.IsCancellationRequested)` guard is unchanged).
+- Idle-cancel and total-timeout both cancel the linked token, but the downloader **swallows the
+  cancellation internally** (its `ITorrentDownloader` contract: "a cancelled download returns
+  empty") and returns `[]` rather than throwing. So the resolver distinguishes the reason *after*
+  the download returns empty, by inspecting which of `idleCts`/`timeoutCts` fired (`LogIfAbandoned`)
+  — it does not rely on catching an exception. The `catch (OperationCanceledException)` block is now
+  an edge case, entered only if post-download verification observes the cancel; it reuses the same
+  `LogIfAbandoned` helper. A genuine caller cancellation is still detected first (via
+  `cancellationToken.IsCancellationRequested`) and reported as neither idle nor timeout.
 
 ## Testing
 

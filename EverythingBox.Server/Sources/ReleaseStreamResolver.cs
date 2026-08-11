@@ -371,28 +371,60 @@ public sealed class ReleaseStreamResolver
                 maxTotalBytes: _download.MaxSizeMB * 1024L * 1024L,
                 cancellationToken: linked.Token).ConfigureAwait(false);
 
+            // The downloader returns [] on cancellation (its contract), swallowing the cancel and
+            // logging only a generic "was cancelled". If our idle/timeout token is why the fetch came
+            // back empty, say WHICH so the operator can tell a stalled swarm from an overall timeout.
+            if (paths.Count == 0)
+            {
+                LogIfAbandoned(release, idleCts, timeoutCts, cancellationToken);
+                return [];
+            }
+
             var verified = await KeepVerifiedAsync(release, paths, linked.Token).ConfigureAwait(false);
 
             // Downloaded something but verification rejected ALL of it: treat as a failed fetch — clean
             // the working copy and return empty so GetOrDownloadAsync evicts the memo and a later
-            // request can re-download a clean copy.
-            if (paths.Count > 0 && verified.Count == 0)
+            // request can re-download a clean copy. (paths.Count > 0 is guaranteed here — the empty
+            // case returned above — so a bare verified.Count == 0 is the full "fully rejected" test.)
+            if (verified.Count == 0)
                 RemoveDownloadDirectory(directory);
 
             return verified;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            if (idleCts.IsCancellationRequested)
-                _logger.LogInformation(
-                    "Self-download of '{Title}' received no new data for {Seconds}s; falling back to the caching notice.",
-                    release.Title, _download.IdleTimeoutSeconds);
-            else
-                _logger.LogInformation(
-                    "Self-download of '{Title}' timed out after {Seconds}s; falling back to the caching notice.",
-                    release.Title, _download.TimeoutSeconds);
+            // Edge-only now: reached only if post-download verification observes the idle/timeout
+            // cancel. The download-returned-empty case is handled inline above.
+            LogIfAbandoned(release, idleCts, timeoutCts, cancellationToken);
             return [];
         }
+    }
+
+    /// <summary>
+    /// The downloader returns an empty list on cancellation (its contract), so when a fetch comes
+    /// back empty we inspect which of our tokens fired to tell the operator WHY — a stalled swarm
+    /// (idle) or the overall timeout — distinct from a genuine empty result (no peers / nothing
+    /// matched), which the downloader already logged. Returns true if it logged an abandonment.
+    /// </summary>
+    private bool LogIfAbandoned(TorrentResult release, CancellationTokenSource idleCts, CancellationTokenSource timeoutCts, CancellationToken callerToken)
+    {
+        if (callerToken.IsCancellationRequested)
+            return false; // a genuine caller cancel — not our doing, and not an abandonment to report
+        if (idleCts.IsCancellationRequested)
+        {
+            _logger.LogInformation(
+                "Self-download of '{Title}' received no new data for {Seconds}s; falling back to the caching notice.",
+                release.Title, _download.IdleTimeoutSeconds);
+            return true;
+        }
+        if (timeoutCts.IsCancellationRequested)
+        {
+            _logger.LogInformation(
+                "Self-download of '{Title}' timed out after {Seconds}s; falling back to the caching notice.",
+                release.Title, _download.TimeoutSeconds);
+            return true;
+        }
+        return false;
     }
 
     /// <summary>Runs the callback synchronously on the reporting thread, unlike

@@ -1,5 +1,6 @@
 using EverythingBox.Server.Abstractions;
 using EverythingBox.Server.Sources;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EverythingBox.Server.Tests;
@@ -52,6 +53,34 @@ file sealed class EpisodeAwareDownloader : ITorrentDownloader
         var path = Path.Combine(directory, $"Some.Release.S01E{episode:00}.mkv");
         File.WriteAllText(path, "x");
         return Task.FromResult<IReadOnlyList<string>>([path]);
+    }
+}
+
+/// <summary>Simulates a stalled swarm: reports the same byte count repeatedly (never
+/// advancing) so the resolver's idle watchdog trips once the idle window elapses, then
+/// honours the downloader contract by returning an empty list on cancellation. Uses real
+/// wall-clock time, but there is no upper-bound race — it trips deterministically as soon
+/// as the idle window passes, and keeps reporting until then.</summary>
+file sealed class StalledSwarmDownloader : ITorrentDownloader
+{
+    public Task<IReadOnlyList<string>> DownloadAsync(
+        TorrentResult torrent, MediaRequest? request, string directory,
+        IProgress<TorrentDownloadProgress>? progress = null, long? maxTotalBytes = null, CancellationToken cancellationToken = default)
+    {
+        Directory.CreateDirectory(directory);
+        return Task.Run<IReadOnlyList<string>>(async () =>
+        {
+            // First report primes the idle clock; every later report carries the SAME byte
+            // count, so once the idle window elapses the watchdog cancels our linked token.
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                progress?.Report(new TorrentDownloadProgress(100, 1000, 0));
+                try { await Task.Delay(50, cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+            }
+            // Contract: a cancelled download returns empty rather than throwing.
+            return [];
+        });
     }
 }
 
@@ -685,6 +714,45 @@ public class ReleaseStreamResolverTests : IDisposable
         Assert.Equal("", stream!.Url);
         Assert.Equal(0, downloader.Calls);
     }
+
+    // --- Idle detection: a stalled swarm is abandoned early, with the DISTINCT reason logged ---
+
+    [Fact]
+    public async Task A_stalled_swarm_is_abandoned_via_idle_detection_with_the_distinct_reason_logged()
+    {
+        // The downloader swallows the cancel and returns [] (its contract), so the resolver
+        // must inspect its own idle token AFTER the empty result to tell the operator WHY the
+        // fetch gave up — a stalled swarm rather than a generic empty result. A small idle
+        // window keeps this fast and non-flaky: the watchdog trips as soon as ~1s elapses with
+        // no byte advance, and the total TimeoutSeconds (default 600) stays well clear.
+        var downloader = new StalledSwarmDownloader();
+        var logger = new CapturingLogger<ReleaseStreamResolver>();
+        var root = Path.Combine(Path.GetTempPath(), "ebs-fallback-" + Guid.NewGuid().ToString("N"));
+        _tempRoots.Add(root);
+        var resolver = new ReleaseStreamResolver(
+            new StubDebrid(Pending()), logger, downloader, new FileCache(root),
+            new DownloadConfig { Enabled = true, IdleTimeoutSeconds = 1 });
+
+        var stream = await resolver.ResolveAsync(Sized(500), new MovieRequest { Title = "x" }, 0, CancellationToken.None);
+
+        // Idle detection cancels the stalled fetch; the request degrades to the caching notice.
+        Assert.Equal("", stream!.Url);
+        Assert.False(string.IsNullOrWhiteSpace(stream.Notice));
+        // And the operator gets the distinct idle reason, not a generic "gave up".
+        Assert.Contains(logger.Messages, m => m.Contains("received no new data"));
+    }
+}
+
+/// <summary>Captures formatted log messages so a test can assert WHICH reason the resolver
+/// logged — distinguishing an idle abandonment from a plain empty result.</summary>
+file sealed class CapturingLogger<T> : ILogger<T>
+{
+    public List<string> Messages { get; } = [];
+    IDisposable? ILogger.BeginScope<TState>(TState state) => null;
+    public bool IsEnabled(LogLevel logLevel) => true;
+    public void Log<TState>(
+        LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        => Messages.Add(formatter(state, exception));
 }
 
 file sealed class ThrowingDebrid : IDebridService
