@@ -352,7 +352,10 @@ public sealed class ReleaseStreamResolver
 
         try
         {
-            return await downloader.DownloadAsync(release, request, directory, progress: null, linked.Token).ConfigureAwait(false);
+            return await downloader.DownloadAsync(
+                release, request, directory, progress: null,
+                maxTotalBytes: _download.MaxSizeMB * 1024L * 1024L,
+                cancellationToken: linked.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

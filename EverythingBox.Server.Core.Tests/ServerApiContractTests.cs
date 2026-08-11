@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_9_now_that_ranking_carries_a_release_group_preference()
+    public void Version_is_1_10_now_that_the_downloader_re_checks_the_size_cap()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(9, ServerApi.Current.Minor);
+        Assert.Equal(10, ServerApi.Current.Minor);
     }
 
     [Fact]
