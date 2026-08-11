@@ -124,6 +124,21 @@ public class ServerConfigTests
         Assert.Equal(new[] { "GroupA", "GroupB" }, config.Ranking.PreferredReleaseGroups);
     }
 
+    [Fact]
+    public void A_plugin_section_binds_even_when_its_key_casing_differs()
+    {
+        // System.Text.Json drops the Plugins dictionary's OrdinalIgnoreCase comparer on
+        // deserialize; the section must still bind when the user's casing differs from the key.
+        var config = ServerConfig.FromJson("""{ "Plugins": { "MyPlugin": { "Enabled": true } } }""");
+
+        var section = config.PluginSection<CaseTestSection>("myplugin");
+
+        Assert.NotNull(section);
+        Assert.True(section!.Enabled);
+    }
+
+    private sealed record CaseTestSection(bool Enabled);
+
     private static string RepositoryRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

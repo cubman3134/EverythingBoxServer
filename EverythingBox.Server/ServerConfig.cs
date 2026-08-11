@@ -88,8 +88,13 @@ public sealed class ServerConfig
     /// <summary>Binds this plugin's opaque section to its own type.</summary>
     public T? PluginSection<T>(string key) where T : class
     {
-        if (!Plugins.TryGetValue(key, out var element)) return null;
-        return element.Deserialize<T>(Json);
+        // System.Text.Json replaces the Plugins dictionary during deserialization, dropping
+        // the OrdinalIgnoreCase comparer it was constructed with — so match the key
+        // case-insensitively here rather than trusting the dictionary's comparer.
+        foreach (var (name, element) in Plugins)
+            if (string.Equals(name, key, StringComparison.OrdinalIgnoreCase))
+                return element.Deserialize<T>(Json);
+        return null;
     }
 }
 
