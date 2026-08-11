@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_10_now_that_the_downloader_re_checks_the_size_cap()
+    public void Version_is_1_11_now_that_TorrentResult_carries_explicit_wanted_members()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(10, ServerApi.Current.Minor);
+        Assert.Equal(11, ServerApi.Current.Minor);
     }
 
     [Fact]

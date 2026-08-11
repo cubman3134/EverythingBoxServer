@@ -204,4 +204,69 @@ public class MonoTorrentDownloaderTests : IDisposable
         // No cap → never refused.
         Assert.False(MonoTorrentDownloader.ExceedsCap(long.MaxValue, null));
     }
+
+    [Fact]
+    public void SelectMembers_matches_a_full_member_path_exactly()
+    {
+        string[] files = ["dir/one.bin", "dir/two.bin"];
+        var picked = MonoTorrentDownloader.SelectMembers(files, f => f, new[] { "dir/one.bin" });
+        Assert.Equal(new[] { "dir/one.bin" }, picked);
+    }
+
+    [Fact]
+    public void SelectMembers_matches_a_bare_filename_nested_in_a_directory()
+    {
+        string[] files = ["a/b/one.bin", "a/b/two.bin"];
+        var picked = MonoTorrentDownloader.SelectMembers(files, f => f, new[] { "one.bin" });
+        Assert.Equal(new[] { "a/b/one.bin" }, picked);
+    }
+
+    [Fact]
+    public void SelectMembers_matches_case_insensitively()
+    {
+        string[] files = ["dir/One.BIN"];
+        var picked = MonoTorrentDownloader.SelectMembers(files, f => f, new[] { "one.bin" });
+        Assert.Single(picked);
+    }
+
+    [Fact]
+    public void SelectMembers_selects_several_members_in_file_order_not_wanted_order()
+    {
+        string[] files = ["one.bin", "two.bin", "three.bin"];
+        var picked = MonoTorrentDownloader.SelectMembers(files, f => f, new[] { "three.bin", "one.bin" });
+        Assert.Equal(new[] { "one.bin", "three.bin" }, picked);
+    }
+
+    [Fact]
+    public void SelectMembers_returns_empty_when_nothing_matches()
+    {
+        string[] files = ["one.bin", "two.bin"];
+        var picked = MonoTorrentDownloader.SelectMembers(files, f => f, new[] { "nope.bin" });
+        Assert.Empty(picked); // an all-miss selection yields nothing — caller downloads nothing, not everything
+    }
+
+    [Fact]
+    public void SelectMembers_returns_empty_for_an_empty_wanted_list()
+    {
+        string[] files = ["one.bin"];
+        var picked = MonoTorrentDownloader.SelectMembers(files, f => f, Array.Empty<string>());
+        Assert.Empty(picked);
+    }
+
+    [Fact]
+    public void SelectMembers_normalizes_separators_so_a_backslash_entry_matches_a_slash_path()
+    {
+        string[] files = ["dir/one.bin", "dir/two.bin"];
+        var picked = MonoTorrentDownloader.SelectMembers(files, f => f, new[] { "dir\\one.bin" });
+        Assert.Equal(new[] { "dir/one.bin" }, picked);
+    }
+
+    [Fact]
+    public void A_TorrentResult_defaults_to_no_explicit_wanted_members()
+    {
+        // Additive field: existing producers that don't set it must get the empty default,
+        // so the request-heuristic path stays the default.
+        var r = new TorrentResult { Title = "x", ProviderName = "p" };
+        Assert.Empty(r.WantedMembers);
+    }
 }

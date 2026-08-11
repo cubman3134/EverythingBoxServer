@@ -83,7 +83,7 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
             // fires — a magnet with no peers must not hold the caller open forever.
             await manager.WaitForMetadataAsync(cancellationToken).ConfigureAwait(false);
 
-            var wanted = SelectWantedFiles(manager, request);
+            var wanted = SelectWantedFiles(manager, request, torrent.WantedMembers);
             if (wanted.Count == 0)
             {
                 _logger.LogInformation(
@@ -190,17 +190,57 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
     }
 
     /// <summary>
-    /// Which of the torrent's files to actually fetch, via the same
-    /// <see cref="MediaFileMatcher"/> the debrid path uses — so a request for one
-    /// episode doesn't pull a whole season pack. A null request (no media-type
-    /// context to narrow by) takes everything.
+    /// Which of the torrent's files to actually fetch. A non-empty
+    /// <see cref="TorrentResult.WantedMembers"/> short-circuits the heuristic — those explicit
+    /// members are selected directly (see <see cref="SelectMembers{T}"/>). Otherwise the
+    /// <see cref="MediaFileMatcher"/> the debrid path uses is the fallback, so a request for one
+    /// episode doesn't pull a whole season pack. A null request (no media-type context to narrow
+    /// by) and no explicit members takes everything.
     /// </summary>
-    private static IReadOnlyList<ITorrentManagerFile> SelectWantedFiles(TorrentManager manager, MediaRequest? request)
+    private static IReadOnlyList<ITorrentManagerFile> SelectWantedFiles(
+        TorrentManager manager, MediaRequest? request, IReadOnlyList<string> wantedMembers)
     {
         var files = manager.Files.ToList();
+
+        // Explicit member selection wins over the request heuristic. An all-miss selection
+        // returns empty here, so the caller's "nothing matched → download nothing" path fires
+        // rather than falling back to the whole torrent.
+        if (wantedMembers.Count > 0)
+            return SelectMembers(files, f => f.Path, wantedMembers);
+
         return request is null
             ? files
             : MediaFileMatcher.Select(request, files, f => f.Path, f => (long?)f.Length);
+    }
+
+    /// <summary>
+    /// The subset of <paramref name="files"/> whose full member path OR filename (last path
+    /// segment) equals one of <paramref name="wantedMembers"/>, compared case-insensitively.
+    /// Order follows <paramref name="files"/>. A member that matches nothing contributes nothing,
+    /// so an all-miss selection yields an empty list (the caller then downloads nothing, never
+    /// the whole torrent).
+    /// </summary>
+    internal static IReadOnlyList<T> SelectMembers<T>(
+        IReadOnlyList<T> files, Func<T, string> pathOf, IReadOnlyList<string> wantedMembers)
+    {
+        var wanted = new HashSet<string>(
+            wantedMembers.Select(NormalizeSeparators), StringComparer.OrdinalIgnoreCase);
+        return files.Where(f =>
+        {
+            var path = NormalizeSeparators(pathOf(f));
+            return wanted.Contains(path) || wanted.Contains(FileName(path));
+        }).ToList();
+    }
+
+    // Compare both sides on one canonical separator so a wanted entry written with backslashes
+    // still matches a torrent's '/'-separated member path.
+    private static string NormalizeSeparators(string path) => path.Replace('\\', '/');
+
+    // Last path segment. Input is already separator-normalized, so split on '/' only.
+    private static string FileName(string path)
+    {
+        var slash = path.LastIndexOf('/');
+        return slash >= 0 ? path[(slash + 1)..] : path;
     }
 
     /// <summary>Tells the swarm not to fetch anything outside <paramref name="wanted"/>.</summary>
