@@ -270,7 +270,8 @@ public sealed class LocalLibrarySource : IMediaSource
         return info.Year is { } year ? $"{title} ({year})" : title;
     }
 
-    // A small extension -> MIME map, case-insensitive on the extension.
+    // A small extension -> MIME map, case-insensitive on the extension. Images are served too:
+    // a located poster is opened through the same proxy/Range path as a media file.
     private static string MimeFor(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".mkv" => "video/x-matroska",
@@ -282,6 +283,9 @@ public sealed class LocalLibrarySource : IMediaSource
         ".flv" => "video/x-flv",
         ".ts" => "video/mp2t",
         ".mpg" or ".mpeg" => "video/mpeg",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".png" => "image/png",
+        ".webp" => "image/webp",
         _ => "application/octet-stream",
     };
 
