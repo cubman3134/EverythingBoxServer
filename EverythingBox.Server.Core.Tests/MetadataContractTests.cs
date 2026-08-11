@@ -32,10 +32,10 @@ public class MetadataContractTests
     }
 
     [Fact]
-    public void ApiVersion_is_1_11_now_that_TorrentResult_carries_explicit_wanted_members()
+    public void ApiVersion_is_1_12_now_that_the_download_path_can_verify_checksums()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(11, ServerApi.Current.Minor);
+        Assert.Equal(12, ServerApi.Current.Minor);
     }
 
     [Theory]
@@ -50,6 +50,7 @@ public class MetadataContractTests
     [InlineData(1, 8)]
     [InlineData(1, 9)]
     [InlineData(1, 10)]
+    [InlineData(1, 11)]
     public void Plugins_built_against_any_earlier_minor_still_load(int major, int minor)
         => Assert.True(ServerApi.IsCompatible(new Version(major, minor)));
 }

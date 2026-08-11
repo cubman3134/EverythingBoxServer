@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using EverythingBox.Server.Abstractions;
+using EverythingBox.Server.Download;
 using Microsoft.Extensions.Logging;
 
 namespace EverythingBox.Server.Sources;
@@ -282,21 +283,24 @@ public sealed class ReleaseStreamResolver
         var streams = new List<SourceStream>(localPaths.Count);
         foreach (var path in localPaths)
         {
+            if (!await VerifyAsync(release, path, cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogWarning(
+                    "Downloaded file '{File}' for '{Title}' failed checksum verification; not publishing it.",
+                    Path.GetFileName(path), release.Title);
+                continue;
+            }
+
             var built = await PublishAsync(files, release, request, path, cancellationToken).ConfigureAwait(false);
             if (built is not null)
                 streams.Add(new SourceStream($"files/{built.ServedName}", built.ContentType));
         }
 
-        if (streams.Count > 0)
-        {
-            // The engine is stopped and disposed once DownloadAsync returns, so the
-            // .downloads working copy has no reseeding use — PublishAsync already moved
-            // (not copied) every published file out of it, so this just clears whatever
-            // the move left behind (unselected pieces, empty subdirectories, engine
-            // scratch files). Best-effort: a lingering handle must not undo a download
-            // that already succeeded and is already being served.
+        // Whatever was downloaded, the .downloads working copy has no reseeding use — PublishAsync
+        // already moved every PUBLISHED file out, so this clears the rest: rejected files, unselected
+        // pieces, engine scratch. Runs even when verification rejected everything.
+        if (localPaths.Count > 0)
             RemoveDownloadDirectory(DownloadDirectory(files, release, request));
-        }
 
         return streams.Count > 0 ? streams : null;
     }
@@ -379,6 +383,45 @@ public sealed class ReleaseStreamResolver
     /// every fetched release occupies, forever.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// True when <paramref name="localPath"/> may be published: either the release gave no
+    /// expected checksum matching it, or its content matches the expected one. A read error is a
+    /// failure — never publish something we could not verify when a checksum was demanded.
+    /// </summary>
+    private async Task<bool> VerifyAsync(TorrentResult release, string localPath, CancellationToken cancellationToken)
+    {
+        if (release.ExpectedChecksums.Count == 0)
+            return true;
+
+        var fileName = Path.GetFileName(localPath);
+        var expected = release.ExpectedChecksums.FirstOrDefault(c => MemberMatches(c.Member, fileName));
+        if (expected is null)
+            return true; // no expectation for this file → publish as usual
+
+        try
+        {
+            await using var stream = File.OpenRead(localPath);
+            return await ChecksumVerifier.MatchesAsync(stream, expected.Algorithm, expected.Hex, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not read '{File}' to verify its checksum.", fileName);
+            return false;
+        }
+    }
+
+    // A checksum entry matches a downloaded file by filename, case-insensitively. The entry's
+    // Member may be a bare filename or a full member path; either way its last path segment is
+    // compared to the downloaded file's name (MonoTorrent lays each member down under its own name).
+    private static bool MemberMatches(string member, string fileName)
+    {
+        var m = member.Replace('\\', '/');
+        var last = m.LastIndexOf('/');
+        var memberName = last >= 0 ? m[(last + 1)..] : m;
+        return string.Equals(memberName, fileName, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static async Task<BuiltFile?> PublishAsync(
         IFileCache files, TorrentResult release, MediaRequest request, string localPath, CancellationToken cancellationToken)
     {

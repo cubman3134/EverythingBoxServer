@@ -44,6 +44,14 @@ public sealed record TorrentResult
     /// </summary>
     public IReadOnlyList<string> WantedMembers { get; init; } = [];
 
+    /// <summary>
+    /// Expected checksums for downloaded members. When a downloaded file matches an entry here
+    /// (by filename), the self-download path verifies it and refuses to publish a mismatch.
+    /// Empty (the default) skips verification entirely. Only the self-download (MonoTorrent)
+    /// path consults this; debrid/direct paths are unaffected.
+    /// </summary>
+    public IReadOnlyList<MemberChecksum> ExpectedChecksums { get; init; } = [];
+
     /// <summary>True when there is some way to actually fetch this release.</summary>
     public bool IsDownloadable => MagnetUri is not null || DownloadUrl is not null;
 }
