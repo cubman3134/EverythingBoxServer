@@ -168,4 +168,10 @@ public sealed class DownloadConfig
 
     /// <summary>Gives up on a stalled or seedless swarm instead of holding the request open.</summary>
     public int TimeoutSeconds { get; set; } = 600;
+
+    /// <summary>Give up on a self-download that receives no new bytes for this many seconds — a
+    /// faster early-out than <see cref="TimeoutSeconds"/> for a dead/seedless swarm. The total
+    /// <see cref="TimeoutSeconds"/> still applies as the hard ceiling. 0 disables idle detection
+    /// (only the total timeout applies).</summary>
+    public int IdleTimeoutSeconds { get; set; } = 120;
 }

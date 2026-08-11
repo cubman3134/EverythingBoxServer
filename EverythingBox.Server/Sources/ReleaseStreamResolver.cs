@@ -347,14 +347,27 @@ public sealed class ReleaseStreamResolver
         ITorrentDownloader downloader, IFileCache files, TorrentResult release, MediaRequest request, CancellationToken cancellationToken)
     {
         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_download.TimeoutSeconds));
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        using var idleCts = new CancellationTokenSource();
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, timeoutCts.Token, idleCts.Token);
 
         var directory = DownloadDirectory(files, release, request);
+
+        IProgress<TorrentDownloadProgress>? watchdog = null;
+        if (_download.IdleTimeoutSeconds > 0)
+        {
+            var idle = new IdleWatchdog(_download.IdleTimeoutSeconds * 1000L);
+            watchdog = new InlineProgress(p =>
+            {
+                if (idle.ShouldGiveUp(p.BytesDownloaded, Environment.TickCount64))
+                    idleCts.Cancel();
+            });
+        }
 
         try
         {
             var paths = await downloader.DownloadAsync(
-                release, request, directory, progress: null,
+                release, request, directory, progress: watchdog,
                 maxTotalBytes: _download.MaxSizeMB * 1024L * 1024L,
                 cancellationToken: linked.Token).ConfigureAwait(false);
 
@@ -370,11 +383,25 @@ public sealed class ReleaseStreamResolver
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogInformation(
-                "Self-download of '{Title}' timed out after {Seconds}s; falling back to the caching notice.",
-                release.Title, _download.TimeoutSeconds);
+            if (idleCts.IsCancellationRequested)
+                _logger.LogInformation(
+                    "Self-download of '{Title}' received no new data for {Seconds}s; falling back to the caching notice.",
+                    release.Title, _download.IdleTimeoutSeconds);
+            else
+                _logger.LogInformation(
+                    "Self-download of '{Title}' timed out after {Seconds}s; falling back to the caching notice.",
+                    release.Title, _download.TimeoutSeconds);
             return [];
         }
+    }
+
+    /// <summary>Runs the callback synchronously on the reporting thread, unlike
+    /// <see cref="System.Progress{T}"/> which posts to a captured synchronization context — we need
+    /// the cancel to take effect before the downloader's next cancellation check.</summary>
+    private sealed class InlineProgress(Action<TorrentDownloadProgress> onReport)
+        : IProgress<TorrentDownloadProgress>
+    {
+        public void Report(TorrentDownloadProgress value) => onReport(value);
     }
 
     /// <summary>

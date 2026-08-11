@@ -107,6 +107,15 @@ public class ServerConfigTests
     }
 
     [Fact]
+    public void Download_has_an_idle_timeout_by_default_and_it_binds()
+    {
+        Assert.True(new ServerConfig().Download.IdleTimeoutSeconds > 0);
+
+        var config = ServerConfig.FromJson("""{ "Download": { "IdleTimeoutSeconds": 45 } }""");
+        Assert.Equal(45, config.Download.IdleTimeoutSeconds);
+    }
+
+    [Fact]
     public void Download_is_never_null_even_when_the_config_file_omits_it()
     {
         // Every existing config file predates this key; reading one must not NRE.
