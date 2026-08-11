@@ -1,4 +1,4 @@
-namespace EverythingBox.Server.LocalLibrary;
+namespace EverythingBox.Server.Abstractions;
 
 /// <summary>
 /// A read-only view over <paramref name="inner"/> (already positioned at the slice start) that

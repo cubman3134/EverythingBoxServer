@@ -1,4 +1,4 @@
-using EverythingBox.Server.LocalLibrary;
+using EverythingBox.Server.Abstractions;
 
 namespace EverythingBox.Server.Tests;
 

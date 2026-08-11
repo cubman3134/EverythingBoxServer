@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_13_now_that_sources_can_return_a_meta_panel()
+    public void Version_is_1_14_now_that_a_shared_local_file_server_ships()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(13, ServerApi.Current.Minor);
+        Assert.Equal(14, ServerApi.Current.Minor);
     }
 
     [Fact]

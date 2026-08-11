@@ -83,7 +83,7 @@ public class LocalLibrarySourceTests : IDisposable
         File.WriteAllBytes(outside, new byte[] { 9 });
         try
         {
-            var evilId = LocalLibrarySource.EncodeId(outside);       // internal, visible to tests
+            var evilId = SafeLocalFileServer.EncodeId(outside);       // public static, encodes a path to an id
             var src = new LocalLibrarySource([_root], [], null, NullLogger<LocalLibrarySource>.Instance);
             Assert.Null(await src.ResolveAsync(evilId, 0, Ctx(), default));
         }
@@ -136,7 +136,7 @@ public class LocalLibrarySourceTests : IDisposable
         File.WriteAllBytes(outside, new byte[] { 9 });
         try
         {
-            var evilId = LocalLibrarySource.EncodeId(outside);
+            var evilId = SafeLocalFileServer.EncodeId(outside);
             Assert.Null(await new LocalLibrarySource([_root], [], null, NullLogger<LocalLibrarySource>.Instance).OpenAsync(evilId, null, default));
         }
         finally { File.Delete(outside); }
@@ -226,7 +226,7 @@ public class LocalLibrarySourceTests : IDisposable
         var (seriesRoot, _) = MakeShow();
         // The series ROOT itself is never a show — a show is always a strict subfolder of a root.
         // An id forged for the root must not flatten the whole root into a giant episode list.
-        var rootId = LocalLibrarySource.EncodeId(seriesRoot);
+        var rootId = SafeLocalFileServer.EncodeId(seriesRoot);
         Assert.Empty((await Series(seriesRoot).DetailAsync(rootId, Ctx(), default)).Items);
     }
 
@@ -271,7 +271,7 @@ public class LocalLibrarySourceTests : IDisposable
         File.WriteAllText(Path.Combine(_root, "generic.nfo"), "<movie><title>Real Title</title><year>2011</year><plot>The plot.</plot></movie>");
         File.WriteAllBytes(Path.Combine(_root, "generic-poster.jpg"), [9]);
 
-        var id = LocalLibrarySource.EncodeId(mkv);
+        var id = SafeLocalFileServer.EncodeId(mkv);
         var detail = await Movies().MetaAsync(id, Ctx(), default);
         Assert.NotNull(detail);
         Assert.Equal("Real Title", detail!.Title);
@@ -295,7 +295,7 @@ public class LocalLibrarySourceTests : IDisposable
     {
         var outside = Path.Combine(Path.GetTempPath(), "ebs-out-" + Guid.NewGuid().ToString("N") + ".mkv");
         File.WriteAllBytes(outside, [1]);
-        try { Assert.Null(await Movies().MetaAsync(LocalLibrarySource.EncodeId(outside), Ctx(), default)); }
+        try { Assert.Null(await Movies().MetaAsync(SafeLocalFileServer.EncodeId(outside), Ctx(), default)); }
         finally { File.Delete(outside); }
     }
 
@@ -315,7 +315,7 @@ public class LocalLibrarySourceTests : IDisposable
     {
         var mkv = Path.Combine(_root, "img.mkv"); File.WriteAllBytes(mkv, [1, 2, 3, 4]);
         var poster = Path.Combine(_root, "img-poster.png"); File.WriteAllBytes(poster, [7, 7, 7]);
-        var id = LocalLibrarySource.EncodeId(poster);
+        var id = SafeLocalFileServer.EncodeId(poster);
         await using var r = await Movies().OpenAsync(id, null, default);
         Assert.NotNull(r);
         Assert.Equal(200, r!.StatusCode);
@@ -338,7 +338,7 @@ public class LocalLibrarySourceTests : IDisposable
         var src = new LocalLibrarySource([], [seriesRoot], cache, NullLogger<LocalLibrarySource>.Instance);
 
         // 1) Browse the episode list FIRST — this fills the shared cache entry.
-        var eps = await src.DetailAsync(LocalLibrarySource.EncodeId(showDir), Ctx(), default);
+        var eps = await src.DetailAsync(SafeLocalFileServer.EncodeId(showDir), Ctx(), default);
         var episodeId = eps.Items[0].Id;
 
         // 2) Now open the episode's meta panel — it reads the shared entry and must keep the poster.

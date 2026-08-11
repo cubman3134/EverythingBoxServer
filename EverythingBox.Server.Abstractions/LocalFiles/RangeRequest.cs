@@ -1,10 +1,10 @@
 using System.Globalization;
 
-namespace EverythingBox.Server.LocalLibrary;
+namespace EverythingBox.Server.Abstractions;
 
-internal enum RangeKind { Full, Partial, Unsatisfiable }
+public enum RangeKind { Full, Partial, Unsatisfiable }
 
-internal readonly record struct RangeResult(RangeKind Kind, long Start, long Length)
+public readonly record struct RangeResult(RangeKind Kind, long Start, long Length)
 {
     public static readonly RangeResult Full = new(RangeKind.Full, 0, 0);
     public static readonly RangeResult Unsatisfiable = new(RangeKind.Unsatisfiable, 0, 0);
@@ -16,7 +16,7 @@ internal readonly record struct RangeResult(RangeKind Kind, long Start, long Len
 /// understand (no header, wrong unit, multiple ranges, garbage, or a start after the end) degrades
 /// to <see cref="RangeKind.Full"/> — serve the whole file (200) — rather than erroring.
 /// </summary>
-internal static class RangeRequest
+public static class RangeRequest
 {
     public static RangeResult Parse(string? header, long totalLength)
     {
