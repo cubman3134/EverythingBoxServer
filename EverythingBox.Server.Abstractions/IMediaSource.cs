@@ -38,4 +38,9 @@ public interface IMediaSource
     /// hanging here.</summary>
     Task<WarmUpResult> WarmUpAsync(CancellationToken ct)
         => Task.FromResult(WarmUpResult.NotApplicable);
+
+    /// <summary>Optional. Rich detail for one item's meta panel. Default: none — the meta route
+    /// returns an empty object and the client shows a blank-but-valid panel.</summary>
+    Task<SourceDetail?> MetaAsync(string itemId, SourceContext ctx, CancellationToken ct)
+        => Task.FromResult<SourceDetail?>(null);
 }
