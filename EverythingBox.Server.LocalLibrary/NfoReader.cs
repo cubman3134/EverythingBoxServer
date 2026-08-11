@@ -8,7 +8,8 @@ internal sealed record NfoInfo(string? Title, int? Year, string? Plot);
 
 /// <summary>
 /// Reads &lt;title&gt;/&lt;year&gt;/&lt;plot&gt; from a Kodi .nfo (movie / tvshow / episodedetails roots all
-/// carry them). Namespace-agnostic. XXE-safe: DTDs prohibited, no external resolver, entities capped.
+/// carry them). Namespace-agnostic. XXE-safe: DTDs prohibited, no external resolver, and entity
+/// expansion tightly capped as a belt-and-suspenders backstop behind the prohibited DTD.
 /// Tolerant: any failure (missing, malformed, I/O, disallowed DTD) → null.
 /// </summary>
 internal static class NfoReader
@@ -17,7 +18,10 @@ internal static class NfoReader
     {
         DtdProcessing = DtdProcessing.Prohibit,
         XmlResolver = null,
-        MaxCharactersFromEntities = 0,
+        // A tight positive cap on characters from entity expansion (0 would mean UNLIMITED). With the
+        // DTD prohibited above, no custom entity can even be declared, so this is a belt-and-suspenders
+        // backstop that keeps a hard limit in place should DtdProcessing ever be relaxed.
+        MaxCharactersFromEntities = 1024,
         IgnoreComments = true,
         IgnoreProcessingInstructions = true,
     };

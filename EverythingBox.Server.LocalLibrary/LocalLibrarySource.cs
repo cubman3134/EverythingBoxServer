@@ -193,7 +193,8 @@ public sealed class LocalLibrarySource : IMediaSource
             // giant list. No HasMore flag is needed — the detail view isn't paged like search.
             if (episodes.Count >= MaxItems) break;
 
-            var epNfo = File.Exists(Path.ChangeExtension(path, ".nfo")) ? NfoReader.TryRead(Path.ChangeExtension(path, ".nfo")) : null;
+            var epNfoPath = Path.ChangeExtension(path, ".nfo");
+            var epNfo = NfoReader.TryRead(epNfoPath);
             var epTitle = $"S{season:D2}E{episode:D2}" + (epNfo?.Title is { } et ? $" - {et}" : "");
 
             episodes.Add((season, episode, new CatalogItem(

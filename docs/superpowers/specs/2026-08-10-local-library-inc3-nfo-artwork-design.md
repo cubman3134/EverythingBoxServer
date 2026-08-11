@@ -129,7 +129,7 @@ Parse with a hardened reader — **this establishes the repo's safe-XML pattern 
         {
             DtdProcessing = DtdProcessing.Prohibit,
             XmlResolver = null,
-            MaxCharactersFromEntities = 0,
+            MaxCharactersFromEntities = 1024,
             IgnoreComments = true,
             IgnoreProcessingInstructions = true,
         };

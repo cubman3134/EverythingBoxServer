@@ -279,7 +279,7 @@ internal static class NfoReader
     {
         DtdProcessing = DtdProcessing.Prohibit,
         XmlResolver = null,
-        MaxCharactersFromEntities = 0,
+        MaxCharactersFromEntities = 1024,
         IgnoreComments = true,
         IgnoreProcessingInstructions = true,
     };
