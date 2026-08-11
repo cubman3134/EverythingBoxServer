@@ -20,7 +20,7 @@ file sealed class RecordingDownloader(params string[] produce) : ITorrentDownloa
 
     public Task<IReadOnlyList<string>> DownloadAsync(
         TorrentResult torrent, MediaRequest? request, string directory,
-        IProgress<TorrentDownloadProgress>? progress = null, CancellationToken cancellationToken = default)
+        IProgress<TorrentDownloadProgress>? progress = null, long? maxTotalBytes = null, CancellationToken cancellationToken = default)
     {
         Calls++;
         Directory.CreateDirectory(directory);
@@ -44,7 +44,7 @@ file sealed class EpisodeAwareDownloader : ITorrentDownloader
 
     public Task<IReadOnlyList<string>> DownloadAsync(
         TorrentResult torrent, MediaRequest? request, string directory,
-        IProgress<TorrentDownloadProgress>? progress = null, CancellationToken cancellationToken = default)
+        IProgress<TorrentDownloadProgress>? progress = null, long? maxTotalBytes = null, CancellationToken cancellationToken = default)
     {
         Calls++;
         Directory.CreateDirectory(directory);
@@ -64,7 +64,7 @@ file sealed class FlakyDownloader : ITorrentDownloader
 
     public Task<IReadOnlyList<string>> DownloadAsync(
         TorrentResult torrent, MediaRequest? request, string directory,
-        IProgress<TorrentDownloadProgress>? progress = null, CancellationToken cancellationToken = default)
+        IProgress<TorrentDownloadProgress>? progress = null, long? maxTotalBytes = null, CancellationToken cancellationToken = default)
     {
         var n = Interlocked.Increment(ref _calls);
         Directory.CreateDirectory(directory);

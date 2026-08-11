@@ -44,6 +44,7 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
         MediaRequest? request,
         string directory,
         IProgress<TorrentDownloadProgress>? progress = null,
+        long? maxTotalBytes = null,
         CancellationToken cancellationToken = default)
     {
         // Both checked before any I/O: a cancelled caller and a release with nothing
@@ -90,10 +91,21 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
                 return [];
             }
 
+            // Re-check the caller's size cap against the REAL selected size now that metadata
+            // is in hand — the pre-download gate only saw the indexer-reported size, which can
+            // under-report or omit it. Refuse BEFORE StartAsync so the download never begins.
+            var totalBytes = wanted.Sum(f => f.Length);
+            if (ExceedsCap(totalBytes, maxTotalBytes))
+            {
+                _logger.LogInformation(
+                    "Self-download of '{Title}' refused: the selected files ({Bytes} bytes) exceed the configured size cap.",
+                    torrent.Title, totalBytes);
+                return [];
+            }
+
             await DeselectUnwantedAsync(manager, wanted).ConfigureAwait(false);
             await manager.StartAsync().ConfigureAwait(false);
 
-            var totalBytes = wanted.Sum(f => f.Length);
             var completed = await WaitForCompletionAsync(manager, totalBytes, progress, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -141,6 +153,13 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
             }
         }
     }
+
+    /// <summary>
+    /// The selected files' true combined size exceeds the caller's cap. A defense-in-depth re-check:
+    /// the pre-download gate only saw the indexer-reported size, which can under-report or omit it.
+    /// </summary>
+    internal static bool ExceedsCap(long totalBytes, long? maxTotalBytes)
+        => maxTotalBytes is { } cap && totalBytes > cap;
 
     /// <summary>
     /// Builds a <see cref="MagnetLink"/> from whatever the release gives us, via the same

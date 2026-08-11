@@ -71,7 +71,7 @@ public class MonoTorrentDownloaderTests : IDisposable
     {
         // The interface's own contract: empty, not an exception.
         var paths = await Downloader().DownloadAsync(
-            Release(), new MovieRequest { Title = "x" }, _dir, null, CancellationToken.None);
+            Release(), new MovieRequest { Title = "x" }, _dir, null, cancellationToken: CancellationToken.None);
 
         Assert.Empty(paths);
     }
@@ -86,7 +86,7 @@ public class MonoTorrentDownloaderTests : IDisposable
 
         // Cancellation before any work is a normal caller-side race, not an error path.
         var paths = await Downloader().DownloadAsync(
-            Release(magnet), new MovieRequest { Title = "x" }, _dir, null, cts.Token);
+            Release(magnet), new MovieRequest { Title = "x" }, _dir, null, cancellationToken: cts.Token);
 
         Assert.Empty(paths);
         Assert.Empty(Directory.GetFiles(_dir));
@@ -101,7 +101,7 @@ public class MonoTorrentDownloaderTests : IDisposable
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
         var paths = await Downloader().DownloadAsync(
-            Release(magnet), new MovieRequest { Title = "x" }, _dir, null, cts.Token);
+            Release(magnet), new MovieRequest { Title = "x" }, _dir, null, cancellationToken: cts.Token);
 
         Assert.Empty(paths);
     }
@@ -112,7 +112,7 @@ public class MonoTorrentDownloaderTests : IDisposable
         var nested = Path.Combine(_dir, "does", "not", "exist");
 
         var paths = await Downloader().DownloadAsync(
-            Release(), new MovieRequest { Title = "x" }, nested, null, CancellationToken.None);
+            Release(), new MovieRequest { Title = "x" }, nested, null, cancellationToken: CancellationToken.None);
 
         Assert.Empty(paths);
         // The empty-release path returns before any I/O; this asserts it did not throw
@@ -132,7 +132,7 @@ public class MonoTorrentDownloaderTests : IDisposable
         var torrent = Release(downloadUrl: new Uri("https://example.test/release.torrent"));
 
         var paths = await Downloader(handler).DownloadAsync(
-            torrent, new MovieRequest { Title = "x" }, _dir, null, cts.Token);
+            torrent, new MovieRequest { Title = "x" }, _dir, null, cancellationToken: cts.Token);
 
         Assert.Empty(paths);
         Assert.Equal(1, handler.Calls);
@@ -144,7 +144,7 @@ public class MonoTorrentDownloaderTests : IDisposable
         var torrent = Release(downloadUrl: new Uri("https://example.test/missing.torrent"));
 
         var paths = await Downloader(new NotFoundHandler()).DownloadAsync(
-            torrent, new MovieRequest { Title = "x" }, _dir, null, CancellationToken.None);
+            torrent, new MovieRequest { Title = "x" }, _dir, null, cancellationToken: CancellationToken.None);
 
         Assert.Empty(paths);
     }
@@ -156,7 +156,7 @@ public class MonoTorrentDownloaderTests : IDisposable
         var torrent = Release(downloadUrl: new Uri("https://example.test/page.torrent"));
 
         var paths = await Downloader(handler).DownloadAsync(
-            torrent, new MovieRequest { Title = "x" }, _dir, null, CancellationToken.None);
+            torrent, new MovieRequest { Title = "x" }, _dir, null, cancellationToken: CancellationToken.None);
 
         Assert.Empty(paths);
     }
@@ -171,7 +171,7 @@ public class MonoTorrentDownloaderTests : IDisposable
         var torrent = Release(magnet: magnet, downloadUrl: new Uri("https://example.test/has-both.torrent"));
 
         var paths = await Downloader(handler).DownloadAsync(
-            torrent, new MovieRequest { Title = "x" }, _dir, null, cts.Token);
+            torrent, new MovieRequest { Title = "x" }, _dir, null, cancellationToken: cts.Token);
 
         Assert.Empty(paths); // no real swarm behind this synthesized magnet either
         Assert.Equal(0, handler.Calls);
@@ -185,8 +185,23 @@ public class MonoTorrentDownloaderTests : IDisposable
         var torrent = Release(magnet: new Uri("magnet:?xt=urn:btih:not-valid-hex"));
 
         var paths = await Downloader().DownloadAsync(
-            torrent, new MovieRequest { Title = "x" }, _dir, null, CancellationToken.None);
+            torrent, new MovieRequest { Title = "x" }, _dir, null, cancellationToken: CancellationToken.None);
 
         Assert.Empty(paths);
+    }
+
+    [Fact]
+    public void The_real_selected_size_is_re_checked_against_the_cap()
+    {
+        long cap = 2L * 1024 * 1024 * 1024; // 2 GB
+
+        // A release the indexer under-reported: its true selected size is over the cap → refused,
+        // regardless of what SizeBytes claimed.
+        Assert.True(MonoTorrentDownloader.ExceedsCap(3L * 1024 * 1024 * 1024, cap));
+        // At or under the cap → allowed.
+        Assert.False(MonoTorrentDownloader.ExceedsCap(cap, cap));
+        Assert.False(MonoTorrentDownloader.ExceedsCap(1L * 1024 * 1024 * 1024, cap));
+        // No cap → never refused.
+        Assert.False(MonoTorrentDownloader.ExceedsCap(long.MaxValue, null));
     }
 }

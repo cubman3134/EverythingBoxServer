@@ -91,7 +91,7 @@ public sealed class CountingDownloader : ITorrentDownloader
 
     public Task<IReadOnlyList<string>> DownloadAsync(
         TorrentResult torrent, MediaRequest? request, string directory,
-        IProgress<TorrentDownloadProgress>? progress = null, CancellationToken cancellationToken = default)
+        IProgress<TorrentDownloadProgress>? progress = null, long? maxTotalBytes = null, CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _calls);
         Directory.CreateDirectory(directory);
