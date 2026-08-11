@@ -210,6 +210,16 @@ public class LocalLibrarySourceTests : IDisposable
     }
 
     [Fact]
+    public async Task A_series_root_id_does_not_expand()
+    {
+        var (seriesRoot, _) = MakeShow();
+        // The series ROOT itself is never a show — a show is always a strict subfolder of a root.
+        // An id forged for the root must not flatten the whole root into a giant episode list.
+        var rootId = LocalLibrarySource.EncodeId(seriesRoot);
+        Assert.Empty((await Series(seriesRoot).DetailAsync(rootId, Ctx(), default)).Items);
+    }
+
+    [Fact]
     public async Task A_series_folder_id_is_not_served()
     {
         var (seriesRoot, _) = MakeShow();

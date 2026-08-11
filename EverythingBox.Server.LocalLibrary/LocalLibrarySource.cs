@@ -146,9 +146,7 @@ public sealed class LocalLibrarySource : IMediaSource
                 ct.ThrowIfCancellationRequested();
                 if (!IsContained(dir)) continue;
 
-                var name = Path.GetFileName(dir);
-                var parsed = parser.Parse(name, MediaType.Tv).NormalizedTitle;
-                var title = string.IsNullOrWhiteSpace(parsed) ? name : parsed;
+                var title = ShowTitle(parser, dir);
 
                 if (!string.IsNullOrWhiteSpace(query) &&
                     !title.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
@@ -185,6 +183,10 @@ public sealed class LocalLibrarySource : IMediaSource
             if (info.Season is not { } season || info.Episodes.Count == 0) continue;
             var episode = info.Episodes[0];
 
+            // Same MaxItems bound the catalog listings use, so one pathological folder can't build a
+            // giant list. No HasMore flag is needed — the detail view isn't paged like search.
+            if (episodes.Count >= MaxItems) break;
+
             episodes.Add((season, episode, new CatalogItem(
                 Id: EncodeId(path),
                 Title: $"S{season:D2}E{episode:D2}",
@@ -198,7 +200,7 @@ public sealed class LocalLibrarySource : IMediaSource
             .Select(e => e.Item)
             .ToList();
 
-        var title = Path.GetFileName(showDir);
+        var title = ShowTitle(parser, showDir);
         return Task.FromResult(new SourceCatalog(title, ordered));
     }
 
@@ -248,6 +250,16 @@ public sealed class LocalLibrarySource : IMediaSource
         {
             StatusCode = 200, ContentLength = total, AcceptRanges = "bytes",
         });
+    }
+
+    // A show's display title: the parsed NormalizedTitle of the folder name, falling back to the raw
+    // folder name. Shared by ListShows and DetailAsync so a folder like "Breaking.Show.2008" reads the
+    // same in the listing and the expanded view.
+    private static string ShowTitle(DefaultReleaseParser parser, string dirPath)
+    {
+        var name = Path.GetFileName(dirPath);
+        var parsed = parser.Parse(name, MediaType.Tv).NormalizedTitle;
+        return string.IsNullOrWhiteSpace(parsed) ? name : parsed;
     }
 
     private static string TitleFor(DefaultReleaseParser parser, string path)
@@ -323,9 +335,10 @@ public sealed class LocalLibrarySource : IMediaSource
         return IsContained(full) ? full : null;
     }
 
-    /// <summary>Decodes an id and confirms it is a real directory inside a configured SERIES root —
-    /// gating DetailAsync so an arbitrary or foreign folder id can never be enumerated. Null for any
-    /// bad id, a file, or a directory outside the series roots.</summary>
+    /// <summary>Decodes an id and confirms it is a real directory strictly UNDER a configured SERIES
+    /// root — gating DetailAsync so an arbitrary or foreign folder id can never be enumerated. A show
+    /// is always a strict subfolder of a root, so the root itself is rejected. Null for any bad id, a
+    /// file, a series root, or a directory outside the series roots.</summary>
     internal string? ResolveSafeDir(string itemId)
     {
         if (TryDecodeId(itemId) is not { } decoded) return null;
@@ -344,8 +357,11 @@ public sealed class LocalLibrarySource : IMediaSource
             try { r = Path.GetFullPath(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)); }
             catch (Exception ex) when (ex is ArgumentException or PathTooLongException) { continue; }
             var resolvedRoot = ResolveReal(r);
-            if (resolved.StartsWith(resolvedRoot + Path.DirectorySeparatorChar, PathComparison) ||
-                resolved.Equals(resolvedRoot, PathComparison))
+            // A show is always a strict SUBFOLDER of a series root; the root itself is never a show.
+            // Accept only a directory strictly UNDER a root — an id forged for the root must not
+            // flatten the whole root into episodes. (FILE serving via ResolveSafePath/IsContained is
+            // unchanged: a file directly in a root must still serve.)
+            if (resolved.StartsWith(resolvedRoot + Path.DirectorySeparatorChar, PathComparison))
                 return resolved;
         }
         return null;
