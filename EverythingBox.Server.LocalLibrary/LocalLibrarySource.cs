@@ -5,12 +5,14 @@ using Microsoft.Extensions.Logging;
 namespace EverythingBox.Server.LocalLibrary;
 
 /// <summary>
-/// Scans configured movie folders, classifies each video file into a "movies" catalog, and relays
-/// its bytes (with HTTP Range support) through the host's proxy route. Every id that arrives from a
-/// client is decoded, real-resolved (following junctions/symlinks) and confirmed to live inside a
-/// configured root before anything is served — an id is never trusted on its own.
+/// Scans configured movie and series folders. Movie files become a "movies" catalog; each immediate
+/// subfolder of a series root becomes an expandable show in a "series" catalog that DetailAsync
+/// expands into its episodes. Bytes are relayed (with HTTP Range support) through the host's proxy
+/// route. Every id that arrives from a client is decoded, real-resolved (following junctions/symlinks)
+/// and confirmed to live inside a configured root before anything is served or expanded — an id is
+/// never trusted on its own.
 /// </summary>
-public sealed class MovieLibrarySource : IMediaSource
+public sealed class LocalLibrarySource : IMediaSource
 {
     // A deliberate SUPERSET of the canonical video set (Abstractions' MediaFileMatcher.VideoExtensions
     // = .mkv .mp4 .avi .m4v .ts .mov .wmv): it also lists .webm .flv .mpg .mpeg, chosen to match the
@@ -26,19 +28,30 @@ public sealed class MovieLibrarySource : IMediaSource
     private const int MaxItems = 5000;
 
     private readonly IReadOnlyList<string> _movieRoots;
+    private readonly IReadOnlyList<string> _seriesRoots;
     private readonly ILogger _logger;
 
-    public MovieLibrarySource(IReadOnlyList<string> movieRoots, ILogger logger)
+    public LocalLibrarySource(IReadOnlyList<string> movieRoots, IReadOnlyList<string> seriesRoots, ILogger logger)
     {
         _movieRoots = movieRoots;
+        _seriesRoots = seriesRoots;
         _logger = logger;
     }
 
     public string Key => "locallib";
 
-    // A fresh checkout with no configured roots serves nothing: no root, no catalog.
-    public IReadOnlyList<CatalogDescriptor> Catalogs =>
-        _movieRoots.Count == 0 ? [] : [new CatalogDescriptor("movies", "Movies", "movie")];
+    // A fresh checkout with no configured roots serves nothing: a shelf appears only for a root kind
+    // that is actually configured.
+    public IReadOnlyList<CatalogDescriptor> Catalogs
+    {
+        get
+        {
+            var list = new List<CatalogDescriptor>(2);
+            if (_movieRoots.Count > 0) list.Add(new CatalogDescriptor("movies", "Movies", "movie"));
+            if (_seriesRoots.Count > 0) list.Add(new CatalogDescriptor("series", "Series", "series"));
+            return list;
+        }
+    }
 
     // ReparsePoint here means a junction/symlink is never descended into, so it can't leak files
     // from outside a configured folder or loop back on an ancestor; it doesn't apply to the root
@@ -55,6 +68,16 @@ public sealed class MovieLibrarySource : IMediaSource
     };
 
     public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
+    {
+        return catalogId switch
+        {
+            "movies" => Task.FromResult(ScanMovies(query, ct)),
+            "series" => Task.FromResult(ListShows(query, ct)),
+            _ => Task.FromResult(SourceCatalog.Empty("Local Library")),
+        };
+    }
+
+    private SourceCatalog ScanMovies(string? query, CancellationToken ct)
     {
         var parser = new DefaultReleaseParser();
         var items = new List<CatalogItem>();
@@ -98,12 +121,88 @@ public sealed class MovieLibrarySource : IMediaSource
             .OrderBy(i => i.Title, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return Task.FromResult(new SourceCatalog("Movies", ordered, capped));
+        return new SourceCatalog("Movies", ordered, capped);
     }
 
-    // A movie file has nothing to expand into.
+    private static readonly EnumerationOptions TopLevelDirs = new()
+    {
+        RecurseSubdirectories = false,
+        AttributesToSkip = FileAttributes.ReparsePoint,
+        IgnoreInaccessible = true,
+    };
+
+    private SourceCatalog ListShows(string? query, CancellationToken ct)
+    {
+        var parser = new DefaultReleaseParser();
+        var items = new List<CatalogItem>();
+        var capped = false;
+
+        foreach (var root in _seriesRoots)
+        {
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) continue;
+
+            foreach (var dir in Directory.EnumerateDirectories(root, "*", TopLevelDirs))
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!IsContained(dir)) continue;
+
+                var title = ShowTitle(parser, dir);
+
+                if (!string.IsNullOrWhiteSpace(query) &&
+                    !title.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+
+                if (items.Count >= MaxItems) { capped = true; break; }
+
+                items.Add(new CatalogItem(Id: EncodeId(dir), Title: title, Subtitle: string.Empty,
+                    MediaType: "series", Expandable: true));
+            }
+            if (capped) break;
+        }
+
+        var ordered = items.OrderBy(i => i.Title, StringComparer.OrdinalIgnoreCase).ToList();
+        return new SourceCatalog("Series", ordered, capped);
+    }
+
+    // A movie/episode file id has nothing to expand; only a series folder id (a real directory inside
+    // a series root, per ResolveSafeDir) expands into that show's episodes.
     public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
-        => Task.FromResult(SourceCatalog.Empty("Movies"));
+    {
+        if (ResolveSafeDir(itemId) is not { } showDir)
+            return Task.FromResult(SourceCatalog.Empty("Local Library"));
+
+        var parser = new DefaultReleaseParser();
+        var episodes = new List<(int Season, int Episode, CatalogItem Item)>();
+
+        foreach (var path in Directory.EnumerateFiles(showDir, "*", WalkOptions))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!VideoExtensions.Contains(Path.GetExtension(path))) continue;
+            if (!IsContained(path)) continue;
+
+            var info = parser.Parse(Path.GetFileNameWithoutExtension(path), MediaType.Tv);
+            if (info.Season is not { } season || info.Episodes.Count == 0) continue;
+            var episode = info.Episodes[0];
+
+            // Same MaxItems bound the catalog listings use, so one pathological folder can't build a
+            // giant list. No HasMore flag is needed — the detail view isn't paged like search.
+            if (episodes.Count >= MaxItems) break;
+
+            episodes.Add((season, episode, new CatalogItem(
+                Id: EncodeId(path),
+                Title: $"S{season:D2}E{episode:D2}",
+                Subtitle: Path.GetFileName(path),
+                MediaType: "series",
+                Expandable: false)));
+        }
+
+        var ordered = episodes
+            .OrderBy(e => e.Season).ThenBy(e => e.Episode)
+            .Select(e => e.Item)
+            .ToList();
+
+        var title = ShowTitle(parser, showDir);
+        return Task.FromResult(new SourceCatalog(title, ordered));
+    }
 
     public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
     {
@@ -151,6 +250,16 @@ public sealed class MovieLibrarySource : IMediaSource
         {
             StatusCode = 200, ContentLength = total, AcceptRanges = "bytes",
         });
+    }
+
+    // A show's display title: the parsed NormalizedTitle of the folder name, falling back to the raw
+    // folder name. Shared by ListShows and DetailAsync so a folder like "Breaking.Show.2008" reads the
+    // same in the listing and the expanded view.
+    private static string ShowTitle(DefaultReleaseParser parser, string dirPath)
+    {
+        var name = Path.GetFileName(dirPath);
+        var parsed = parser.Parse(name, MediaType.Tv).NormalizedTitle;
+        return string.IsNullOrWhiteSpace(parsed) ? name : parsed;
     }
 
     private static string TitleFor(DefaultReleaseParser parser, string path)
@@ -226,6 +335,38 @@ public sealed class MovieLibrarySource : IMediaSource
         return IsContained(full) ? full : null;
     }
 
+    /// <summary>Decodes an id and confirms it is a real directory strictly UNDER a configured SERIES
+    /// root — gating DetailAsync so an arbitrary or foreign folder id can never be enumerated. A show
+    /// is always a strict subfolder of a root, so the root itself is rejected. Null for any bad id, a
+    /// file, a series root, or a directory outside the series roots.</summary>
+    internal string? ResolveSafeDir(string itemId)
+    {
+        if (TryDecodeId(itemId) is not { } decoded) return null;
+
+        string full;
+        try { full = Path.GetFullPath(decoded); }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException) { return null; }
+
+        if (!Directory.Exists(full)) return null;
+
+        var resolved = ResolveReal(full);
+        foreach (var root in _seriesRoots)
+        {
+            if (string.IsNullOrWhiteSpace(root)) continue;
+            string r;
+            try { r = Path.GetFullPath(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)); }
+            catch (Exception ex) when (ex is ArgumentException or PathTooLongException) { continue; }
+            var resolvedRoot = ResolveReal(r);
+            // A show is always a strict SUBFOLDER of a series root; the root itself is never a show.
+            // Accept only a directory strictly UNDER a root — an id forged for the root must not
+            // flatten the whole root into episodes. (FILE serving via ResolveSafePath/IsContained is
+            // unchanged: a file directly in a root must still serve.)
+            if (resolved.StartsWith(resolvedRoot + Path.DirectorySeparatorChar, PathComparison))
+                return resolved;
+        }
+        return null;
+    }
+
     /// <summary>True if <paramref name="full"/> — a path already confirmed to exist — actually
     /// resolves, after following every reparse point in its ancestor chain, to somewhere inside a
     /// configured root (also resolved the same way). Shared by ResolveSafePath (a decoded client id)
@@ -242,7 +383,7 @@ public sealed class MovieLibrarySource : IMediaSource
         // legitimately-linked root still works).
         var resolvedFull = ResolveReal(full);
 
-        foreach (var folder in _movieRoots)
+        foreach (var folder in _movieRoots.Concat(_seriesRoots))
         {
             if (string.IsNullOrWhiteSpace(folder)) continue;
 
