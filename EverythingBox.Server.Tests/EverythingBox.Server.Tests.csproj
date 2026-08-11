@@ -37,6 +37,7 @@
     <ProjectReference Include="..\tests\TestPlugin.Throwing\TestPlugin.Throwing.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\tests\TestPlugin.Metadata\TestPlugin.Metadata.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\EverythingBox.Server.SampleSource\EverythingBox.Server.SampleSource.csproj" />
+    <ProjectReference Include="..\EverythingBox.Server.LocalLibrary\EverythingBox.Server.LocalLibrary.csproj" />
   </ItemGroup>
 
   <!-- Stage each fixture's FULL build output directory, not just its named DLL. A
