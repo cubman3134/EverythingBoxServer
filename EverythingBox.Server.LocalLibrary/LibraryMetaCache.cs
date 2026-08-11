@@ -25,20 +25,20 @@ internal sealed class LibraryMetaCache(IResolverCache? cache)
         var key = $"{mediaPath}|{File.GetLastWriteTimeUtc(mediaPath).Ticks}|" +
                   (nfoPath is null ? "0" : File.GetLastWriteTimeUtc(nfoPath).Ticks.ToString());
 
-        var hit = await cache.GetAsync(key, ct).ConfigureAwait(false);
-        if (hit is not null)
+        // Reading the cache is best-effort too: a non-conforming IResolverCache that throws on read
+        // (or a corrupt value) must fall through to recompute, not escape. Cancellation is the one
+        // exception that MUST propagate — it is not a cache failure.
+        try
         {
-            try
-            {
-                if (JsonSerializer.Deserialize<ItemMeta>(hit, Json) is { } cached)
-                    return cached;
-            }
-            catch (JsonException) { /* corrupt entry → recompute below */ }
+            var hit = await cache.GetAsync(key, ct).ConfigureAwait(false);
+            if (hit is not null && JsonSerializer.Deserialize<ItemMeta>(hit, Json) is { } cached)
+                return cached;
         }
+        catch (Exception ex) when (ex is not OperationCanceledException) { /* miss → recompute below */ }
 
         var computed = compute();
         try { await cache.SetAsync(key, JsonSerializer.Serialize(computed, Json), ct).ConfigureAwait(false); }
-        catch { /* best-effort: a cache write must never fail a browse */ }
+        catch (Exception ex) when (ex is not OperationCanceledException) { /* best-effort: a cache write must never fail a browse */ }
         return computed;
     }
 }

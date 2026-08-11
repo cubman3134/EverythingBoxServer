@@ -213,7 +213,10 @@ public sealed class LocalLibrarySource : IMediaSource
                 () =>
                 {
                     var n = existsEpNfo is null ? null : NfoReader.TryRead(existsEpNfo);
-                    return new ItemMeta(n?.Title, n?.Year, n?.Plot, null);
+                    // Populate the poster too: DetailAsync and MetaAsync share this cache entry
+                    // (same key: episode file + sidecar), so the entry must be complete or the meta
+                    // panel inherits a null poster after a list browse fills it first.
+                    return new ItemMeta(n?.Title, n?.Year, n?.Plot, ArtworkFinder.PosterFor(path));
                 }, ct).ConfigureAwait(false);
             var epTitle = $"S{season:D2}E{episode:D2}" + (meta.NfoTitle is { } et ? $" - {et}" : "");
 

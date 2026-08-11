@@ -323,6 +323,32 @@ public class LocalLibrarySourceTests : IDisposable
     }
 
     [Fact]
+    public async Task Episode_poster_survives_a_list_browse_then_meta_panel_on_a_shared_cache()
+    {
+        // Order-dependence regression: opening the episode LIST (DetailAsync) populates a SHARED
+        // cache entry keyed on the episode file + its sidecar; opening that episode's meta panel
+        // (MetaAsync) then reads the SAME entry. Both must be built on the same cache instance, and
+        // the poster the finder locates must survive the list browse — Inc 3 returned it.
+        var (seriesRoot, showDir) = MakeShow();
+        var seasonDir = Path.Combine(showDir, "Season 01");
+        // A poster the finder locates for the episode file (folder poster next to the episode).
+        File.WriteAllBytes(Path.Combine(seasonDir, "poster.jpg"), [9]);
+
+        var cache = new SpyCache();
+        var src = new LocalLibrarySource([], [seriesRoot], cache, NullLogger<LocalLibrarySource>.Instance);
+
+        // 1) Browse the episode list FIRST — this fills the shared cache entry.
+        var eps = await src.DetailAsync(LocalLibrarySource.EncodeId(showDir), Ctx(), default);
+        var episodeId = eps.Items[0].Id;
+
+        // 2) Now open the episode's meta panel — it reads the shared entry and must keep the poster.
+        var detail = await src.MetaAsync(episodeId, Ctx(), default);
+        Assert.NotNull(detail);
+        Assert.NotNull(detail!.ImageUrl); // was null before the fix: the list browse cached a null poster
+        Assert.StartsWith("proxy/locallib/", detail.ImageUrl);
+    }
+
+    [Fact]
     public async Task A_cached_source_returns_the_same_movies_as_an_uncached_one()
     {
         var mkv = Path.Combine(_root, "generic.mkv"); File.WriteAllBytes(mkv, [1, 2, 3, 4]);
