@@ -17,7 +17,7 @@ public sealed class SafeLocalFileServer
 
     public SafeLocalFileServer(IReadOnlyList<string> roots, Func<string, string> mimeFor)
     {
-        _roots = roots;
+        _roots = [.. roots];
         _mimeFor = mimeFor;
     }
 

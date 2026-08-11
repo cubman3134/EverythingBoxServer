@@ -106,7 +106,7 @@ public sealed class LocalLibrarySource : IMediaSource
                 if (!_files.IsContained(path)) continue;
 
                 var nfoPath = MovieNfo(path);
-                var meta = await _meta.GetOrComputeAsync(path, nfoPath,
+                var meta = await _meta.GetOrComputeAsync<ItemMeta>(path, nfoPath,
                     () =>
                     {
                         var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
@@ -165,7 +165,7 @@ public sealed class LocalLibrarySource : IMediaSource
 
                 var tvshow = Path.Combine(dir, "tvshow.nfo");
                 var nfoPath = File.Exists(tvshow) ? tvshow : null;
-                var meta = await _meta.GetOrComputeAsync(dir, nfoPath,
+                var meta = await _meta.GetOrComputeAsync<ItemMeta>(dir, nfoPath,
                     () =>
                     {
                         var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
@@ -215,7 +215,7 @@ public sealed class LocalLibrarySource : IMediaSource
 
             var epNfoPath = Path.ChangeExtension(path, ".nfo");
             var existsEpNfo = File.Exists(epNfoPath) ? epNfoPath : null;
-            var meta = await _meta.GetOrComputeAsync(path, existsEpNfo,
+            var meta = await _meta.GetOrComputeAsync<ItemMeta>(path, existsEpNfo,
                 () =>
                 {
                     var n = existsEpNfo is null ? null : NfoReader.TryRead(existsEpNfo);
@@ -249,7 +249,7 @@ public sealed class LocalLibrarySource : IMediaSource
         if (_files.ResolveSafeFile(itemId) is { } file)
         {
             var nfoPath = MovieNfo(file);
-            var meta = await _meta.GetOrComputeAsync(file, nfoPath,
+            var meta = await _meta.GetOrComputeAsync<ItemMeta>(file, nfoPath,
                 () =>
                 {
                     var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
@@ -265,7 +265,7 @@ public sealed class LocalLibrarySource : IMediaSource
         {
             var tvshow = Path.Combine(dir, "tvshow.nfo");
             var nfoPath = File.Exists(tvshow) ? tvshow : null;
-            var meta = await _meta.GetOrComputeAsync(dir, nfoPath,
+            var meta = await _meta.GetOrComputeAsync<ItemMeta>(dir, nfoPath,
                 () =>
                 {
                     var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
