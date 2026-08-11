@@ -112,6 +112,44 @@ public sealed class MovieLibrarySource : IMediaSource
         return Task.FromResult<SourceStream?>(new SourceStream(url, MimeFor(path)));
     }
 
+    public Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
+    {
+        var path = ResolveSafePath(itemId);
+        if (path is null) return Task.FromResult<ProxyResponse?>(null);
+
+        var info = new FileInfo(path);
+        if (!info.Exists) return Task.FromResult<ProxyResponse?>(null);
+
+        var total = info.Length;
+        var mime = MimeFor(path);
+        var result = RangeRequest.Parse(rangeHeader, total);
+
+        if (result.Kind == RangeKind.Unsatisfiable)
+            return Task.FromResult<ProxyResponse?>(new ProxyResponse(Stream.Null, mime)
+            {
+                StatusCode = 416, AcceptRanges = "bytes", ContentRange = $"bytes */{total}", ContentLength = 0,
+            });
+
+        var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1, useAsync: true);
+
+        if (result.Kind == RangeKind.Partial)
+        {
+            file.Seek(result.Start, SeekOrigin.Begin);
+            // BoundedReadStream owns and disposes `file`; ProxyResponse disposes the BoundedReadStream.
+            return Task.FromResult<ProxyResponse?>(new ProxyResponse(new BoundedReadStream(file, result.Length), mime)
+            {
+                StatusCode = 206, ContentLength = result.Length, AcceptRanges = "bytes",
+                ContentRange = $"bytes {result.Start}-{result.Start + result.Length - 1}/{total}",
+            });
+        }
+
+        // Full: the FileStream IS the body — the host's ProxyResponse.DisposeAsync disposes it.
+        return Task.FromResult<ProxyResponse?>(new ProxyResponse(file, mime)
+        {
+            StatusCode = 200, ContentLength = total, AcceptRanges = "bytes",
+        });
+    }
+
     private static string TitleFor(DefaultReleaseParser parser, string path)
     {
         var stem = Path.GetFileNameWithoutExtension(path);
@@ -120,11 +158,18 @@ public sealed class MovieLibrarySource : IMediaSource
         return info.Year is { } year ? $"{title} ({year})" : title;
     }
 
-    // A small extension -> MIME map; expanded in the serving increment.
+    // A small extension -> MIME map, case-insensitive on the extension.
     private static string MimeFor(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".mkv" => "video/x-matroska",
-        ".mp4" => "video/mp4",
+        ".mp4" or ".m4v" => "video/mp4",
+        ".avi" => "video/x-msvideo",
+        ".mov" => "video/quicktime",
+        ".webm" => "video/webm",
+        ".wmv" => "video/x-ms-wmv",
+        ".flv" => "video/x-flv",
+        ".ts" => "video/mp2t",
+        ".mpg" or ".mpeg" => "video/mpeg",
         _ => "application/octet-stream",
     };
 

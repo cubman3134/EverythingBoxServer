@@ -78,4 +78,56 @@ public class MovieLibrarySourceTests : IDisposable
         }
         finally { File.Delete(outside); }
     }
+
+    private async Task<string> FirstItemIdAsync()
+        => (await Source().SearchAsync("movies", "some", Ctx(), default)).Items.Single().Id;
+
+    [Fact]
+    public async Task Open_without_a_range_serves_the_whole_file()
+    {
+        await using var r = await Source().OpenAsync(await FirstItemIdAsync(), null, default);
+        Assert.NotNull(r);
+        Assert.Equal(200, r!.StatusCode);
+        Assert.Equal(4, r.ContentLength);
+        Assert.Equal("bytes", r.AcceptRanges);
+        using var sink = new MemoryStream();
+        await r.Body.CopyToAsync(sink);
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, sink.ToArray());
+    }
+
+    [Fact]
+    public async Task Open_with_a_range_serves_206_and_the_slice()
+    {
+        await using var r = await Source().OpenAsync(await FirstItemIdAsync(), "bytes=1-2", default);
+        Assert.NotNull(r);
+        Assert.Equal(206, r!.StatusCode);
+        Assert.Equal(2, r.ContentLength);
+        Assert.Equal("bytes 1-2/4", r.ContentRange);
+        Assert.Equal("bytes", r.AcceptRanges);
+        using var sink = new MemoryStream();
+        await r.Body.CopyToAsync(sink);
+        Assert.Equal(new byte[] { 2, 3 }, sink.ToArray());
+    }
+
+    [Fact]
+    public async Task Open_with_an_unsatisfiable_range_is_416()
+    {
+        await using var r = await Source().OpenAsync(await FirstItemIdAsync(), "bytes=100-200", default);
+        Assert.NotNull(r);
+        Assert.Equal(416, r!.StatusCode);
+        Assert.Equal("bytes */4", r.ContentRange);
+    }
+
+    [Fact]
+    public async Task Open_on_an_out_of_roots_id_returns_null()
+    {
+        var outside = Path.Combine(Path.GetTempPath(), "ebs-outside-" + Guid.NewGuid().ToString("N") + ".mkv");
+        File.WriteAllBytes(outside, new byte[] { 9 });
+        try
+        {
+            var evilId = MovieLibrarySource.EncodeId(outside);
+            Assert.Null(await new MovieLibrarySource([_root], NullLogger<MovieLibrarySource>.Instance).OpenAsync(evilId, null, default));
+        }
+        finally { File.Delete(outside); }
+    }
 }
