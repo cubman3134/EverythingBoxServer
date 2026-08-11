@@ -83,7 +83,7 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
             // fires — a magnet with no peers must not hold the caller open forever.
             await manager.WaitForMetadataAsync(cancellationToken).ConfigureAwait(false);
 
-            var wanted = SelectWantedFiles(manager, request);
+            var wanted = SelectWantedFiles(manager, request, torrent.WantedMembers);
             if (wanted.Count == 0)
             {
                 _logger.LogInformation(
@@ -195,9 +195,17 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
     /// episode doesn't pull a whole season pack. A null request (no media-type
     /// context to narrow by) takes everything.
     /// </summary>
-    private static IReadOnlyList<ITorrentManagerFile> SelectWantedFiles(TorrentManager manager, MediaRequest? request)
+    private static IReadOnlyList<ITorrentManagerFile> SelectWantedFiles(
+        TorrentManager manager, MediaRequest? request, IReadOnlyList<string> wantedMembers)
     {
         var files = manager.Files.ToList();
+
+        // Explicit member selection wins over the request heuristic. An all-miss selection
+        // returns empty here, so the caller's "nothing matched → download nothing" path fires
+        // rather than falling back to the whole torrent.
+        if (wantedMembers.Count > 0)
+            return SelectMembers(files, f => f.Path, wantedMembers);
+
         return request is null
             ? files
             : MediaFileMatcher.Select(request, files, f => f.Path, f => (long?)f.Length);

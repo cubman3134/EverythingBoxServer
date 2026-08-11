@@ -36,6 +36,14 @@ public sealed record TorrentResult
     /// <summary>Metadata parsed from <see cref="Title"/>; null until the parser runs.</summary>
     public ReleaseInfo? ParsedInfo { get; init; }
 
+    /// <summary>
+    /// Explicit torrent member(s) to fetch — each entry a full in-torrent member path or a bare
+    /// filename. When non-empty, the self-download path fetches exactly the matching members and
+    /// ignores the request heuristic. Empty (the default) keeps request-driven matching. Only the
+    /// self-download (MonoTorrent) path consults this.
+    /// </summary>
+    public IReadOnlyList<string> WantedMembers { get; init; } = [];
+
     /// <summary>True when there is some way to actually fetch this release.</summary>
     public bool IsDownloadable => MagnetUri is not null || DownloadUrl is not null;
 }

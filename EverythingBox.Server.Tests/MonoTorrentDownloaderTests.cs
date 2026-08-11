@@ -252,4 +252,13 @@ public class MonoTorrentDownloaderTests : IDisposable
         var picked = MonoTorrentDownloader.SelectMembers(files, f => f, Array.Empty<string>());
         Assert.Empty(picked);
     }
+
+    [Fact]
+    public void A_TorrentResult_defaults_to_no_explicit_wanted_members()
+    {
+        // Additive field: existing producers that don't set it must get the empty default,
+        // so the request-heuristic path stays the default.
+        var r = new TorrentResult { Title = "x", ProviderName = "p" };
+        Assert.Empty(r.WantedMembers);
+    }
 }
