@@ -269,4 +269,13 @@ public class MonoTorrentDownloaderTests : IDisposable
         var r = new TorrentResult { Title = "x", ProviderName = "p" };
         Assert.Empty(r.WantedMembers);
     }
+
+    [Fact]
+    public void A_TorrentResult_defaults_to_no_expected_checksums()
+    {
+        // Additive field: existing producers get the empty default, so verification is off
+        // and does zero hashing unless a producer opts in.
+        var r = new TorrentResult { Title = "x", ProviderName = "p" };
+        Assert.Empty(r.ExpectedChecksums);
+    }
 }

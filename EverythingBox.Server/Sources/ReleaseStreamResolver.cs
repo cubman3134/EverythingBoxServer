@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using EverythingBox.Server.Abstractions;
+using EverythingBox.Server.Download;
 using Microsoft.Extensions.Logging;
 
 namespace EverythingBox.Server.Sources;
@@ -352,10 +353,20 @@ public sealed class ReleaseStreamResolver
 
         try
         {
-            return await downloader.DownloadAsync(
+            var paths = await downloader.DownloadAsync(
                 release, request, directory, progress: null,
                 maxTotalBytes: _download.MaxSizeMB * 1024L * 1024L,
                 cancellationToken: linked.Token).ConfigureAwait(false);
+
+            var verified = await KeepVerifiedAsync(release, paths, linked.Token).ConfigureAwait(false);
+
+            // Downloaded something but verification rejected ALL of it: treat as a failed fetch — clean
+            // the working copy and return empty so GetOrDownloadAsync evicts the memo and a later
+            // request can re-download a clean copy.
+            if (paths.Count > 0 && verified.Count == 0)
+                RemoveDownloadDirectory(directory);
+
+            return verified;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -364,6 +375,100 @@ public sealed class ReleaseStreamResolver
                 release.Title, _download.TimeoutSeconds);
             return [];
         }
+    }
+
+    /// <summary>
+    /// Keeps only the downloaded <paramref name="paths"/> that pass checksum verification for
+    /// <paramref name="release"/>, logging each discard. When the release carries no expectation
+    /// this returns the input list unchanged — the byte-for-byte, zero-cost no-op the pre-feature
+    /// path had. Runs once, inside <see cref="RunDownloadAsync"/>, before the download result is
+    /// memoized, so a verified-good result is what every later request for the same release reuses.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> KeepVerifiedAsync(
+        TorrentResult release, IReadOnlyList<string> paths, CancellationToken cancellationToken)
+    {
+        if (release.ExpectedChecksums.Count == 0)
+            return paths;
+
+        var kept = new List<string>(paths.Count);
+        foreach (var path in paths)
+        {
+            if (await VerifyAsync(release, path, cancellationToken).ConfigureAwait(false))
+                kept.Add(path);
+            else
+                _logger.LogWarning(
+                    "Downloaded file '{File}' for '{Title}' failed checksum verification; discarding it.",
+                    Path.GetFileName(path), release.Title);
+        }
+        return kept;
+    }
+
+    /// <summary>
+    /// True when <paramref name="localPath"/> may be published: either the release gave no
+    /// expected checksum matching it, or its content matches the expected one. A read error is a
+    /// failure — never publish something we could not verify when a checksum was demanded.
+    /// </summary>
+    private Task<bool> VerifyAsync(TorrentResult release, string localPath, CancellationToken cancellationToken)
+        => PassesVerificationAsync(release.ExpectedChecksums, localPath, cancellationToken);
+
+    /// <summary>
+    /// The whole keep/reject decision for one downloaded file against a set of expectations,
+    /// factored out with no host dependency so a unit test can drive it over real temp files:
+    /// no expectations at all, or none matching this file by name, keeps it; a matching
+    /// expectation keeps it only when the on-disk content hashes to the expected digest; a read
+    /// error drops it (never keep something that couldn't be verified once a checksum was demanded).
+    /// </summary>
+    internal static async Task<bool> PassesVerificationAsync(
+        IReadOnlyList<MemberChecksum> expected, string localPath, CancellationToken cancellationToken)
+    {
+        if (expected.Count == 0)
+            return true;
+
+        var fileName = Path.GetFileName(localPath);
+        var match = expected.FirstOrDefault(c => MemberMatches(c.Member, fileName));
+        if (match is null)
+            return true; // no expectation for this file → keep as usual
+
+        try
+        {
+            await using var stream = File.OpenRead(localPath);
+            return await ChecksumVerifier.MatchesAsync(stream, match.Algorithm, match.Hex, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Returns only the <paramref name="paths"/> whose on-disk content passes
+    /// <see cref="PassesVerificationAsync"/> for <paramref name="expected"/> — the pure,
+    /// host-free filter a unit test pins the keep/reject decision with. Empty
+    /// <paramref name="expected"/> keeps every path unchanged (zero cost).
+    /// </summary>
+    internal static async Task<IReadOnlyList<string>> KeepVerifiedPaths(
+        IReadOnlyList<MemberChecksum> expected, IReadOnlyList<string> paths, CancellationToken cancellationToken)
+    {
+        if (expected.Count == 0)
+            return paths;
+
+        var kept = new List<string>(paths.Count);
+        foreach (var path in paths)
+            if (await PassesVerificationAsync(expected, path, cancellationToken).ConfigureAwait(false))
+                kept.Add(path);
+        return kept;
+    }
+
+    // A checksum entry matches a downloaded file by filename, case-insensitively. The entry's
+    // Member may be a bare filename or a full member path; either way its last path segment is
+    // compared to the downloaded file's name (MonoTorrent lays each member down under its own name).
+    private static bool MemberMatches(string member, string fileName)
+    {
+        var m = member.Replace('\\', '/');
+        var last = m.LastIndexOf('/');
+        var memberName = last >= 0 ? m[(last + 1)..] : m;
+        return string.Equals(memberName, fileName, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
