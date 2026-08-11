@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="EverythingBox.Server.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The host supplies Abstractions at load time; shipping a second copy makes every cast fail. -->
+    <ProjectReference Include="..\EverythingBox.Server.Abstractions\EverythingBox.Server.Abstractions.csproj" Private="false" />
+  </ItemGroup>
+</Project>
