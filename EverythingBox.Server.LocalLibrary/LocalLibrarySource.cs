@@ -29,12 +29,14 @@ public sealed class LocalLibrarySource : IMediaSource
 
     private readonly IReadOnlyList<string> _movieRoots;
     private readonly IReadOnlyList<string> _seriesRoots;
+    private readonly LibraryMetaCache _meta;
     private readonly ILogger _logger;
 
-    public LocalLibrarySource(IReadOnlyList<string> movieRoots, IReadOnlyList<string> seriesRoots, ILogger logger)
+    public LocalLibrarySource(IReadOnlyList<string> movieRoots, IReadOnlyList<string> seriesRoots, IResolverCache? cache, ILogger logger)
     {
         _movieRoots = movieRoots;
         _seriesRoots = seriesRoots;
+        _meta = new LibraryMetaCache(cache);
         _logger = logger;
     }
 
@@ -67,17 +69,15 @@ public sealed class LocalLibrarySource : IMediaSource
         IgnoreInaccessible = true,
     };
 
-    public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
-    {
-        return catalogId switch
+    public async Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
+        => catalogId switch
         {
-            "movies" => Task.FromResult(ScanMovies(query, ct)),
-            "series" => Task.FromResult(ListShows(query, ct)),
-            _ => Task.FromResult(SourceCatalog.Empty("Local Library")),
+            "movies" => await ScanMovies(query, ct),
+            "series" => await ListShows(query, ct),
+            _ => SourceCatalog.Empty("Local Library"),
         };
-    }
 
-    private SourceCatalog ScanMovies(string? query, CancellationToken ct)
+    private async Task<SourceCatalog> ScanMovies(string? query, CancellationToken ct)
     {
         var parser = new DefaultReleaseParser();
         var items = new List<CatalogItem>();
@@ -99,9 +99,16 @@ public sealed class LocalLibrarySource : IMediaSource
                 // one shared implementation, so they can never quietly diverge.
                 if (!IsContained(path)) continue;
 
-                var nfo = MovieNfo(path) is { } np ? NfoReader.TryRead(np) : null;
-                var title = nfo?.Title is { } nt
-                    ? (nfo.Year is { } ny ? $"{nt} ({ny})" : nt)
+                var nfoPath = MovieNfo(path);
+                var meta = await _meta.GetOrComputeAsync(path, nfoPath,
+                    () =>
+                    {
+                        var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
+                        return new ItemMeta(n?.Title, n?.Year, n?.Plot, ArtworkFinder.PosterFor(path));
+                    }, ct).ConfigureAwait(false);
+
+                var title = meta.NfoTitle is { } nt
+                    ? (meta.Year is { } ny ? $"{nt} ({ny})" : nt)
                     : TitleFor(parser, path);
 
                 if (!string.IsNullOrWhiteSpace(query) &&
@@ -114,7 +121,7 @@ public sealed class LocalLibrarySource : IMediaSource
                     Title: title,
                     Subtitle: Path.GetFileName(Path.GetDirectoryName(path)) ?? string.Empty,
                     MediaType: "movie",
-                    ThumbnailUrl: PosterUrl(ArtworkFinder.PosterFor(path)),
+                    ThumbnailUrl: PosterUrl(meta.PosterPath),
                     Expandable: false));
             }
 
@@ -135,7 +142,7 @@ public sealed class LocalLibrarySource : IMediaSource
         IgnoreInaccessible = true,
     };
 
-    private SourceCatalog ListShows(string? query, CancellationToken ct)
+    private async Task<SourceCatalog> ListShows(string? query, CancellationToken ct)
     {
         var parser = new DefaultReleaseParser();
         var items = new List<CatalogItem>();
@@ -151,8 +158,15 @@ public sealed class LocalLibrarySource : IMediaSource
                 if (!IsContained(dir)) continue;
 
                 var tvshow = Path.Combine(dir, "tvshow.nfo");
-                var nfo = File.Exists(tvshow) ? NfoReader.TryRead(tvshow) : null;
-                var title = nfo?.Title ?? ShowTitle(parser, dir);
+                var nfoPath = File.Exists(tvshow) ? tvshow : null;
+                var meta = await _meta.GetOrComputeAsync(dir, nfoPath,
+                    () =>
+                    {
+                        var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
+                        return new ItemMeta(n?.Title, n?.Year, n?.Plot, ArtworkFinder.PosterFor(dir));
+                    }, ct).ConfigureAwait(false);
+
+                var title = meta.NfoTitle ?? ShowTitle(parser, dir);
 
                 if (!string.IsNullOrWhiteSpace(query) &&
                     !title.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
@@ -160,7 +174,7 @@ public sealed class LocalLibrarySource : IMediaSource
                 if (items.Count >= MaxItems) { capped = true; break; }
 
                 items.Add(new CatalogItem(Id: EncodeId(dir), Title: title, Subtitle: string.Empty,
-                    MediaType: "series", ThumbnailUrl: PosterUrl(ArtworkFinder.PosterFor(dir)), Expandable: true));
+                    MediaType: "series", ThumbnailUrl: PosterUrl(meta.PosterPath), Expandable: true));
             }
             if (capped) break;
         }
@@ -171,10 +185,10 @@ public sealed class LocalLibrarySource : IMediaSource
 
     // A movie/episode file id has nothing to expand; only a series folder id (a real directory inside
     // a series root, per ResolveSafeDir) expands into that show's episodes.
-    public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
+    public async Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
     {
         if (ResolveSafeDir(itemId) is not { } showDir)
-            return Task.FromResult(SourceCatalog.Empty("Local Library"));
+            return SourceCatalog.Empty("Local Library");
 
         var parser = new DefaultReleaseParser();
         var episodes = new List<(int Season, int Episode, CatalogItem Item)>();
@@ -194,8 +208,17 @@ public sealed class LocalLibrarySource : IMediaSource
             if (episodes.Count >= MaxItems) break;
 
             var epNfoPath = Path.ChangeExtension(path, ".nfo");
-            var epNfo = NfoReader.TryRead(epNfoPath);
-            var epTitle = $"S{season:D2}E{episode:D2}" + (epNfo?.Title is { } et ? $" - {et}" : "");
+            var existsEpNfo = File.Exists(epNfoPath) ? epNfoPath : null;
+            var meta = await _meta.GetOrComputeAsync(path, existsEpNfo,
+                () =>
+                {
+                    var n = existsEpNfo is null ? null : NfoReader.TryRead(existsEpNfo);
+                    // Populate the poster too: DetailAsync and MetaAsync share this cache entry
+                    // (same key: episode file + sidecar), so the entry must be complete or the meta
+                    // panel inherits a null poster after a list browse fills it first.
+                    return new ItemMeta(n?.Title, n?.Year, n?.Plot, ArtworkFinder.PosterFor(path));
+                }, ct).ConfigureAwait(false);
+            var epTitle = $"S{season:D2}E{episode:D2}" + (meta.NfoTitle is { } et ? $" - {et}" : "");
 
             episodes.Add((season, episode, new CatalogItem(
                 Id: EncodeId(path),
@@ -211,29 +234,43 @@ public sealed class LocalLibrarySource : IMediaSource
             .ToList();
 
         var title = ShowTitle(parser, showDir);
-        return Task.FromResult(new SourceCatalog(title, ordered));
+        return new SourceCatalog(title, ordered);
     }
 
-    public Task<SourceDetail?> MetaAsync(string itemId, SourceContext ctx, CancellationToken ct)
+    public async Task<SourceDetail?> MetaAsync(string itemId, SourceContext ctx, CancellationToken ct)
     {
         // A file id (movie/episode) → its own .nfo; a series folder id → tvshow.nfo.
         if (ResolveSafePath(itemId) is { } file)
         {
-            var nfo = MovieNfo(file) is { } np ? NfoReader.TryRead(np) : null;
-            var title = nfo?.Title ?? TitleFor(new DefaultReleaseParser(), file);
-            var facts = nfo?.Year is { } y ? new[] { new MetaFact("Year", y.ToString()) } : [];
-            return Task.FromResult<SourceDetail?>(new SourceDetail(
-                Title: title, Overview: nfo?.Plot, ImageUrl: PosterUrl(ArtworkFinder.PosterFor(file)), Facts: facts));
+            var nfoPath = MovieNfo(file);
+            var meta = await _meta.GetOrComputeAsync(file, nfoPath,
+                () =>
+                {
+                    var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
+                    return new ItemMeta(n?.Title, n?.Year, n?.Plot, ArtworkFinder.PosterFor(file));
+                }, ct).ConfigureAwait(false);
+
+            var title = meta.NfoTitle ?? TitleFor(new DefaultReleaseParser(), file);
+            var facts = meta.Year is { } y ? new[] { new MetaFact("Year", y.ToString()) } : [];
+            return new SourceDetail(
+                Title: title, Overview: meta.Plot, ImageUrl: PosterUrl(meta.PosterPath), Facts: facts);
         }
         if (ResolveSafeDir(itemId) is { } dir)
         {
             var tvshow = Path.Combine(dir, "tvshow.nfo");
-            var nfo = File.Exists(tvshow) ? NfoReader.TryRead(tvshow) : null;
-            var title = nfo?.Title ?? ShowTitle(new DefaultReleaseParser(), dir);
-            return Task.FromResult<SourceDetail?>(new SourceDetail(
-                Title: title, Overview: nfo?.Plot, ImageUrl: PosterUrl(ArtworkFinder.PosterFor(dir))));
+            var nfoPath = File.Exists(tvshow) ? tvshow : null;
+            var meta = await _meta.GetOrComputeAsync(dir, nfoPath,
+                () =>
+                {
+                    var n = nfoPath is null ? null : NfoReader.TryRead(nfoPath);
+                    return new ItemMeta(n?.Title, n?.Year, n?.Plot, ArtworkFinder.PosterFor(dir));
+                }, ct).ConfigureAwait(false);
+
+            var title = meta.NfoTitle ?? ShowTitle(new DefaultReleaseParser(), dir);
+            return new SourceDetail(
+                Title: title, Overview: meta.Plot, ImageUrl: PosterUrl(meta.PosterPath));
         }
-        return Task.FromResult<SourceDetail?>(null);
+        return null;
     }
 
     // The .nfo for a media FILE: "<stem>.nfo" sidecar, else "movie.nfo" in the same folder.

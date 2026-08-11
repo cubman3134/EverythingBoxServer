@@ -19,13 +19,24 @@ public class LocalLibrarySourceTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } GC.SuppressFinalize(this); }
 
     private LocalLibrarySource Movies(params string[] roots)
-        => new(roots.Length == 0 ? [_root] : roots, [], NullLogger<LocalLibrarySource>.Instance);
+        => new(roots.Length == 0 ? [_root] : roots, [], null, NullLogger<LocalLibrarySource>.Instance);
+
+    private sealed class SpyCache : EverythingBox.Server.Abstractions.IResolverCache
+    {
+        public int Gets, Sets;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _s = new();
+        public Task<string?> GetAsync(string k, CancellationToken ct = default) { Gets++; return Task.FromResult(_s.TryGetValue(k, out var v) ? v : null); }
+        public Task SetAsync(string k, string v, CancellationToken ct = default) { Sets++; _s[k] = v; return Task.CompletedTask; }
+    }
+
+    private LocalLibrarySource CachedMovies(EverythingBox.Server.Abstractions.IResolverCache cache, params string[] roots)
+        => new(roots.Length == 0 ? [_root] : roots, [], cache, NullLogger<LocalLibrarySource>.Instance);
 
     private static SourceContext Ctx() => new();
 
     [Fact]
     public void No_configured_roots_declares_no_catalog()
-        => Assert.Empty(new LocalLibrarySource([], [], NullLogger<LocalLibrarySource>.Instance).Catalogs);
+        => Assert.Empty(new LocalLibrarySource([], [], null, NullLogger<LocalLibrarySource>.Instance).Catalogs);
 
     [Fact]
     public void A_configured_root_declares_the_movies_catalog()
@@ -73,7 +84,7 @@ public class LocalLibrarySourceTests : IDisposable
         try
         {
             var evilId = LocalLibrarySource.EncodeId(outside);       // internal, visible to tests
-            var src = new LocalLibrarySource([_root], [], NullLogger<LocalLibrarySource>.Instance);
+            var src = new LocalLibrarySource([_root], [], null, NullLogger<LocalLibrarySource>.Instance);
             Assert.Null(await src.ResolveAsync(evilId, 0, Ctx(), default));
         }
         finally { File.Delete(outside); }
@@ -126,7 +137,7 @@ public class LocalLibrarySourceTests : IDisposable
         try
         {
             var evilId = LocalLibrarySource.EncodeId(outside);
-            Assert.Null(await new LocalLibrarySource([_root], [], NullLogger<LocalLibrarySource>.Instance).OpenAsync(evilId, null, default));
+            Assert.Null(await new LocalLibrarySource([_root], [], null, NullLogger<LocalLibrarySource>.Instance).OpenAsync(evilId, null, default));
         }
         finally { File.Delete(outside); }
     }
@@ -143,11 +154,11 @@ public class LocalLibrarySourceTests : IDisposable
     }
 
     private LocalLibrarySource Series(string seriesRoot)
-        => new([], [seriesRoot], NullLogger<LocalLibrarySource>.Instance);
+        => new([], [seriesRoot], null, NullLogger<LocalLibrarySource>.Instance);
 
     [Fact]
     public void No_series_roots_declares_no_series_catalog()
-        => Assert.DoesNotContain(new LocalLibrarySource([_root], [], NullLogger<LocalLibrarySource>.Instance).Catalogs,
+        => Assert.DoesNotContain(new LocalLibrarySource([_root], [], null, NullLogger<LocalLibrarySource>.Instance).Catalogs,
                                  c => c.Id == "series");
 
     [Fact]
@@ -309,5 +320,62 @@ public class LocalLibrarySourceTests : IDisposable
         Assert.NotNull(r);
         Assert.Equal(200, r!.StatusCode);
         Assert.Equal("image/png", r.ContentType);
+    }
+
+    [Fact]
+    public async Task Episode_poster_survives_a_list_browse_then_meta_panel_on_a_shared_cache()
+    {
+        // Order-dependence regression: opening the episode LIST (DetailAsync) populates a SHARED
+        // cache entry keyed on the episode file + its sidecar; opening that episode's meta panel
+        // (MetaAsync) then reads the SAME entry. Both must be built on the same cache instance, and
+        // the poster the finder locates must survive the list browse — Inc 3 returned it.
+        var (seriesRoot, showDir) = MakeShow();
+        var seasonDir = Path.Combine(showDir, "Season 01");
+        // A poster the finder locates for the episode file (folder poster next to the episode).
+        File.WriteAllBytes(Path.Combine(seasonDir, "poster.jpg"), [9]);
+
+        var cache = new SpyCache();
+        var src = new LocalLibrarySource([], [seriesRoot], cache, NullLogger<LocalLibrarySource>.Instance);
+
+        // 1) Browse the episode list FIRST — this fills the shared cache entry.
+        var eps = await src.DetailAsync(LocalLibrarySource.EncodeId(showDir), Ctx(), default);
+        var episodeId = eps.Items[0].Id;
+
+        // 2) Now open the episode's meta panel — it reads the shared entry and must keep the poster.
+        var detail = await src.MetaAsync(episodeId, Ctx(), default);
+        Assert.NotNull(detail);
+        Assert.NotNull(detail!.ImageUrl); // was null before the fix: the list browse cached a null poster
+        Assert.StartsWith("proxy/locallib/", detail.ImageUrl);
+    }
+
+    [Fact]
+    public async Task A_cached_source_returns_the_same_movies_as_an_uncached_one()
+    {
+        var mkv = Path.Combine(_root, "generic.mkv"); File.WriteAllBytes(mkv, [1, 2, 3, 4]);
+        File.WriteAllText(Path.Combine(_root, "generic.nfo"), "<movie><title>Real</title><year>2011</year></movie>");
+        File.WriteAllBytes(Path.Combine(_root, "generic-poster.jpg"), [9]);
+
+        // The shared fixture also seeds two other movies, so filter to the one under test.
+        var uncached = (await Movies().SearchAsync("movies", "real", Ctx(), default)).Items.Single();
+        var cached = (await CachedMovies(new SpyCache()).SearchAsync("movies", "real", Ctx(), default)).Items.Single();
+
+        Assert.Equal(uncached.Title, cached.Title);
+        Assert.Equal(uncached.ThumbnailUrl, cached.ThumbnailUrl);
+    }
+
+    [Fact]
+    public async Task A_second_browse_of_an_unchanged_file_does_not_re_store()
+    {
+        var mkv = Path.Combine(_root, "generic.mkv"); File.WriteAllBytes(mkv, [1, 2, 3, 4]);
+        File.WriteAllText(Path.Combine(_root, "generic.nfo"), "<movie><title>Real</title></movie>");
+        var spy = new SpyCache();
+        var src = CachedMovies(spy);
+
+        await src.SearchAsync("movies", null, Ctx(), default);
+        var setsAfterFirst = spy.Sets;
+        await src.SearchAsync("movies", null, Ctx(), default);
+
+        Assert.Equal(setsAfterFirst, spy.Sets); // second browse was a pure hit — no new stores
+        Assert.True(spy.Gets >= 2);             // and it did consult the cache
     }
 }
