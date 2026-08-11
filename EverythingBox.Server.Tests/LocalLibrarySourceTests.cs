@@ -175,4 +175,57 @@ public class LocalLibrarySourceTests : IDisposable
         Assert.Empty((await Series(seriesRoot).SearchAsync("series", "nomatch", Ctx(), default)).Items);
         Assert.Single((await Series(seriesRoot).SearchAsync("series", "breaking", Ctx(), default)).Items);
     }
+
+    private async Task<string> ShowIdAsync(string seriesRoot)
+        => (await Series(seriesRoot).SearchAsync("series", null, Ctx(), default)).Items.Single().Id;
+
+    [Fact]
+    public async Task Expanding_a_show_returns_its_episodes_ordered()
+    {
+        var (seriesRoot, _) = MakeShow();
+        var episodes = await Series(seriesRoot).DetailAsync(await ShowIdAsync(seriesRoot), Ctx(), default);
+        Assert.Equal(2, episodes.Items.Count);
+        Assert.Equal("S01E01", episodes.Items[0].Title);
+        Assert.Equal("S01E02", episodes.Items[1].Title);
+        Assert.All(episodes.Items, e => Assert.Equal("series", e.MediaType));
+        Assert.All(episodes.Items, e => Assert.False(e.Expandable));
+        Assert.Contains("Breaking.Show.S01E01.mkv", episodes.Items[0].Subtitle);
+    }
+
+    [Fact]
+    public async Task Non_episode_files_under_a_show_are_excluded()
+    {
+        var (seriesRoot, showDir) = MakeShow();
+        File.WriteAllBytes(Path.Combine(showDir, "trailer.mkv"), new byte[] { 0 }); // no SxxEyy → not an episode
+        var episodes = await Series(seriesRoot).DetailAsync(await ShowIdAsync(seriesRoot), Ctx(), default);
+        Assert.Equal(2, episodes.Items.Count);
+    }
+
+    [Fact]
+    public async Task A_file_id_does_not_expand()
+    {
+        var (seriesRoot, _) = MakeShow();
+        var episodeId = (await Series(seriesRoot).DetailAsync(await ShowIdAsync(seriesRoot), Ctx(), default)).Items[0].Id;
+        Assert.Empty((await Series(seriesRoot).DetailAsync(episodeId, Ctx(), default)).Items); // a file id → nothing to expand
+    }
+
+    [Fact]
+    public async Task A_series_folder_id_is_not_served()
+    {
+        var (seriesRoot, _) = MakeShow();
+        var showId = await ShowIdAsync(seriesRoot);
+        Assert.Null(await Series(seriesRoot).ResolveAsync(showId, 0, Ctx(), default)); // a folder is never served
+        Assert.Null(await Series(seriesRoot).OpenAsync(showId, null, default));
+    }
+
+    [Fact]
+    public async Task An_episode_serves_with_range()
+    {
+        var (seriesRoot, _) = MakeShow();
+        var episodeId = (await Series(seriesRoot).DetailAsync(await ShowIdAsync(seriesRoot), Ctx(), default)).Items[0].Id;
+        await using var r = await Series(seriesRoot).OpenAsync(episodeId, "bytes=1-2", default);
+        Assert.NotNull(r);
+        Assert.Equal(206, r!.StatusCode);
+        Assert.Equal("bytes 1-2/4", r.ContentRange);
+    }
 }

@@ -1,12 +1,19 @@
 # Local Library plugin
 
-Serves media files already on the server's own disk as a browsable catalog. This increment
-covers **movies**: it scans the configured folders, classifies each video file into a
+Serves media files already on the server's own disk as a browsable catalog.
+
+**Movies:** it scans the configured movie folders, classifies each video file into a
 `movies` catalog (title and year parsed from the filename), and streams the bytes through
 the host's proxy route with full HTTP byte-range support (seeking, resume).
 
+**Series:** each immediate subfolder of a configured series root is listed as an expandable
+show in a `series` catalog (title parsed from the folder name). Expanding a show flattens its
+files into episodes titled `SxxEyy`, ordered by season then episode; a file with no `SxxEyy`
+in its name is skipped. Episodes stream through the same proxy route with byte-range support.
+
 A fresh checkout serves nothing: with no folders configured the source declares no catalog
-at all. Point it at your own folders to light it up.
+at all, and each shelf appears only for a root kind that is actually configured. Point it at
+your own folders to light it up.
 
 ## Build and install
 
@@ -27,14 +34,17 @@ In `everythingbox-server.json`:
 {
   "Plugins": {
     "locallib": {
-      "Movies": ["D:\\Media\\Movies", "E:\\More Movies"]
+      "Movies": ["D:\\Media\\Movies", "E:\\More Movies"],
+      "Series": ["D:\\Media\\TV"]
     }
   }
 }
 ```
 
-Each entry is an absolute path to a folder whose video files are treated as movies.
-Subfolders are scanned recursively.
+Each `Movies` entry is an absolute path to a folder whose video files are treated as movies;
+subfolders are scanned recursively. Each `Series` entry is an absolute path to a folder laid
+out as `Show/Season NN/…` — every immediate subfolder is one show, expanded into its episodes
+on demand.
 
 ## Security
 

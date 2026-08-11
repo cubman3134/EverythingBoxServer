@@ -165,9 +165,42 @@ public sealed class LocalLibrarySource : IMediaSource
         return new SourceCatalog("Series", ordered, capped);
     }
 
-    // A movie file has nothing to expand into. A series folder is expanded by DetailAsync (Task 2).
+    // A movie/episode file id has nothing to expand; only a series folder id (a real directory inside
+    // a series root, per ResolveSafeDir) expands into that show's episodes.
     public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
-        => Task.FromResult(SourceCatalog.Empty("Movies"));
+    {
+        if (ResolveSafeDir(itemId) is not { } showDir)
+            return Task.FromResult(SourceCatalog.Empty("Local Library"));
+
+        var parser = new DefaultReleaseParser();
+        var episodes = new List<(int Season, int Episode, CatalogItem Item)>();
+
+        foreach (var path in Directory.EnumerateFiles(showDir, "*", WalkOptions))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!VideoExtensions.Contains(Path.GetExtension(path))) continue;
+            if (!IsContained(path)) continue;
+
+            var info = parser.Parse(Path.GetFileNameWithoutExtension(path), MediaType.Tv);
+            if (info.Season is not { } season || info.Episodes.Count == 0) continue;
+            var episode = info.Episodes[0];
+
+            episodes.Add((season, episode, new CatalogItem(
+                Id: EncodeId(path),
+                Title: $"S{season:D2}E{episode:D2}",
+                Subtitle: Path.GetFileName(path),
+                MediaType: "series",
+                Expandable: false)));
+        }
+
+        var ordered = episodes
+            .OrderBy(e => e.Season).ThenBy(e => e.Episode)
+            .Select(e => e.Item)
+            .ToList();
+
+        var title = Path.GetFileName(showDir);
+        return Task.FromResult(new SourceCatalog(title, ordered));
+    }
 
     public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
     {
