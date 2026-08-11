@@ -12,9 +12,12 @@ namespace EverythingBox.Server.LocalLibrary;
 /// </summary>
 public sealed class MovieLibrarySource : IMediaSource
 {
-    // Mirrors the canonical video set (Abstractions' MediaFileMatcher.VideoExtensions), kept local
+    // A deliberate SUPERSET of the canonical video set (Abstractions' MediaFileMatcher.VideoExtensions
+    // = .mkv .mp4 .avi .m4v .ts .mov .wmv): it also lists .webm .flv .mpg .mpeg, chosen to match the
+    // serving MIME map below so listing and serving stay consistent for a local library. Kept local
     // because that member is not accessible to a plugin assembly and the plugin must not change the
-    // shared contract. Superset of the serving MIME map so listing and serving stay consistent.
+    // shared contract. Do NOT "sync" the two lists toward the canonical set — the extra entries are
+    // intentional; the MIME map, not MediaFileMatcher, is the peer to keep this in step with.
     private static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".wmv", ".flv", ".ts", ".mpg", ".mpeg",
@@ -173,7 +176,7 @@ public sealed class MovieLibrarySource : IMediaSource
         _ => "application/octet-stream",
     };
 
-    public static string EncodeId(string absolutePath) =>
+    internal static string EncodeId(string absolutePath) =>
         Convert.ToBase64String(Encoding.UTF8.GetBytes(absolutePath)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     internal static string? TryDecodeId(string id)
@@ -197,8 +200,10 @@ public sealed class MovieLibrarySource : IMediaSource
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     /// <summary>Decodes an id AND confirms it resolves to a real file inside a configured root — an
-    /// id arrives from the client, so it is never trusted on its own. Returns null for any bad id,
-    /// never throws.</summary>
+    /// id arrives from the client, so it is never trusted on its own. Returns null for any bad id.
+    /// Under a delete race — the file removed after the File.Exists gate — the real-resolve step (or a
+    /// later stream open) may instead surface an I/O exception rather than null; that is harmless, as
+    /// the host maps any OpenAsync throw to a 404, and it matches the reviewed LocalFolderSource.</summary>
     internal string? ResolveSafePath(string itemId)
     {
         if (TryDecodeId(itemId) is not { } decoded) return null;
