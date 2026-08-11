@@ -203,6 +203,31 @@ public sealed class MonoTorrentDownloader : ITorrentDownloader
             : MediaFileMatcher.Select(request, files, f => f.Path, f => (long?)f.Length);
     }
 
+    /// <summary>
+    /// The subset of <paramref name="files"/> whose full member path OR filename (last path
+    /// segment) equals one of <paramref name="wantedMembers"/>, compared case-insensitively.
+    /// Order follows <paramref name="files"/>. A member that matches nothing contributes nothing,
+    /// so an all-miss selection yields an empty list (the caller then downloads nothing, never
+    /// the whole torrent).
+    /// </summary>
+    internal static IReadOnlyList<T> SelectMembers<T>(
+        IReadOnlyList<T> files, Func<T, string> pathOf, IReadOnlyList<string> wantedMembers)
+    {
+        var wanted = new HashSet<string>(wantedMembers, StringComparer.OrdinalIgnoreCase);
+        return files.Where(f =>
+        {
+            var path = pathOf(f);
+            return wanted.Contains(path) || wanted.Contains(FileName(path));
+        }).ToList();
+    }
+
+    // Last path segment, tolerant of both separators (torrent member paths use '/').
+    private static string FileName(string path)
+    {
+        var slash = path.LastIndexOfAny(['/', '\\']);
+        return slash >= 0 ? path[(slash + 1)..] : path;
+    }
+
     /// <summary>Tells the swarm not to fetch anything outside <paramref name="wanted"/>.</summary>
     private static async Task DeselectUnwantedAsync(TorrentManager manager, IReadOnlyList<ITorrentManagerFile> wanted)
     {
