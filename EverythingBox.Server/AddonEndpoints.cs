@@ -22,8 +22,7 @@ public static class AddonEndpoints
 
         app.MapGet($"{prefix}/detail/{{type}}/{{id}}.json", DetailAsync);
 
-        // The sources here carry no rich metadata; a valid-but-blank panel is correct.
-        app.MapGet($"{prefix}/meta/{{type}}/{{id}}.json", (string type, string id) => Results.Json(new { }));
+        app.MapGet($"{prefix}/meta/{{type}}/{{id}}.json", MetaAsync);
     }
 
     /// <summary>
@@ -81,6 +80,37 @@ public static class AddonEndpoints
             return Results.Json(Empty());
         }
     }
+
+    /// <summary>Same cancellation-vs-exception-type reasoning as <see cref="DetailAsync"/>.</summary>
+    internal static async Task<IResult> MetaAsync(
+        string type, string id, SourceRouter router, ILoggerFactory loggers, CancellationToken ct)
+    {
+        if (!router.TryResolve(id, out var source, out var payload))
+            return Results.Json(new { });
+        try
+        {
+            var detail = await source.MetaAsync(payload, new SourceContext(), ct);
+            return detail is null ? Results.Json(new { }) : Results.Json(ToWireMeta(detail));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            loggers.CreateLogger("Meta").LogError(ex,
+                "meta {Type}/{Id}: source '{Source}' threw — returning empty", type, id, PluginDiagnostics.SafeLabel(source));
+            return Results.Json(new { });
+        }
+    }
+
+    private static object ToWireMeta(SourceDetail d) => new
+    {
+        title = d.Title,
+        subtitle = d.Subtitle,
+        overview = d.Overview,
+        image = d.ImageUrl,
+        facts = (d.Facts ?? [])
+            .Where(f => !string.IsNullOrWhiteSpace(f.Value))
+            .Select(f => new { label = f.Label, value = f.Value })
+            .ToArray(),
+    };
 
     /// <summary>
     /// Reads "search=..." from the RAW request target. ASP.NET decodes the {extra} route

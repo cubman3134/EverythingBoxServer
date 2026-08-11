@@ -99,7 +99,10 @@ public sealed class LocalLibrarySource : IMediaSource
                 // one shared implementation, so they can never quietly diverge.
                 if (!IsContained(path)) continue;
 
-                var title = TitleFor(parser, path);
+                var nfo = MovieNfo(path) is { } np ? NfoReader.TryRead(np) : null;
+                var title = nfo?.Title is { } nt
+                    ? (nfo.Year is { } ny ? $"{nt} ({ny})" : nt)
+                    : TitleFor(parser, path);
 
                 if (!string.IsNullOrWhiteSpace(query) &&
                     !title.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
@@ -111,6 +114,7 @@ public sealed class LocalLibrarySource : IMediaSource
                     Title: title,
                     Subtitle: Path.GetFileName(Path.GetDirectoryName(path)) ?? string.Empty,
                     MediaType: "movie",
+                    ThumbnailUrl: PosterUrl(ArtworkFinder.PosterFor(path)),
                     Expandable: false));
             }
 
@@ -146,7 +150,9 @@ public sealed class LocalLibrarySource : IMediaSource
                 ct.ThrowIfCancellationRequested();
                 if (!IsContained(dir)) continue;
 
-                var title = ShowTitle(parser, dir);
+                var tvshow = Path.Combine(dir, "tvshow.nfo");
+                var nfo = File.Exists(tvshow) ? NfoReader.TryRead(tvshow) : null;
+                var title = nfo?.Title ?? ShowTitle(parser, dir);
 
                 if (!string.IsNullOrWhiteSpace(query) &&
                     !title.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
@@ -154,7 +160,7 @@ public sealed class LocalLibrarySource : IMediaSource
                 if (items.Count >= MaxItems) { capped = true; break; }
 
                 items.Add(new CatalogItem(Id: EncodeId(dir), Title: title, Subtitle: string.Empty,
-                    MediaType: "series", Expandable: true));
+                    MediaType: "series", ThumbnailUrl: PosterUrl(ArtworkFinder.PosterFor(dir)), Expandable: true));
             }
             if (capped) break;
         }
@@ -187,9 +193,13 @@ public sealed class LocalLibrarySource : IMediaSource
             // giant list. No HasMore flag is needed — the detail view isn't paged like search.
             if (episodes.Count >= MaxItems) break;
 
+            var epNfoPath = Path.ChangeExtension(path, ".nfo");
+            var epNfo = NfoReader.TryRead(epNfoPath);
+            var epTitle = $"S{season:D2}E{episode:D2}" + (epNfo?.Title is { } et ? $" - {et}" : "");
+
             episodes.Add((season, episode, new CatalogItem(
                 Id: EncodeId(path),
-                Title: $"S{season:D2}E{episode:D2}",
+                Title: epTitle,
                 Subtitle: Path.GetFileName(path),
                 MediaType: "series",
                 Expandable: false)));
@@ -203,6 +213,42 @@ public sealed class LocalLibrarySource : IMediaSource
         var title = ShowTitle(parser, showDir);
         return Task.FromResult(new SourceCatalog(title, ordered));
     }
+
+    public Task<SourceDetail?> MetaAsync(string itemId, SourceContext ctx, CancellationToken ct)
+    {
+        // A file id (movie/episode) → its own .nfo; a series folder id → tvshow.nfo.
+        if (ResolveSafePath(itemId) is { } file)
+        {
+            var nfo = MovieNfo(file) is { } np ? NfoReader.TryRead(np) : null;
+            var title = nfo?.Title ?? TitleFor(new DefaultReleaseParser(), file);
+            var facts = nfo?.Year is { } y ? new[] { new MetaFact("Year", y.ToString()) } : [];
+            return Task.FromResult<SourceDetail?>(new SourceDetail(
+                Title: title, Overview: nfo?.Plot, ImageUrl: PosterUrl(ArtworkFinder.PosterFor(file)), Facts: facts));
+        }
+        if (ResolveSafeDir(itemId) is { } dir)
+        {
+            var tvshow = Path.Combine(dir, "tvshow.nfo");
+            var nfo = File.Exists(tvshow) ? NfoReader.TryRead(tvshow) : null;
+            var title = nfo?.Title ?? ShowTitle(new DefaultReleaseParser(), dir);
+            return Task.FromResult<SourceDetail?>(new SourceDetail(
+                Title: title, Overview: nfo?.Plot, ImageUrl: PosterUrl(ArtworkFinder.PosterFor(dir))));
+        }
+        return Task.FromResult<SourceDetail?>(null);
+    }
+
+    // The .nfo for a media FILE: "<stem>.nfo" sidecar, else "movie.nfo" in the same folder.
+    private static string? MovieNfo(string file)
+    {
+        var sidecar = Path.ChangeExtension(file, ".nfo");
+        if (sidecar is not null && File.Exists(sidecar)) return sidecar;
+        var dir = Path.GetDirectoryName(file);
+        var movieNfo = dir is null ? null : Path.Combine(dir, "movie.nfo");
+        return movieNfo is not null && File.Exists(movieNfo) ? movieNfo : null;
+    }
+
+    private string? PosterUrl(string? posterPath) => posterPath is null
+        ? null
+        : $"proxy/{Key}/{EncodeId(posterPath)}/{Uri.EscapeDataString(Path.GetFileName(posterPath))}";
 
     public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
     {
@@ -270,7 +316,8 @@ public sealed class LocalLibrarySource : IMediaSource
         return info.Year is { } year ? $"{title} ({year})" : title;
     }
 
-    // A small extension -> MIME map, case-insensitive on the extension.
+    // A small extension -> MIME map, case-insensitive on the extension. Images are served too:
+    // a located poster is opened through the same proxy/Range path as a media file.
     private static string MimeFor(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".mkv" => "video/x-matroska",
@@ -282,6 +329,9 @@ public sealed class LocalLibrarySource : IMediaSource
         ".flv" => "video/x-flv",
         ".ts" => "video/mp2t",
         ".mpg" or ".mpeg" => "video/mpeg",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".png" => "image/png",
+        ".webp" => "image/webp",
         _ => "application/octet-stream",
     };
 

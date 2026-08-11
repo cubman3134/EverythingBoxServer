@@ -238,4 +238,76 @@ public class LocalLibrarySourceTests : IDisposable
         Assert.Equal(206, r!.StatusCode);
         Assert.Equal("bytes 1-2/4", r.ContentRange);
     }
+
+    [Fact]
+    public async Task Movie_row_uses_the_nfo_title_and_a_poster_thumbnail()
+    {
+        var mkv = Path.Combine(_root, "generic.mkv");
+        File.WriteAllBytes(mkv, [1, 2, 3, 4]);
+        File.WriteAllText(Path.Combine(_root, "generic.nfo"), "<movie><title>Real Title</title><year>2011</year><plot>P.</plot></movie>");
+        File.WriteAllBytes(Path.Combine(_root, "generic-poster.jpg"), [9]);
+
+        var item = Assert.Single((await Movies().SearchAsync("movies", "real", Ctx(), default)).Items);
+        Assert.Equal("Real Title (2011)", item.Title);
+        Assert.StartsWith("proxy/locallib/", item.ThumbnailUrl);
+    }
+
+    [Fact]
+    public async Task MetaAsync_returns_overview_poster_and_year_for_a_movie()
+    {
+        var mkv = Path.Combine(_root, "generic.mkv");
+        File.WriteAllBytes(mkv, [1, 2, 3, 4]);
+        File.WriteAllText(Path.Combine(_root, "generic.nfo"), "<movie><title>Real Title</title><year>2011</year><plot>The plot.</plot></movie>");
+        File.WriteAllBytes(Path.Combine(_root, "generic-poster.jpg"), [9]);
+
+        var id = LocalLibrarySource.EncodeId(mkv);
+        var detail = await Movies().MetaAsync(id, Ctx(), default);
+        Assert.NotNull(detail);
+        Assert.Equal("Real Title", detail!.Title);
+        Assert.Equal("The plot.", detail.Overview);
+        Assert.StartsWith("proxy/locallib/", detail.ImageUrl);
+        Assert.Contains(detail.Facts!, f => f.Label == "Year" && f.Value == "2011");
+    }
+
+    [Fact]
+    public async Task MetaAsync_on_a_series_folder_reads_tvshow_nfo()
+    {
+        var (seriesRoot, showDir) = MakeShow();
+        File.WriteAllText(Path.Combine(showDir, "tvshow.nfo"), "<tvshow><title>Breaking Show</title><plot>Show plot.</plot></tvshow>");
+        var showId = (await Series(seriesRoot).SearchAsync("series", null, Ctx(), default)).Items.Single().Id;
+        var detail = await Series(seriesRoot).MetaAsync(showId, Ctx(), default);
+        Assert.Equal("Show plot.", detail!.Overview);
+    }
+
+    [Fact]
+    public async Task MetaAsync_on_an_out_of_roots_id_is_null()
+    {
+        var outside = Path.Combine(Path.GetTempPath(), "ebs-out-" + Guid.NewGuid().ToString("N") + ".mkv");
+        File.WriteAllBytes(outside, [1]);
+        try { Assert.Null(await Movies().MetaAsync(LocalLibrarySource.EncodeId(outside), Ctx(), default)); }
+        finally { File.Delete(outside); }
+    }
+
+    [Fact]
+    public async Task Episode_uses_the_episode_nfo_title()
+    {
+        var (seriesRoot, showDir) = MakeShow();
+        var seasonDir = Path.Combine(showDir, "Season 01");
+        File.WriteAllText(Path.Combine(seasonDir, "Breaking.Show.S01E01.nfo"), "<episodedetails><title>Pilot</title></episodedetails>");
+        var showId = (await Series(seriesRoot).SearchAsync("series", null, Ctx(), default)).Items.Single().Id;
+        var eps = await Series(seriesRoot).DetailAsync(showId, Ctx(), default);
+        Assert.Equal("S01E01 - Pilot", eps.Items[0].Title);
+    }
+
+    [Fact]
+    public async Task A_poster_id_serves_as_an_image()
+    {
+        var mkv = Path.Combine(_root, "img.mkv"); File.WriteAllBytes(mkv, [1, 2, 3, 4]);
+        var poster = Path.Combine(_root, "img-poster.png"); File.WriteAllBytes(poster, [7, 7, 7]);
+        var id = LocalLibrarySource.EncodeId(poster);
+        await using var r = await Movies().OpenAsync(id, null, default);
+        Assert.NotNull(r);
+        Assert.Equal(200, r!.StatusCode);
+        Assert.Equal("image/png", r.ContentType);
+    }
 }

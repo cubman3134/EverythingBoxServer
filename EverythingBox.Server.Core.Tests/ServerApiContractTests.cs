@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_12_now_that_the_download_path_can_verify_checksums()
+    public void Version_is_1_13_now_that_sources_can_return_a_meta_panel()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(12, ServerApi.Current.Minor);
+        Assert.Equal(13, ServerApi.Current.Minor);
     }
 
     [Fact]
