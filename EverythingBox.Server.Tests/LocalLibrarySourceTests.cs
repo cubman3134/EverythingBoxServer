@@ -4,11 +4,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EverythingBox.Server.Tests;
 
-public class MovieLibrarySourceTests : IDisposable
+public class LocalLibrarySourceTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ebs-lib-" + Guid.NewGuid().ToString("N"));
 
-    public MovieLibrarySourceTests()
+    public LocalLibrarySourceTests()
     {
         Directory.CreateDirectory(_root);
         File.WriteAllBytes(Path.Combine(_root, "Some.Movie.2019.1080p.BluRay.mkv"), new byte[] { 1, 2, 3, 4 });
@@ -18,19 +18,19 @@ public class MovieLibrarySourceTests : IDisposable
 
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } GC.SuppressFinalize(this); }
 
-    private MovieLibrarySource Source(params string[] roots)
-        => new(roots.Length == 0 ? [_root] : roots, NullLogger<MovieLibrarySource>.Instance);
+    private LocalLibrarySource Movies(params string[] roots)
+        => new(roots.Length == 0 ? [_root] : roots, [], NullLogger<LocalLibrarySource>.Instance);
 
     private static SourceContext Ctx() => new();
 
     [Fact]
     public void No_configured_roots_declares_no_catalog()
-        => Assert.Empty(new MovieLibrarySource([], NullLogger<MovieLibrarySource>.Instance).Catalogs);
+        => Assert.Empty(new LocalLibrarySource([], [], NullLogger<LocalLibrarySource>.Instance).Catalogs);
 
     [Fact]
     public void A_configured_root_declares_the_movies_catalog()
     {
-        var c = Assert.Single(Source().Catalogs);
+        var c = Assert.Single(Movies().Catalogs);
         Assert.Equal("movies", c.Id);
         Assert.Equal("movie", c.MediaType);
     }
@@ -38,7 +38,7 @@ public class MovieLibrarySourceTests : IDisposable
     [Fact]
     public async Task Scans_only_video_files_and_titles_them_from_the_filename()
     {
-        var catalog = await Source().SearchAsync("movies", null, Ctx(), default);
+        var catalog = await Movies().SearchAsync("movies", null, Ctx(), default);
         Assert.Equal(2, catalog.Items.Count);
         Assert.All(catalog.Items, i => Assert.Equal("movie", i.MediaType));
         Assert.All(catalog.Items, i => Assert.False(i.Expandable));
@@ -50,7 +50,7 @@ public class MovieLibrarySourceTests : IDisposable
     [Fact]
     public async Task A_query_filters_by_title()
     {
-        var catalog = await Source().SearchAsync("movies", "another", Ctx(), default);
+        var catalog = await Movies().SearchAsync("movies", "another", Ctx(), default);
         var item = Assert.Single(catalog.Items);
         Assert.Equal("Another Film (2020)", item.Title);
     }
@@ -58,8 +58,8 @@ public class MovieLibrarySourceTests : IDisposable
     [Fact]
     public async Task Resolve_returns_a_proxy_url_for_a_real_item()
     {
-        var item = (await Source().SearchAsync("movies", "some", Ctx(), default)).Items.Single();
-        var stream = await Source().ResolveAsync(item.Id, 0, Ctx(), default);
+        var item = (await Movies().SearchAsync("movies", "some", Ctx(), default)).Items.Single();
+        var stream = await Movies().ResolveAsync(item.Id, 0, Ctx(), default);
         Assert.NotNull(stream);
         Assert.StartsWith("proxy/locallib/", stream!.Url);
     }
@@ -72,20 +72,20 @@ public class MovieLibrarySourceTests : IDisposable
         File.WriteAllBytes(outside, new byte[] { 9 });
         try
         {
-            var evilId = MovieLibrarySource.EncodeId(outside);       // internal, visible to tests
-            var src = new MovieLibrarySource([_root], NullLogger<MovieLibrarySource>.Instance);
+            var evilId = LocalLibrarySource.EncodeId(outside);       // internal, visible to tests
+            var src = new LocalLibrarySource([_root], [], NullLogger<LocalLibrarySource>.Instance);
             Assert.Null(await src.ResolveAsync(evilId, 0, Ctx(), default));
         }
         finally { File.Delete(outside); }
     }
 
     private async Task<string> FirstItemIdAsync()
-        => (await Source().SearchAsync("movies", "some", Ctx(), default)).Items.Single().Id;
+        => (await Movies().SearchAsync("movies", "some", Ctx(), default)).Items.Single().Id;
 
     [Fact]
     public async Task Open_without_a_range_serves_the_whole_file()
     {
-        await using var r = await Source().OpenAsync(await FirstItemIdAsync(), null, default);
+        await using var r = await Movies().OpenAsync(await FirstItemIdAsync(), null, default);
         Assert.NotNull(r);
         Assert.Equal(200, r!.StatusCode);
         Assert.Equal(4, r.ContentLength);
@@ -98,7 +98,7 @@ public class MovieLibrarySourceTests : IDisposable
     [Fact]
     public async Task Open_with_a_range_serves_206_and_the_slice()
     {
-        await using var r = await Source().OpenAsync(await FirstItemIdAsync(), "bytes=1-2", default);
+        await using var r = await Movies().OpenAsync(await FirstItemIdAsync(), "bytes=1-2", default);
         Assert.NotNull(r);
         Assert.Equal(206, r!.StatusCode);
         Assert.Equal(2, r.ContentLength);
@@ -112,7 +112,7 @@ public class MovieLibrarySourceTests : IDisposable
     [Fact]
     public async Task Open_with_an_unsatisfiable_range_is_416()
     {
-        await using var r = await Source().OpenAsync(await FirstItemIdAsync(), "bytes=100-200", default);
+        await using var r = await Movies().OpenAsync(await FirstItemIdAsync(), "bytes=100-200", default);
         Assert.NotNull(r);
         Assert.Equal(416, r!.StatusCode);
         Assert.Equal("bytes */4", r.ContentRange);
@@ -125,9 +125,54 @@ public class MovieLibrarySourceTests : IDisposable
         File.WriteAllBytes(outside, new byte[] { 9 });
         try
         {
-            var evilId = MovieLibrarySource.EncodeId(outside);
-            Assert.Null(await new MovieLibrarySource([_root], NullLogger<MovieLibrarySource>.Instance).OpenAsync(evilId, null, default));
+            var evilId = LocalLibrarySource.EncodeId(outside);
+            Assert.Null(await new LocalLibrarySource([_root], [], NullLogger<LocalLibrarySource>.Instance).OpenAsync(evilId, null, default));
         }
         finally { File.Delete(outside); }
+    }
+
+    private (string seriesRoot, string showDir) MakeShow()
+    {
+        var seriesRoot = Path.Combine(_root, "TV");
+        var showDir = Path.Combine(seriesRoot, "Breaking Show");
+        var seasonDir = Path.Combine(showDir, "Season 01");
+        Directory.CreateDirectory(seasonDir);
+        File.WriteAllBytes(Path.Combine(seasonDir, "Breaking.Show.S01E02.mkv"), new byte[] { 1, 2, 3, 4 });
+        File.WriteAllBytes(Path.Combine(seasonDir, "Breaking.Show.S01E01.mkv"), new byte[] { 5, 6, 7, 8 });
+        return (seriesRoot, showDir);
+    }
+
+    private LocalLibrarySource Series(string seriesRoot)
+        => new([], [seriesRoot], NullLogger<LocalLibrarySource>.Instance);
+
+    [Fact]
+    public void No_series_roots_declares_no_series_catalog()
+        => Assert.DoesNotContain(new LocalLibrarySource([_root], [], NullLogger<LocalLibrarySource>.Instance).Catalogs,
+                                 c => c.Id == "series");
+
+    [Fact]
+    public void A_series_root_declares_the_series_catalog()
+    {
+        var (seriesRoot, _) = MakeShow();
+        Assert.Contains(Series(seriesRoot).Catalogs, c => c.Id == "series" && c.MediaType == "series");
+    }
+
+    [Fact]
+    public async Task Series_catalog_lists_each_show_as_an_expandable_item()
+    {
+        var (seriesRoot, _) = MakeShow();
+        var catalog = await Series(seriesRoot).SearchAsync("series", null, Ctx(), default);
+        var item = Assert.Single(catalog.Items);
+        Assert.Equal("Breaking Show", item.Title);
+        Assert.Equal("series", item.MediaType);
+        Assert.True(item.Expandable);
+    }
+
+    [Fact]
+    public async Task Series_query_filters_by_show_title()
+    {
+        var (seriesRoot, _) = MakeShow();
+        Assert.Empty((await Series(seriesRoot).SearchAsync("series", "nomatch", Ctx(), default)).Items);
+        Assert.Single((await Series(seriesRoot).SearchAsync("series", "breaking", Ctx(), default)).Items);
     }
 }

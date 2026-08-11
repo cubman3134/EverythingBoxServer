@@ -12,6 +12,6 @@ public sealed class LocalLibraryPlugin : IPlugin
     public void Configure(IPluginRegistry registry, IPluginContext context)
     {
         var config = context.GetConfig<LocalLibraryConfig>() ?? new LocalLibraryConfig();
-        registry.AddSource(new MovieLibrarySource(config.Movies, context.Loggers.CreateLogger<MovieLibrarySource>()));
+        registry.AddSource(new LocalLibrarySource(config.Movies, config.Series, context.Loggers.CreateLogger<LocalLibrarySource>()));
     }
 }
