@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using EverythingBox.Server.Abstractions;
 using EverythingBox.Server.MusicLibrary;
 
@@ -173,6 +174,92 @@ public sealed class MusicScannerTests : IDisposable
         var album = Assert.Single(artist.Albums);
         Assert.Equal("Unknown Album", album.Name);
         Assert.Equal("broken", album.Tracks.Single().Title); // title falls back to the filename
+    }
+
+    // ---- C1 regression: the ATL dependency must be COPIED into the plugin's build output. ----
+    // A plain classlib emits only the plugin dll + .deps.json; when deployed to plugins/musiclib/
+    // the per-plugin AssemblyDependencyResolver can't resolve ATL and the plugin FileNotFounds at
+    // first browse. EnableDynamicLoading (CopyLocalLockFileAssemblies) fixes it by copying ATL.dll
+    // next to the plugin. Note: an in-process staged-load through PluginHost cannot catch this —
+    // when the plugin's load context fails to resolve ATL it returns null and the DEFAULT context
+    // resolves it (the test host already has ATL loaded via the ProjectReference), masking the very
+    // failure production would hit. So assert the copy on disk directly.
+    [Fact]
+    public void ATL_dependency_is_copied_into_the_plugin_build_output()
+    {
+        var baseDir = new DirectoryInfo(AppContext.BaseDirectory); // ...\Tests\bin\<Config>\<Tfm>\
+        var tfm = baseDir.Name;                                    // e.g. net9.0
+        var config = baseDir.Parent!.Name;                        // Debug | Release
+        var repoRoot = baseDir.Parent!.Parent!.Parent!.Parent!.FullName; // up past bin\<Tests>
+
+        var pluginOut = Path.Combine(repoRoot, "EverythingBox.Server.MusicLibrary", "bin", config, tfm);
+        Assert.True(Directory.Exists(pluginOut),
+            $"Could not locate the musiclib build output at {pluginOut}; adjust the path derivation if the layout changed.");
+
+        // Sanity that this is the right directory (the plugin's own dll lives here).
+        Assert.True(File.Exists(Path.Combine(pluginOut, "EverythingBox.Server.MusicLibrary.dll")),
+            $"The musiclib plugin dll is missing from {pluginOut} — wrong directory or an unbuilt plugin.");
+
+        Assert.True(File.Exists(Path.Combine(pluginOut, "ATL.dll")),
+            $"ATL.dll is NOT next to the plugin in {pluginOut}. A musiclib deployed to plugins/musiclib/ will " +
+            "FileNotFound on ATL at first browse. Ensure <EnableDynamicLoading>true</EnableDynamicLoading> is set " +
+            "in EverythingBox.Server.MusicLibrary.csproj so the NuGet assemblies are copied to the plugin output.");
+    }
+
+    // ---- I1 regression: one reparse-point subdir must neither fault the scan nor leak escaped tracks. ----
+    [Fact]
+    public async Task Scan_skips_reparse_points_and_does_not_fault_on_a_junction()
+    {
+        var inside = Path.Combine(_root, "Local");
+        WriteTaggedTrack(inside, "song.mp3", artist: "Local Band", album: "Local Album", title: "Local Song", trackNo: 1);
+
+        // A tree OUTSIDE the configured root, reached only through a junction placed inside it.
+        var outside = Path.Combine(Path.GetTempPath(), "ebmusic-outside-" + Guid.NewGuid().ToString("N"));
+        WriteTaggedTrack(outside, "escaped.mp3", artist: "Escaped Band", album: "Escaped Album", title: "Escaped Song", trackNo: 1);
+
+        try
+        {
+            var link = Path.Combine(_root, "link");
+            MakeDirectoryLink(link, outside);
+            // Sanity: the escaped track really is reachable THROUGH the junction (lexically under the root).
+            Assert.True(File.Exists(Path.Combine(link, "escaped.mp3")));
+
+            var index = await Scanner().ScanAsync([_root], _coverCache, new LibraryMetaCache(null), CancellationToken.None);
+
+            // The walk skipped the reparse point: it completed (no IOException fault) and listed only
+            // the real in-root track, never the junction-escaped one.
+            var artist = Assert.Single(index.Artists);
+            Assert.Equal("Local Band", artist.Name);
+            Assert.DoesNotContain(index.Artists, a => a.Name == "Escaped Band");
+        }
+        finally
+        {
+            TryDelete(outside);
+        }
+    }
+
+    /// <summary>Creates a directory reparse point at <paramref name="link"/> pointing at
+    /// <paramref name="target"/>. On Windows a junction (mklink /J) needs no elevation; elsewhere a
+    /// directory symlink is used (may require privilege on some platforms).</summary>
+    private static void MakeDirectoryLink(string link, string target)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            using var p = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            })!;
+            p.WaitForExit();
+            if (p.ExitCode != 0)
+                throw new InvalidOperationException($"mklink /J failed: {p.StandardError.ReadToEnd()}");
+        }
+        else
+        {
+            Directory.CreateSymbolicLink(link, target);
+        }
     }
 
     /// <summary>An in-memory <see cref="IResolverCache"/> that counts writes, so a test can prove a

@@ -23,6 +23,20 @@ public sealed class MusicScanner
     // Defensive cap so a pathological tree can't build an unbounded index.
     private const int MaxTracks = 100_000;
 
+    // Mirrors LocalLibrarySource's hardened walk. RecurseSubdirectories with IgnoreInaccessible
+    // means one unreadable subfolder is skipped instead of throwing mid-enumeration and faulting
+    // the whole index (which would then re-fault on every browse). AttributesToSkip = ONLY
+    // ReparsePoint keeps junctions/symlinks from being descended — no path-length blow-up from a
+    // junction cycle, and no list/serve divergence from a link escaping the configured root — while
+    // still listing files the owner incidentally marked Hidden/System (the framework default skips
+    // those, which is wrong for a media shelf).
+    private static readonly EnumerationOptions WalkOptions = new()
+    {
+        RecurseSubdirectories = true,
+        AttributesToSkip = FileAttributes.ReparsePoint,
+        IgnoreInaccessible = true,
+    };
+
     /// <summary>The subset of tag fields the index needs, memoized per file. A read failure yields an
     /// all-null instance (never thrown), so the file still lists under Unknown.</summary>
     internal sealed record TrackTags(
@@ -41,7 +55,7 @@ public sealed class MusicScanner
             if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) continue;
 
             IEnumerable<string> entries;
-            try { entries = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories); }
+            try { entries = Directory.EnumerateFiles(root, "*", WalkOptions); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
 
             foreach (var path in entries)
@@ -97,7 +111,7 @@ public sealed class MusicScanner
                     .ThenBy(t => t.Title, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
-                var cover = ResolveCover(albumBuilder, coverCacheDir, ct);
+                var cover = ResolveCover(albumBuilder, coverCacheDir);
 
                 albums.Add(new MusicAlbum(
                     albumBuilder.Id, albumBuilder.ArtistId, albumBuilder.ArtistName,
@@ -137,7 +151,7 @@ public sealed class MusicScanner
 
     /// <summary>Cover for an album, first hit wins: a sibling cover.*/folder.* in a track's directory;
     /// else the first embedded picture, extracted ONCE to {coverCacheDir}/{albumId}.{ext}; else null.</summary>
-    private static string? ResolveCover(AlbumBuilder album, string coverCacheDir, CancellationToken ct)
+    private static string? ResolveCover(AlbumBuilder album, string coverCacheDir)
     {
         // Sibling image next to a track. An album can span directories; check each distinct one.
         foreach (var dir in album.Tracks.Select(t => Path.GetDirectoryName(t.Path))

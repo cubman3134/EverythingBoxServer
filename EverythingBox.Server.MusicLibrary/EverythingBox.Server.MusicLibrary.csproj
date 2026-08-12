@@ -4,6 +4,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!-- Sets CopyLocalLockFileAssemblies=true so this plugin's NuGet dependency (ATL) and its
+         transitive assemblies are COPIED into bin/. Without it a plain classlib emits only the
+         plugin dll + .deps.json, and AssemblyDependencyResolver in the per-plugin load context
+         cannot resolve ATL once the folder is deployed to plugins/musiclib/ — the plugin then
+         FileNotFounds on ATL at first browse. Abstractions stays Private="false" (shared contract),
+         and Microsoft.Extensions.Logging.Abstractions being copied is harmless: PluginLoadContext
+         lists it in SharedAssemblies and defers it to the default ALC. -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="EverythingBox.Server.Tests" />
