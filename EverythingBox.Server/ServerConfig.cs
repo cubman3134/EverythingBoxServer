@@ -155,6 +155,9 @@ public sealed class GrabberConfig
 
     /// <summary>Float debrid-cached releases to the front. Default false.</summary>
     public bool PreferCachedReleases { get; set; }
+
+    /// <summary>Max concurrent (provider × title) searches on the parallel path. Default 8.</summary>
+    public int MaxConcurrentSearches { get; set; } = 8;
 }
 
 public sealed class DownloadConfig

@@ -91,13 +91,28 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
         var have = Tokenize(r.Title);
         List<string>? primaryMissing = null;
         var matched = false;
+        var evaluatedAny = false;
         foreach (var candidate in candidates)
         {
             if (string.IsNullOrWhiteSpace(candidate)) continue;
-            var missing = Tokenize(candidate).Where(t => !have.Contains(t)).ToList();
+            var candidateTokens = Tokenize(candidate);
+            // Tokenize keeps only [a-z0-9] runs of length >1, so a purely non-Latin candidate
+            // (CJK/Cyrillic/etc.) tokenizes to the EMPTY set. Empty ⊆ anything would match every
+            // release and silently disable the gate, so skip it — like a blank candidate — rather
+            // than let it wildcard containment.
+            if (candidateTokens.Count == 0) continue;
+            evaluatedAny = true;
+            var missing = candidateTokens.Where(t => !have.Contains(t)).ToList();
             if (missing.Count == 0) { matched = true; break; }
             primaryMissing ??= missing; // report the primary subject's gap when nothing matches
         }
+        // If no candidate was tokenizable at all (every candidate blank or non-Latin — e.g. a
+        // purely-CJK request), title relevance can't be assessed: fall back to accept rather than
+        // reject every release (which would break legitimate non-Latin-only searches and the
+        // pre-existing accept for a blank primary). A tokenizable candidate that didn't match still
+        // rejects.
+        if (!matched && !evaluatedAny)
+            matched = true;
         if (!matched)
         {
             why = $"title missing terms: {string.Join(", ", primaryMissing ?? [])}";

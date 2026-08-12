@@ -433,6 +433,31 @@ public class TorrentRankerTests
         Assert.Empty(ranked);
     }
 
+    [Fact]
+    public void NonLatinAlternateDoesNotWildcardTheGate()
+    {
+        // The CJK alternate tokenizes to the empty set; empty ⊆ anything must NOT match every
+        // release. An unrelated Latin release is rejected...
+        var request = new MovieRequest { Title = "Spirited Away", AlternateTitles = ["千と千尋の神隠し"] };
+        var unrelated = Make("Some Other Movie 1080p", MediaType.Movie);
+        Assert.Empty(_ranker.Rank(request, [unrelated], RankingOptions.Default));
+
+        // ...while a release that actually matches the (Latin) primary is still accepted.
+        var match = Make("Spirited Away 1080p", MediaType.Movie);
+        Assert.Single(_ranker.Rank(request, [match], RankingOptions.Default));
+    }
+
+    [Fact]
+    public void PurelyNonLatinRequestAcceptsWhenTitleCannotBeAssessed()
+    {
+        // Primary AND every alternate are non-Latin, so nothing is tokenizable and title relevance
+        // can't be assessed. The gate must fall back to accept, not reject a legitimate search.
+        var request = new MovieRequest { Title = "千と千尋の神隠し", AlternateTitles = ["となりのトトロ"] };
+        var release = Make("Some Release 1080p", MediaType.Movie);
+
+        Assert.Single(_ranker.Rank(request, [release], RankingOptions.Default));
+    }
+
     // Rank() surfaces only eligibility, not the rejection reason, so read the private
     // IsRelevant(request, result, out why) directly to assert the message shape.
     private (bool Relevant, string Why) InvokeIsRelevant(MediaRequest request, TorrentResult r)

@@ -126,9 +126,11 @@ public sealed class TorrentGrabber : ITorrentGrabber
 
         // Fan out over (provider × distinct title), best-provider-first with the primary title first
         // per provider (RequestsPerTitle yields it first). cts.Cancel() on a clearing pick stops all
-        // remaining title × provider queries.
+        // remaining title × provider queries. Materialize the per-title requests once so WithTitle
+        // isn't re-cloning them for every provider inside the SelectMany.
+        var titleRequests = RequestsPerTitle(request).ToList();
         var gate = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrentSearches));
-        var pairs = capable.SelectMany(p => RequestsPerTitle(request).Select(req => (provider: p, request: req))).ToList();
+        var pairs = capable.SelectMany(p => titleRequests.Select(req => (provider: p, request: req))).ToList();
         var tasks = pairs.Select(x => BoundedQueryAsync(gate, x.provider, x.request, cts.Token, cancellationToken)).ToList();
 
         GrabResult? early = null;
@@ -305,12 +307,15 @@ public sealed class TorrentGrabber : ITorrentGrabber
 
         // Fan out over (capable provider × distinct search title), bounded by MaxConcurrentSearches.
         // Prepare/Rank downstream still receive the ORIGINAL request, so cross-title hits merge.
-        var gate = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrentSearches));
-        var pairs = capable.SelectMany(p => RequestsPerTitle(request).Select(req => (provider: p, request: req))).ToList();
+        // Materialize the per-title requests once so WithTitle isn't re-cloning them for every
+        // provider inside the SelectMany.
+        var titleRequests = RequestsPerTitle(request).ToList();
+        var pairs = capable.SelectMany(p => titleRequests.Select(req => (provider: p, request: req))).ToList();
 
         List<QueryResult> queryResults;
         if (_options.QueryProvidersInParallel)
         {
+            var gate = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrentSearches));
             queryResults = [.. await Task.WhenAll(
                 pairs.Select(x => BoundedQueryAsync(gate, x.provider, x.request, token, cancellationToken))).ConfigureAwait(false)];
         }
@@ -404,6 +409,9 @@ public sealed class TorrentGrabber : ITorrentGrabber
     private IReadOnlyList<ITorrentProvider> Prioritize(IReadOnlyList<ITorrentProvider> capable)
         => _providerTracker?.Prioritize(capable) ?? capable;
 
+    // With the title × provider fan-out, a provider queried under N distinct titles produces N
+    // QueryResults and therefore contributes N ProviderOutcomes to a single search — a per-search
+    // tracker that assumes one outcome per provider must account for that.
     private void RecordOutcomes(IReadOnlyList<QueryResult> queryResults, string? bestProviderName)
     {
         if (_providerTracker is null)
