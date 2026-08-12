@@ -14,15 +14,19 @@ public static class SubsonicEndpoints
     public static void MapSubsonic(this WebApplication app)
     {
         app.MapMethods("/rest/{endpoint}", ["GET", "POST"],
-            (string endpoint, HttpContext http, IMusicLibrary music, ServerConfig config, ILoggerFactory loggerFactory) =>
+            async (string endpoint, HttpContext http, IMusicLibrary music, ServerConfig config, ILoggerFactory loggerFactory) =>
             {
                 // Clients hit either /rest/ping or /rest/ping.view — strip a trailing ".view".
                 var name = endpoint.EndsWith(".view", StringComparison.OrdinalIgnoreCase) ? endpoint[..^5] : endpoint;
 
+                // Auth runs FIRST, before the switch — every media endpoint below streams bytes only after
+                // this gate, so an unauthenticated stream/download/getCoverArt gets a code-40 envelope and
+                // never leaks a single byte of audio or cover.
                 if (!SubsonicAuth.Authenticate(http.Request, config.AccessToken))
                     return SubsonicResponse.Error(http.Request, 40, "Wrong username or password.");
 
                 var req = http.Request;
+                var ct = http.RequestAborted;
                 try
                 {
                     return name switch
@@ -44,8 +48,23 @@ public static class SubsonicEndpoints
                         "search3" => Search3(req, music),
                         "getRandomSongs" => GetRandomSongs(req, music),
 
-                        // Media streaming (stream/download/getCoverArt) + writes (star/scrobble/playlists)
-                        // arrive in Increment 4.
+                        // ---- Increment 4 media endpoints. Range-served original bytes; no transcoding. ----
+                        "stream" => await Stream(req, http, music, loggerFactory, ct),
+                        "download" => await Download(req, http, music, loggerFactory, ct),
+                        "getCoverArt" => GetCoverArt(req, music),
+
+                        // ---- Increment 4 Task 2 writes: stars (as datetimes) + scrobble (record-only). ----
+                        "star" => SetStars(req, music, starred: true),
+                        "unstar" => SetStars(req, music, starred: false),
+                        "getStarred2" => GetStarred2(req, music),
+                        "scrobble" => Scrobble(req, music),
+
+                        // ---- Playlists (read): getPlaylists lists them, getPlaylist expands one into
+                        // its <entry> songs. v1 has no create/update verb — playlists are populated out of
+                        // band into the local store. ----
+                        "getPlaylists" => SubsonicResponse.Ok(req, Playlists(music)),
+                        "getPlaylist" => GetPlaylist(req, music),
+
                         _ => SubsonicResponse.Error(req, 0, $"Endpoint not implemented: {name}"),
                     };
                 }
@@ -72,7 +91,8 @@ public static class SubsonicEndpoints
             .Attr("id", a.Id)
             .Attr("name", a.Name)
             .AttrNum("albumCount", a.AlbumCount)
-            .Attr("coverArt", a.CoverArtId);
+            .Attr("coverArt", a.CoverArtId)
+            .Attr("starred", StarredIso(a.StarredAt));
 
     private static SubsonicNode Album(AlbumInfo a) =>
         new SubsonicNode("album")
@@ -84,10 +104,16 @@ public static class SubsonicEndpoints
             .AttrNum("songCount", a.SongCount)
             .AttrNum("duration", a.DurationSec)
             .AttrNum("year", a.Year)
-            .Attr("genre", a.Genre);
+            .Attr("genre", a.Genre)
+            .Attr("starred", StarredIso(a.StarredAt));
 
-    private static SubsonicNode Song(SongInfo s) =>
-        new SubsonicNode("song")
+    // A <song>. A playlist renders the SAME attributes under the element name <entry>, so the shape is
+    // built once by SongNode and Song/Entry only pick the element name.
+    private static SubsonicNode Song(SongInfo s) => SongNode("song", s);
+    private static SubsonicNode Entry(SongInfo s) => SongNode("entry", s);
+
+    private static SubsonicNode SongNode(string element, SongInfo s) =>
+        new SubsonicNode(element)
             .Attr("id", s.Id)
             .Attr("parent", s.AlbumId)
             .Attr("title", s.Title)
@@ -105,7 +131,14 @@ public static class SubsonicEndpoints
             .Attr("suffix", s.Suffix)
             .Attr("contentType", s.ContentType)
             .AttrBool("isDir", false)
-            .Attr("type", "music");
+            .Attr("type", "music")
+            .Attr("starred", StarredIso(s.StarredAt));
+
+    // Subsonic renders a star as starred="<ISO8601, UTC, millisecond>"; when unstarred the attribute is
+    // OMITTED (never starred="false"). Returning null here makes Attr() drop it — that omission is the
+    // "unstarred" wire signal a client relies on.
+    private static string? StarredIso(DateTimeOffset? at)
+        => at is { } s ? s.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ") : null;
 
     // Subsonic quirk: a <genre> carries its NAME as the element TEXT node (not an attribute), while
     // songCount/albumCount are numeric attributes. The dual renderer maps .Text → XML text / JSON "value".
@@ -117,6 +150,16 @@ public static class SubsonicEndpoints
         node.Text = g.Name;
         return node;
     }
+
+    // A <playlist>: id/name plus the numeric songCount/duration. owner/public are not modeled (this server
+    // has a single identity and no per-playlist visibility), so those optional attributes are omitted. The
+    // song members are added as <entry> children only by getPlaylist.
+    private static SubsonicNode Playlist(PlaylistInfo p) =>
+        new SubsonicNode("playlist")
+            .Attr("id", p.Id)
+            .Attr("name", p.Name)
+            .AttrNum("songCount", p.SongCount)
+            .AttrNum("duration", p.DurationSec);
 
     // ---------------------------------------------------------------------------------------------
     // Endpoints.
@@ -231,6 +274,186 @@ public static class SubsonicEndpoints
         return SubsonicResponse.Ok(req, root);
     }
 
+    // getPlaylists → <playlists> of <playlist id name songCount duration> from the local store. Empty
+    // when no playlist has been created.
+    private static SubsonicNode Playlists(IMusicLibrary music)
+    {
+        var root = new SubsonicNode("playlists");
+        foreach (var p in music.Playlists()) root.Add(Playlist(p));
+        return root;
+    }
+
+    // getPlaylist?id=… → the <playlist> with its member songs as <entry> nodes. A missing id → code 10;
+    // an unknown id → code 70.
+    private static IResult GetPlaylist(HttpRequest req, IMusicLibrary music)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+        if (music.Playlist(id) is not { } playlist) return SubsonicResponse.Error(req, 70, "not found");
+
+        var node = Playlist(playlist);
+        foreach (var song in playlist.Songs) node.Add(Entry(song));
+        return SubsonicResponse.Ok(req, node);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Writes (Increment 4 Task 2): star / unstar / getStarred2 / scrobble.
+    // ---------------------------------------------------------------------------------------------
+
+    // star / unstar: Subsonic sends `id` for songs, `albumId` for albums, `artistId` for artists — all
+    // three names are accepted and each may repeat, so a single call can (un)star a mix of items. An empty
+    // ok envelope is the Subsonic contract; an id that resolves to nothing is silently tolerated (matches
+    // Subsonic — starring an unknown id succeeds and simply records the star, corrupting no other state).
+    private static IResult SetStars(HttpRequest req, IMusicLibrary music, bool starred)
+    {
+        foreach (var id in StarIds(req)) music.SetStarred(id, starred);
+        return SubsonicResponse.Ok(req, null);
+    }
+
+    private static IEnumerable<string> StarIds(HttpRequest req)
+        => new[] { "id", "albumId", "artistId" }
+            .SelectMany(key => (IEnumerable<string?>)SubsonicParams.Get(req, key))
+            .Where(v => !string.IsNullOrEmpty(v))
+            .Select(v => v!);
+
+    // getStarred2 → <starred2> with the starred <artist>/<album>/<song> nodes (each carrying its own
+    // starred="<iso>" via the shared node builders).
+    private static IResult GetStarred2(HttpRequest req, IMusicLibrary music)
+    {
+        var starred = music.Starred();
+        var root = new SubsonicNode("starred2");
+        foreach (var a in starred.Artists) root.Add(Artist(a));
+        foreach (var a in starred.Albums) root.Add(Album(a));
+        foreach (var s in starred.Songs) root.Add(Song(s));
+        return SubsonicResponse.Ok(req, root);
+    }
+
+    // scrobble: record a play in the local listening history. `id` is required (missing → code 10);
+    // `time` is an optional ms-epoch play instant (default: now); `submission` (default true) distinguishes
+    // a completed play from a "now playing" ping — we only record the former. RECORD-ONLY: the history feeds
+    // this server's own recent/frequent lists; there is deliberately NO Last.fm/ListenBrainz forwarding —
+    // that external-scrobbler boundary is out of scope (issue #192).
+    private static IResult Scrobble(HttpRequest req, IMusicLibrary music)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+
+        var submission = ParseBool(SubsonicParams.Get(req, "submission"), fallback: true);
+        if (submission)
+            music.Scrobble(id, PlayedAt(SubsonicParams.Get(req, "time")));
+        return SubsonicResponse.Ok(req, null);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Media endpoints (Increment 4): stream / download / getCoverArt. Range-served, DIRECT PLAY.
+    // ---------------------------------------------------------------------------------------------
+
+    // stream: serve a song's ORIGINAL bytes with Range. maxBitRate/format are read for protocol
+    // completeness but deliberately IGNORED — this build does not transcode. That is the honest #9 rung:
+    // direct play is correct, and a client that asked for a hard bitrate cap or a different container
+    // simply receives the source file unaltered rather than a faked/re-encoded stream.
+    private static async Task<IResult> Stream(HttpRequest req, HttpContext http, IMusicLibrary music,
+        ILoggerFactory loggers, CancellationToken ct)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+
+        // Accepted, then discarded: no transcode. (Read so a form-POST client is parsed identically.)
+        _ = SubsonicParams.Get(req, "maxBitRate");
+        _ = SubsonicParams.Get(req, "format");
+
+        return await OpenAndRelay(req, http, music, id, loggers, ct);
+    }
+
+    // download: same relay, but NEVER considers maxBitRate/format — a download is always the original file.
+    private static async Task<IResult> Download(HttpRequest req, HttpContext http, IMusicLibrary music,
+        ILoggerFactory loggers, CancellationToken ct)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+        return await OpenAndRelay(req, http, music, id, loggers, ct);
+    }
+
+    // Shared: open the track (honoring a Range header if present) and relay its bytes. A null result — an
+    // id that is not a contained track — is a parseable Subsonic code-70, not a bare 404.
+    private static async Task<IResult> OpenAndRelay(HttpRequest req, HttpContext http, IMusicLibrary music,
+        string id, ILoggerFactory loggers, CancellationToken ct)
+    {
+        var range = http.Request.Headers.Range.ToString();
+        var upstream = await music.OpenTrackAsync(id, string.IsNullOrEmpty(range) ? null : range, ct);
+        if (upstream is null) return SubsonicResponse.Error(req, 70, "The requested media could not be found.");
+        return await Relay(upstream, http, loggers.CreateLogger("Subsonic"), ct);
+    }
+
+    // getCoverArt: serve the cover file with Range. `size` is accepted but IGNORED (no image resizing in
+    // v1). The plugin's CoverArt() already decoded + containment-checked the id and only returns genuine,
+    // contained image files, so Results.File over that path is safe.
+    private static IResult GetCoverArt(HttpRequest req, IMusicLibrary music)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+        _ = SubsonicParams.Get(req, "size");   // accepted, not honored (v1 has no resizer).
+        return music.CoverArt(id) is { } cover
+            ? Results.File(cover.Path, cover.ContentType, enableRangeProcessing: true)
+            : SubsonicResponse.Error(req, 70, "The requested cover art could not be found.");
+    }
+
+    // Byte-relay for a ProxyResponse, mirroring AddonEndpoints.ProxyAsync's discipline: copy the status,
+    // content-type/length and Range headers off the ProxyResponse onto http.Response, stream the Body, and
+    // ALWAYS dispose the ProxyResponse in a finally (a plugin's Body is often a live file handle). Every
+    // field here is plugin-authored and can fail independently of OpenTrackAsync succeeding; HasStarted is
+    // the load-bearing signal — before the first byte a failure degrades to a clean code-70 envelope with
+    // the partial headers cleared; after it, headers are already gone, so we abort the connection (a clear
+    // cutoff) rather than silently truncate, and never let the exception escape.
+    private static async Task<IResult> Relay(ProxyResponse upstream, HttpContext http, ILogger log, CancellationToken ct)
+    {
+        try
+        {
+            try
+            {
+                if (upstream.Body is null)
+                    throw new InvalidOperationException("The music library returned a ProxyResponse with a null Body.");
+                if (upstream.StatusCode is < 100 or > 599)
+                    throw new InvalidOperationException($"The music library returned an implausible StatusCode {upstream.StatusCode}.");
+                if (upstream.ContentLength is < 0)
+                    throw new InvalidOperationException($"The music library returned a negative ContentLength {upstream.ContentLength}.");
+
+                http.Response.StatusCode = upstream.StatusCode;
+                http.Response.ContentType = upstream.ContentType;
+                if (upstream.ContentLength is { } length) http.Response.ContentLength = length;
+                if (upstream.AcceptRanges is { } accept) http.Response.Headers.AcceptRanges = accept;
+                if (upstream.ContentRange is { } contentRange) http.Response.Headers.ContentRange = contentRange;
+
+                await upstream.Body.CopyToAsync(http.Response.Body, ct);
+                return Results.Empty;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                if (!http.Response.HasStarted)
+                {
+                    // Nothing has flushed — undo the partial headers and hand back a clean Subsonic envelope.
+                    // Crucially, RESET the status too: a mid-relay throw arrives AFTER the upstream's 206 +
+                    // range headers were copied, so without this the client would get an HTTP 206 carrying an
+                    // XML code-70 error body. Subsonic error envelopes always ride HTTP 200 (AddonEndpoints
+                    // resets to 404 in the same spot; here 200, because a Subsonic envelope is always a 200).
+                    log.LogError(ex, "Subsonic media: the music library failed before any bytes were sent — returning a failed envelope");
+                    http.Response.StatusCode = StatusCodes.Status200OK;
+                    http.Response.ContentLength = null;
+                    http.Response.Headers.Remove("Accept-Ranges");
+                    http.Response.Headers.Remove("Content-Range");
+                    return SubsonicResponse.Error(http.Request, 70, "The requested media could not be served.");
+                }
+
+                log.LogError(ex, "Subsonic media: the music library failed after the response had started — aborting the connection");
+                http.Abort();
+                return Results.Empty;
+            }
+        }
+        finally
+        {
+            // Release the ProxyResponse on every exit path — success, mid-copy failure, or client
+            // disconnect. Its own DisposeAsync is plugin-authored and can throw; that must never escape and
+            // corrupt an otherwise-complete relay.
+            try { await upstream.DisposeAsync(); }
+            catch (Exception ex) { log.LogError(ex, "Subsonic media: the music library threw while disposing its ProxyResponse"); }
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Helpers.
     // ---------------------------------------------------------------------------------------------
@@ -260,4 +483,27 @@ public static class SubsonicEndpoints
 
     private static int? ParseIntOrNull(StringValues v)
         => int.TryParse(v.ToString(), out var n) ? n : null;
+
+    private static long? ParseLongOrNull(StringValues v)
+        => long.TryParse(v.ToString(), out var n) ? n : null;
+
+    // A scrobble's ms-epoch play instant, defaulting to now. A missing, unparseable, OR out-of-range value
+    // falls back to now rather than erroring — DateTimeOffset.FromUnixTimeMilliseconds throws on a value
+    // outside its representable range, and a garbage time must be tolerated like every other bad param.
+    private static DateTimeOffset PlayedAt(StringValues v)
+    {
+        if (ParseLongOrNull(v) is not { } ms) return DateTimeOffset.UtcNow;
+        try { return DateTimeOffset.FromUnixTimeMilliseconds(ms); }
+        catch (ArgumentOutOfRangeException) { return DateTimeOffset.UtcNow; }
+    }
+
+    // Subsonic booleans are "true"/"false"; also accept 1/0. A blank/garbage value falls back.
+    private static bool ParseBool(StringValues v, bool fallback)
+    {
+        var s = v.ToString();
+        if (bool.TryParse(s, out var b)) return b;
+        if (s == "1") return true;
+        if (s == "0") return false;
+        return fallback;
+    }
 }

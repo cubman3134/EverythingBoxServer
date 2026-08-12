@@ -18,6 +18,7 @@ file sealed class FakeMusicLibrary : IMusicLibrary
     public Task<ProxyResponse?> OpenTrackAsync(string songId, string? rangeHeader, CancellationToken ct) => Task.FromResult<ProxyResponse?>(null);
     public void Scrobble(string songId, DateTimeOffset playedAt) { }
     public void SetStarred(string id, bool starred) { }
+    public SearchResult Starred() => new([], [], []);
     public IReadOnlyList<PlaylistInfo> Playlists() => [];
     public PlaylistInfo? Playlist(string id) => null;
 }

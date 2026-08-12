@@ -1,3 +1,5 @@
+using EverythingBox.Server.Abstractions;
+using EverythingBox.Server.MusicLibrary;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -58,6 +60,9 @@ internal static class SubsonicHostStaging
             artist: "Nova", albumArtist: null, album: "Nova Nights", title: "Nova Theme", track: 1, year: 2015, genre: "Jazz");
         WriteTrack(rootsDir, "Nova - Nova Nights", "02 - Second Star.mp3",
             artist: "Nova", albumArtist: null, album: "Nova Nights", title: "Second Star", track: 2, year: 2015, genre: "Jazz");
+        // A sibling cover.png so this album (and its songs) carry a real coverArt id the getCoverArt media
+        // endpoint can serve — the scanner treats cover.* as the album art, never as a track.
+        WriteCover(rootsDir, "Nova - Nova Nights", "cover.png");
         WriteTrack(rootsDir, "Nova - Nova Dawn", "01 - Dawn.mp3",
             artist: "Nova", albumArtist: null, album: "Nova Dawn", title: "Dawn", track: 1, year: 2018, genre: "Jazz");
 
@@ -81,6 +86,19 @@ internal static class SubsonicHostStaging
         if (albumArtist is not null) t.AlbumArtist = albumArtist;
         Assert.True(t.Save(), "ATL failed to write tags to the synthesized fixture track");
     }
+
+    // A minimal-but-valid 1x1 PNG written next to an album's tracks. The scanner picks a sibling cover.*
+    // as the album art; the bytes are never decoded on the serve path (mime is by extension), so a tiny
+    // real PNG is enough to prove getCoverArt streams an image — SOURCE bytes, not a committed fixture.
+    private static readonly byte[] OnePixelPng = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
+
+    private static void WriteCover(string rootsDir, string albumFolder, string file)
+    {
+        var albumDir = Path.Combine(rootsDir, albumFolder);
+        Directory.CreateDirectory(albumDir);
+        File.WriteAllBytes(Path.Combine(albumDir, file), OnePixelPng);
+    }
 }
 
 /// <summary>Boots the real host in-memory with the <c>musiclib</c> plugin loaded and Subsonic ENABLED,
@@ -92,6 +110,14 @@ internal static class SubsonicHostStaging
 public sealed class SubsonicServerFactory : WebApplicationFactory<Program>
 {
     public const string Token = "subsonic-tok";
+
+    // A playlist SEEDED into the plugin's local store BEFORE the host boots (there is no create verb on
+    // the Subsonic surface — playlists are populated out of band), so getPlaylists/getPlaylist have a real
+    // playlist to project. Its single member is Nova's "Nova Theme" track, whose id is the encoded absolute
+    // path — identical to the id the scanner mints — so it resolves to a full <entry>.
+    public const string SeededPlaylistId = "pl-seed";
+    public const string SeededPlaylistName = "Road Trip";
+    public string SeededSongId { get; }
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ebs-subsonic-host-" + Guid.NewGuid().ToString("N"));
 
@@ -108,6 +134,15 @@ public sealed class SubsonicServerFactory : WebApplicationFactory<Program>
         SubsonicHostStaging.StageMusicPlugin(PluginsDirectory);
         Directory.CreateDirectory(FilesDirectory);
         SubsonicHostStaging.WriteTaggedTree(RootsDirectory);
+
+        // Seed a playlist into the plugin's state store BEFORE the host boots. The store loads once at the
+        // source's construction (during the CreateClient() below), so the seed must exist first. The state
+        // dir mirrors MusicLibraryPlugin: <files>/plugins/musiclib/state; the song id is the encoded
+        // absolute path of a synthesized track, exactly what MusicIndex.TrackId mints.
+        SeededSongId = SafeLocalFileServer.EncodeId(
+            Path.Combine(RootsDirectory, "Nova - Nova Nights", "01 - Nova Theme.mp3"));
+        var stateDir = Path.Combine(FilesDirectory, "plugins", "musiclib", "state");
+        new MusicStateStore(stateDir).SavePlaylist(SeededPlaylistId, SeededPlaylistName, [SeededSongId]);
 
         var configPath = Path.Combine(_root, "everythingbox-server.json");
         File.WriteAllText(configPath,
@@ -201,6 +236,7 @@ internal sealed class ThrowingMusicLibrary : EverythingBox.Server.Abstractions.I
     public Task<EverythingBox.Server.Abstractions.ProxyResponse?> OpenTrackAsync(string songId, string? rangeHeader, CancellationToken ct) => throw Boom();
     public void Scrobble(string songId, DateTimeOffset playedAt) => throw Boom();
     public void SetStarred(string id, bool starred) => throw Boom();
+    public EverythingBox.Server.Abstractions.SearchResult Starred() => throw Boom();
     public IReadOnlyList<EverythingBox.Server.Abstractions.PlaylistInfo> Playlists() => throw Boom();
     public EverythingBox.Server.Abstractions.PlaylistInfo? Playlist(string id) => throw Boom();
 }
