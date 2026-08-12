@@ -84,7 +84,7 @@ public sealed class IndexerSearchSource : IMediaSource
         if (string.IsNullOrWhiteSpace(query))
             return new SourceCatalog($"Search {descriptor.Name} to see results", []);
 
-        if (!MediaTypeNames.TryParseProtocol(descriptor.MediaType, out var mediaType))
+        if (!MediaTypeNames.TryParseProtocol(descriptor.Kind, out var mediaType))
             return SourceCatalog.Empty(descriptor.Name);
 
         var request = BuildRequest(mediaType, query);
@@ -106,7 +106,7 @@ public sealed class IndexerSearchSource : IMediaSource
         }
 
         var items = results
-            .Select(result => ToItem(result, descriptor.MediaType))
+            .Select(result => ToItem(result, descriptor.Kind))
             .ToList();
 
         return new SourceCatalog(descriptor.Name, items);
@@ -163,7 +163,7 @@ public sealed class IndexerSearchSource : IMediaSource
             Id: EncodeId(result, mediaType),
             Title: result.Title,
             Subtitle: Describe(result),
-            MediaType: mediaType);
+            Kind: mediaType);
 
     private static string Describe(TorrentResult result)
     {

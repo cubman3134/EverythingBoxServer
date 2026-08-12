@@ -52,10 +52,10 @@ public sealed class MetadataBackedVideoSource : IMediaSource
         // must not promise a catalog nothing can answer. With no metadata source
         // registered at all, this declares nothing.
         var catalogs = new List<CatalogDescriptor>();
-        if (_metadata.Any(source => Supports(source, "movie")))
-            catalogs.Add(new CatalogDescriptor("movies", "Movies", "movie"));
-        if (_metadata.Any(source => Supports(source, "series")))
-            catalogs.Add(new CatalogDescriptor("series", "Series", "series"));
+        if (_metadata.Any(source => Supports(source, MediaTypeNames.Movie)))
+            catalogs.Add(new CatalogDescriptor("movies", "Movies", MediaTypeNames.Movie));
+        if (_metadata.Any(source => Supports(source, MediaTypeNames.Series)))
+            catalogs.Add(new CatalogDescriptor("series", "Series", MediaTypeNames.Series));
         Catalogs = catalogs;
     }
 
@@ -81,13 +81,13 @@ public sealed class MetadataBackedVideoSource : IMediaSource
         var items = new List<CatalogItem>();
         foreach (var source in _metadata)
         {
-            if (!Supports(source, descriptor.MediaType))
+            if (!Supports(source, descriptor.Kind))
                 continue;
 
             IReadOnlyList<MetadataItem> results;
             try
             {
-                results = await source.BrowseAsync(descriptor.MediaType, query, ct);
+                results = await source.BrowseAsync(descriptor.Kind, query, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
             {
@@ -95,7 +95,7 @@ public sealed class MetadataBackedVideoSource : IMediaSource
                 // the whole shelf down — the others still get to answer.
                 _logger.LogWarning(ex,
                     "Metadata source '{Source}' failed to browse '{MediaType}'; skipping it.",
-                    PluginDiagnostics.SafeLabel(source), descriptor.MediaType);
+                    PluginDiagnostics.SafeLabel(source), descriptor.Kind);
                 continue;
             }
 
@@ -104,7 +104,7 @@ public sealed class MetadataBackedVideoSource : IMediaSource
             // catalog's type — a source mixing types into one BrowseAsync call must
             // not have them silently mis-shelved onto whatever catalog happened to ask.
             items.AddRange(results
-                .Where(item => string.Equals(item.MediaType, descriptor.MediaType, StringComparison.OrdinalIgnoreCase))
+                .Where(item => string.Equals(item.MediaType, descriptor.Kind, StringComparison.OrdinalIgnoreCase))
                 .Select(ToCatalogItem));
         }
 
@@ -124,7 +124,7 @@ public sealed class MetadataBackedVideoSource : IMediaSource
         var items = new List<CatalogItem>();
         foreach (var source in _metadata)
         {
-            if (!Supports(source, "series"))
+            if (!Supports(source, MediaTypeNames.Series))
                 continue;
 
             IReadOnlyList<MetadataEpisode> episodes;
@@ -233,11 +233,11 @@ public sealed class MetadataBackedVideoSource : IMediaSource
             Id: EncodeId(item),
             Title: item.Title,
             Subtitle: item.Year?.ToString() ?? "",
-            MediaType: item.MediaType,
+            Kind: item.MediaType,
             ThumbnailUrl: item.PosterUrl,
             // A series is expandable into episodes; a movie is not — it's already
             // the whole thing.
-            Expandable: string.Equals(item.MediaType, "series", StringComparison.OrdinalIgnoreCase));
+            Expandable: string.Equals(item.MediaType, MediaTypeNames.Series, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>An episode's id carries the SERIES title (not the episode's own
     /// title) plus season and episode — that's what <see cref="ResolveAsync"/> needs
@@ -251,7 +251,7 @@ public sealed class MetadataBackedVideoSource : IMediaSource
             Id: EncodeEpisodeId(seriesTitle, episode),
             Title: $"S{episode.Season}E{episode.Episode} - {episode.Title}",
             Subtitle: episode.Overview ?? "",
-            MediaType: "series");
+            Kind: MediaTypeNames.Series);
 
     /// <summary>The bit of a <see cref="MetadataItem"/> that needs to survive the round
     /// trip to the client and back, as JSON. A separate, deliberately permissive DTO
@@ -301,7 +301,7 @@ public sealed class MetadataBackedVideoSource : IMediaSource
         Encode(new ItemRecord
         {
             Title = seriesTitle,
-            MediaType = "series",
+            MediaType = MediaTypeNames.Series,
             Season = episode.Season,
             Episode = episode.Episode,
         });

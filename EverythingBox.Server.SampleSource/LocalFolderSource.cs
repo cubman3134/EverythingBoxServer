@@ -31,7 +31,7 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
     public string Key => "local";
 
     public IReadOnlyList<CatalogDescriptor> Catalogs { get; } =
-        [new CatalogDescriptor("files", "Local Files", "movie")];
+        [new CatalogDescriptor("files", "Local Files", MediaTypeNames.Movie)];
 
     // ReparsePoint here means a junction/symlink is never descended into, so it can't leak files
     // from outside a configured folder or loop back on an ancestor; it doesn't apply to the root
@@ -76,7 +76,7 @@ public sealed class LocalFolderSource(LocalFolderConfig config) : IMediaSource
                     Id: EncodeId(path),
                     Title: title,
                     Subtitle: Describe(new FileInfo(path).Length),
-                    MediaType: "movie"));
+                    Kind: MediaTypeNames.Movie));
             }
         }
 

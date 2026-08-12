@@ -72,7 +72,7 @@ public sealed class RomLibrarySource : IMediaSource
 
     // A fresh checkout with no configured roots serves nothing.
     public IReadOnlyList<CatalogDescriptor> Catalogs
-        => _roots.Count > 0 ? [new CatalogDescriptor("games", "Games", "game")] : [];
+        => _roots.Count > 0 ? [new CatalogDescriptor("games", "Games", MediaTypeNames.Game)] : [];
 
     // Immediate subfolders only; a junction/symlink subfolder is skipped (never descended) so it can't
     // leak a console folder from outside a root. IgnoreInaccessible skips an unreadable dir.
@@ -111,7 +111,7 @@ public sealed class RomLibrarySource : IMediaSource
                     Id: SafeLocalFileServer.EncodeId(dir),
                     Title: title,
                     Subtitle: string.Empty,
-                    MediaType: "platform",
+                    Kind: MediaTypeNames.Platform,
                     ThumbnailUrl: null,
                     Expandable: true));
             }
@@ -174,7 +174,7 @@ public sealed class RomLibrarySource : IMediaSource
                 Id: SafeLocalFileServer.EncodeId(path),
                 Title: meta.Name ?? Path.GetFileNameWithoutExtension(path),
                 Subtitle: Path.GetFileName(path),
-                MediaType: "game",
+                Kind: MediaTypeNames.Game,
                 ThumbnailUrl: BoxartUrl(meta.BoxartPath),
                 Expandable: false));
         }

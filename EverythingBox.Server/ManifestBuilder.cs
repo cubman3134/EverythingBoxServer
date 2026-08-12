@@ -61,7 +61,7 @@ public sealed class ManifestBuilder(ILogger<ManifestBuilder>? log = null)
                 var key = source.Key;
                 sourceCatalogs = source.Catalogs
                     .Where(c => c is not null)
-                    .Select(c => (object)new { id = SourceRouter.Prefix(key, c.Id), name = c.Name, type = c.MediaType })
+                    .Select(c => (object)new { id = SourceRouter.Prefix(key, c.Id), name = c.Name, type = c.Kind })
                     .ToList();
                 sourceMediaTypes = source.MediaTypes.Where(t => t is not null).ToList();
             }

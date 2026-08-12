@@ -43,7 +43,7 @@ public class LocalLibrarySourceTests : IDisposable
     {
         var c = Assert.Single(Movies().Catalogs);
         Assert.Equal("movies", c.Id);
-        Assert.Equal("movie", c.MediaType);
+        Assert.Equal("movie", c.Kind);
     }
 
     [Fact]
@@ -51,7 +51,7 @@ public class LocalLibrarySourceTests : IDisposable
     {
         var catalog = await Movies().SearchAsync("movies", null, Ctx(), default);
         Assert.Equal(2, catalog.Items.Count);
-        Assert.All(catalog.Items, i => Assert.Equal("movie", i.MediaType));
+        Assert.All(catalog.Items, i => Assert.Equal("movie", i.Kind));
         Assert.All(catalog.Items, i => Assert.False(i.Expandable));
         Assert.Contains(catalog.Items, i => i.Title == "Some Movie (2019)");
         Assert.Contains(catalog.Items, i => i.Title == "Another Film (2020)");
@@ -165,7 +165,7 @@ public class LocalLibrarySourceTests : IDisposable
     public void A_series_root_declares_the_series_catalog()
     {
         var (seriesRoot, _) = MakeShow();
-        Assert.Contains(Series(seriesRoot).Catalogs, c => c.Id == "series" && c.MediaType == "series");
+        Assert.Contains(Series(seriesRoot).Catalogs, c => c.Id == "series" && c.Kind == "series");
     }
 
     [Fact]
@@ -175,7 +175,7 @@ public class LocalLibrarySourceTests : IDisposable
         var catalog = await Series(seriesRoot).SearchAsync("series", null, Ctx(), default);
         var item = Assert.Single(catalog.Items);
         Assert.Equal("Breaking Show", item.Title);
-        Assert.Equal("series", item.MediaType);
+        Assert.Equal("series", item.Kind);
         Assert.True(item.Expandable);
     }
 
@@ -198,7 +198,7 @@ public class LocalLibrarySourceTests : IDisposable
         Assert.Equal(2, episodes.Items.Count);
         Assert.Equal("S01E01", episodes.Items[0].Title);
         Assert.Equal("S01E02", episodes.Items[1].Title);
-        Assert.All(episodes.Items, e => Assert.Equal("series", e.MediaType));
+        Assert.All(episodes.Items, e => Assert.Equal("series", e.Kind));
         Assert.All(episodes.Items, e => Assert.False(e.Expandable));
         Assert.Contains("Breaking.Show.S01E01.mkv", episodes.Items[0].Subtitle);
     }
