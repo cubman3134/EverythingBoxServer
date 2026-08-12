@@ -40,6 +40,10 @@ public sealed class ServerConfig
     /// </summary>
     public DownloadConfig Download { get; set; } = new();
 
+    /// <summary>Self-hosted save/state sync object store. OFF by default; when disabled the sync
+    /// routes are not mapped at all.</summary>
+    public SyncConfig Sync { get; set; } = new();
+
     public string ResolvedPluginsDirectory =>
         Environment.GetEnvironmentVariable("EBS_PLUGINS_DIR") is { Length: > 0 } fromEnv ? fromEnv
         : !string.IsNullOrWhiteSpace(PluginsDirectory) ? PluginsDirectory!
@@ -177,4 +181,24 @@ public sealed class DownloadConfig
     /// <see cref="TimeoutSeconds"/> still applies as the hard ceiling. A non-positive value (0 or
     /// negative) disables idle detection — only the total timeout applies.</summary>
     public int IdleTimeoutSeconds { get; set; } = 120;
+}
+
+public sealed class SyncConfig
+{
+    /// <summary>Off by default. When true, the /{token}/sync routes are mapped.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>Where per-namespace sync data is stored. Defaults to a "sync" folder next to the exe.</summary>
+    public string? Directory { get; set; }
+
+    /// <summary>Hard byte cap per namespace; a PUT that would exceed it is refused with 507.</summary>
+    public long PerNamespaceQuotaBytes { get; set; } = 256L * 1024 * 1024;
+
+    /// <summary>Largest single object accepted; a larger PUT body is refused with 400.</summary>
+    public long MaxObjectBytes { get; set; } = 64L * 1024 * 1024;
+
+    public string ResolvedSyncDirectory =>
+        Environment.GetEnvironmentVariable("EBS_SYNC_DIR") is { Length: > 0 } fromEnv ? fromEnv
+        : !string.IsNullOrWhiteSpace(Directory) ? Directory!
+        : Path.Combine(AppContext.BaseDirectory, "sync");
 }

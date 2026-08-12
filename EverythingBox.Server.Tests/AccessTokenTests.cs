@@ -42,6 +42,16 @@ public class AccessTokenTests
             m => m.Contains(TokenPluginServerFactory.Token, StringComparison.OrdinalIgnoreCase));
     }
 
+    // Sync is opt-in: this factory writes no Sync config, so config.Sync.Enabled is false and the
+    // /{token}/sync routes are never mapped. A sync request under the valid token must therefore 404
+    // (route-not-found), proving a default server exposes no sync surface at all.
+    [Fact]
+    public async Task Sync_route_is_absent_when_sync_is_disabled()
+    {
+        var response = await _factory.CreateClient().GetAsync($"/{TokenPluginServerFactory.Token}/sync/p1");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
     [Fact]
     public async Task The_token_is_redacted_from_the_log_at_its_configured_casing_too()
     {
