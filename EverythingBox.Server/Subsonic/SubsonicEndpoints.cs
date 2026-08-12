@@ -14,15 +14,19 @@ public static class SubsonicEndpoints
     public static void MapSubsonic(this WebApplication app)
     {
         app.MapMethods("/rest/{endpoint}", ["GET", "POST"],
-            (string endpoint, HttpContext http, IMusicLibrary music, ServerConfig config, ILoggerFactory loggerFactory) =>
+            async (string endpoint, HttpContext http, IMusicLibrary music, ServerConfig config, ILoggerFactory loggerFactory) =>
             {
                 // Clients hit either /rest/ping or /rest/ping.view — strip a trailing ".view".
                 var name = endpoint.EndsWith(".view", StringComparison.OrdinalIgnoreCase) ? endpoint[..^5] : endpoint;
 
+                // Auth runs FIRST, before the switch — every media endpoint below streams bytes only after
+                // this gate, so an unauthenticated stream/download/getCoverArt gets a code-40 envelope and
+                // never leaks a single byte of audio or cover.
                 if (!SubsonicAuth.Authenticate(http.Request, config.AccessToken))
                     return SubsonicResponse.Error(http.Request, 40, "Wrong username or password.");
 
                 var req = http.Request;
+                var ct = http.RequestAborted;
                 try
                 {
                     return name switch
@@ -44,8 +48,12 @@ public static class SubsonicEndpoints
                         "search3" => Search3(req, music),
                         "getRandomSongs" => GetRandomSongs(req, music),
 
-                        // Media streaming (stream/download/getCoverArt) + writes (star/scrobble/playlists)
-                        // arrive in Increment 4.
+                        // ---- Increment 4 media endpoints. Range-served original bytes; no transcoding. ----
+                        "stream" => await Stream(req, http, music, loggerFactory, ct),
+                        "download" => await Download(req, http, music, loggerFactory, ct),
+                        "getCoverArt" => GetCoverArt(req, music),
+
+                        // Writes (star/scrobble/playlists) arrive in Increment 4 Task 2.
                         _ => SubsonicResponse.Error(req, 0, $"Endpoint not implemented: {name}"),
                     };
                 }
@@ -229,6 +237,113 @@ public static class SubsonicEndpoints
         var root = new SubsonicNode("randomSongs");
         foreach (var s in music.RandomSongs(size, genre)) root.Add(Song(s));
         return SubsonicResponse.Ok(req, root);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Media endpoints (Increment 4): stream / download / getCoverArt. Range-served, DIRECT PLAY.
+    // ---------------------------------------------------------------------------------------------
+
+    // stream: serve a song's ORIGINAL bytes with Range. maxBitRate/format are read for protocol
+    // completeness but deliberately IGNORED — this build does not transcode. That is the honest #9 rung:
+    // direct play is correct, and a client that asked for a hard bitrate cap or a different container
+    // simply receives the source file unaltered rather than a faked/re-encoded stream.
+    private static async Task<IResult> Stream(HttpRequest req, HttpContext http, IMusicLibrary music,
+        ILoggerFactory loggers, CancellationToken ct)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+
+        // Accepted, then discarded: no transcode. (Read so a form-POST client is parsed identically.)
+        _ = SubsonicParams.Get(req, "maxBitRate");
+        _ = SubsonicParams.Get(req, "format");
+
+        return await OpenAndRelay(req, http, music, id, loggers, ct);
+    }
+
+    // download: same relay, but NEVER considers maxBitRate/format — a download is always the original file.
+    private static async Task<IResult> Download(HttpRequest req, HttpContext http, IMusicLibrary music,
+        ILoggerFactory loggers, CancellationToken ct)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+        return await OpenAndRelay(req, http, music, id, loggers, ct);
+    }
+
+    // Shared: open the track (honoring a Range header if present) and relay its bytes. A null result — an
+    // id that is not a contained track — is a parseable Subsonic code-70, not a bare 404.
+    private static async Task<IResult> OpenAndRelay(HttpRequest req, HttpContext http, IMusicLibrary music,
+        string id, ILoggerFactory loggers, CancellationToken ct)
+    {
+        var range = http.Request.Headers.Range.ToString();
+        var upstream = await music.OpenTrackAsync(id, string.IsNullOrEmpty(range) ? null : range, ct);
+        if (upstream is null) return SubsonicResponse.Error(req, 70, "The requested media could not be found.");
+        return await Relay(upstream, http, loggers.CreateLogger("Subsonic"), ct);
+    }
+
+    // getCoverArt: serve the cover file with Range. `size` is accepted but IGNORED (no image resizing in
+    // v1). The plugin's CoverArt() already decoded + containment-checked the id and only returns genuine,
+    // contained image files, so Results.File over that path is safe.
+    private static IResult GetCoverArt(HttpRequest req, IMusicLibrary music)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+        _ = SubsonicParams.Get(req, "size");   // accepted, not honored (v1 has no resizer).
+        return music.CoverArt(id) is { } cover
+            ? Results.File(cover.Path, cover.ContentType, enableRangeProcessing: true)
+            : SubsonicResponse.Error(req, 70, "The requested cover art could not be found.");
+    }
+
+    // Byte-relay for a ProxyResponse, mirroring AddonEndpoints.ProxyAsync's discipline: copy the status,
+    // content-type/length and Range headers off the ProxyResponse onto http.Response, stream the Body, and
+    // ALWAYS dispose the ProxyResponse in a finally (a plugin's Body is often a live file handle). Every
+    // field here is plugin-authored and can fail independently of OpenTrackAsync succeeding; HasStarted is
+    // the load-bearing signal — before the first byte a failure degrades to a clean code-70 envelope with
+    // the partial headers cleared; after it, headers are already gone, so we abort the connection (a clear
+    // cutoff) rather than silently truncate, and never let the exception escape.
+    private static async Task<IResult> Relay(ProxyResponse upstream, HttpContext http, ILogger log, CancellationToken ct)
+    {
+        try
+        {
+            try
+            {
+                if (upstream.Body is null)
+                    throw new InvalidOperationException("The music library returned a ProxyResponse with a null Body.");
+                if (upstream.StatusCode is < 100 or > 599)
+                    throw new InvalidOperationException($"The music library returned an implausible StatusCode {upstream.StatusCode}.");
+                if (upstream.ContentLength is < 0)
+                    throw new InvalidOperationException($"The music library returned a negative ContentLength {upstream.ContentLength}.");
+
+                http.Response.StatusCode = upstream.StatusCode;
+                http.Response.ContentType = upstream.ContentType;
+                if (upstream.ContentLength is { } length) http.Response.ContentLength = length;
+                if (upstream.AcceptRanges is { } accept) http.Response.Headers.AcceptRanges = accept;
+                if (upstream.ContentRange is { } contentRange) http.Response.Headers.ContentRange = contentRange;
+
+                await upstream.Body.CopyToAsync(http.Response.Body, ct);
+                return Results.Empty;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                if (!http.Response.HasStarted)
+                {
+                    // Nothing has flushed — undo the partial headers and hand back a clean Subsonic envelope.
+                    log.LogError(ex, "Subsonic media: the music library failed before any bytes were sent — returning a failed envelope");
+                    http.Response.ContentLength = null;
+                    http.Response.Headers.Remove("Accept-Ranges");
+                    http.Response.Headers.Remove("Content-Range");
+                    return SubsonicResponse.Error(http.Request, 70, "The requested media could not be served.");
+                }
+
+                log.LogError(ex, "Subsonic media: the music library failed after the response had started — aborting the connection");
+                http.Abort();
+                return Results.Empty;
+            }
+        }
+        finally
+        {
+            // Release the ProxyResponse on every exit path — success, mid-copy failure, or client
+            // disconnect. Its own DisposeAsync is plugin-authored and can throw; that must never escape and
+            // corrupt an otherwise-complete relay.
+            try { await upstream.DisposeAsync(); }
+            catch (Exception ex) { log.LogError(ex, "Subsonic media: the music library threw while disposing its ProxyResponse"); }
+        }
     }
 
     // ---------------------------------------------------------------------------------------------

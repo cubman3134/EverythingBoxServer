@@ -58,6 +58,9 @@ internal static class SubsonicHostStaging
             artist: "Nova", albumArtist: null, album: "Nova Nights", title: "Nova Theme", track: 1, year: 2015, genre: "Jazz");
         WriteTrack(rootsDir, "Nova - Nova Nights", "02 - Second Star.mp3",
             artist: "Nova", albumArtist: null, album: "Nova Nights", title: "Second Star", track: 2, year: 2015, genre: "Jazz");
+        // A sibling cover.png so this album (and its songs) carry a real coverArt id the getCoverArt media
+        // endpoint can serve — the scanner treats cover.* as the album art, never as a track.
+        WriteCover(rootsDir, "Nova - Nova Nights", "cover.png");
         WriteTrack(rootsDir, "Nova - Nova Dawn", "01 - Dawn.mp3",
             artist: "Nova", albumArtist: null, album: "Nova Dawn", title: "Dawn", track: 1, year: 2018, genre: "Jazz");
 
@@ -80,6 +83,19 @@ internal static class SubsonicHostStaging
         };
         if (albumArtist is not null) t.AlbumArtist = albumArtist;
         Assert.True(t.Save(), "ATL failed to write tags to the synthesized fixture track");
+    }
+
+    // A minimal-but-valid 1x1 PNG written next to an album's tracks. The scanner picks a sibling cover.*
+    // as the album art; the bytes are never decoded on the serve path (mime is by extension), so a tiny
+    // real PNG is enough to prove getCoverArt streams an image — SOURCE bytes, not a committed fixture.
+    private static readonly byte[] OnePixelPng = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
+
+    private static void WriteCover(string rootsDir, string albumFolder, string file)
+    {
+        var albumDir = Path.Combine(rootsDir, albumFolder);
+        Directory.CreateDirectory(albumDir);
+        File.WriteAllBytes(Path.Combine(albumDir, file), OnePixelPng);
     }
 }
 
