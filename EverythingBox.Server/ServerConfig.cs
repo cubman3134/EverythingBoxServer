@@ -44,6 +44,10 @@ public sealed class ServerConfig
     /// routes are not mapped at all.</summary>
     public SyncConfig Sync { get; set; } = new();
 
+    /// <summary>Subsonic-compatible /rest music API. OFF by default; an absent section deserializes to
+    /// disabled, and when disabled the /rest routes are not mapped at all.</summary>
+    public SubsonicConfig Subsonic { get; set; } = new();
+
     public string ResolvedPluginsDirectory =>
         Environment.GetEnvironmentVariable("EBS_PLUGINS_DIR") is { Length: > 0 } fromEnv ? fromEnv
         : !string.IsNullOrWhiteSpace(PluginsDirectory) ? PluginsDirectory!
@@ -181,6 +185,14 @@ public sealed class DownloadConfig
     /// <see cref="TimeoutSeconds"/> still applies as the hard ceiling. A non-positive value (0 or
     /// negative) disables idle detection — only the total timeout applies.</summary>
     public int IdleTimeoutSeconds { get; set; } = 120;
+}
+
+/// <summary>Opt-in Subsonic /rest API. Mirrors <see cref="SyncConfig"/>'s shape — a single Enabled
+/// flag, defaulting off so an absent section leaves the surface unmapped.</summary>
+public sealed class SubsonicConfig
+{
+    /// <summary>Off by default. When true (and a music library is present), the /rest routes are mapped.</summary>
+    public bool Enabled { get; set; }
 }
 
 public sealed class SyncConfig

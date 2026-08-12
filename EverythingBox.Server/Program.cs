@@ -6,6 +6,7 @@ using EverythingBox.Server.Download;
 using EverythingBox.Server.Plugins;
 using EverythingBox.Server.Routing;
 using EverythingBox.Server.Sources;
+using EverythingBox.Server.Subsonic;
 using EverythingBox.Server.Sync;
 
 var config = ServerConfig.Load();
@@ -228,6 +229,12 @@ app.MapFiles(prefix);
 
 if (config.Sync.Enabled)
     app.MapSync(prefix);
+
+// Subsonic mounts at a BARE /rest (no token prefix) — it authenticates per request against the
+// access token. GetService (not GetRequiredService) forces the lazy plugin load and yields null
+// when no plugin registered a music library, in which case the surface stays unmapped.
+if (config.Subsonic.Enabled && app.Services.GetService<IMusicLibrary>() is not null)
+    app.MapSubsonic();
 
 // Force plugin loading now, so failures surface at startup rather than on first request.
 var sourceRouter = app.Services.GetRequiredService<SourceRouter>();

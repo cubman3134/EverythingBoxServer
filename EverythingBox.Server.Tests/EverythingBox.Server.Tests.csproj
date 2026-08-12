@@ -55,6 +55,9 @@
       <DupPluginOut Include="..\tests\TestPlugin.Dup\bin\$(Configuration)\net9.0\**\*.*" />
       <ThrowingPluginOut Include="..\tests\TestPlugin.Throwing\bin\$(Configuration)\net9.0\**\*.*" />
       <MetadataPluginOut Include="..\tests\TestPlugin.Metadata\bin\$(Configuration)\net9.0\**\*.*" />
+      <!-- The real music-library plugin, staged as a plugin folder (with ATL.dll + .deps.json) so
+           SubsonicServerFactory can load it from disk and register an IMusicLibrary in DI. -->
+      <MusicPluginOut Include="..\EverythingBox.Server.MusicLibrary\bin\$(Configuration)\net9.0\**\*.*" />
     </ItemGroup>
     <!-- Fail the BUILD, loudly and by name, if a fixture produced nothing to stage.
          A ProjectReference alone is not enough: a plugin project missing from the
@@ -69,12 +72,14 @@
     <Error Condition="'@(DupPluginOut)' == ''" Text="TestPlugin.Dup produced no output to stage. Is it in EverythingBoxServer.sln?" />
     <Error Condition="'@(ThrowingPluginOut)' == ''" Text="TestPlugin.Throwing produced no output to stage. Is it in EverythingBoxServer.sln?" />
     <Error Condition="'@(MetadataPluginOut)' == ''" Text="TestPlugin.Metadata produced no output to stage. Is it in EverythingBoxServer.sln?" />
+    <Error Condition="'@(MusicPluginOut)' == ''" Text="EverythingBox.Server.MusicLibrary produced no output to stage. Is it in EverythingBoxServer.sln?" />
 
     <Copy SourceFiles="@(GoodPluginOut)" DestinationFolder="$(OutDir)testplugins\good\%(RecursiveDir)" />
     <Copy SourceFiles="@(BadPluginOut)" DestinationFolder="$(OutDir)testplugins\bad\%(RecursiveDir)" />
     <Copy SourceFiles="@(DupPluginOut)" DestinationFolder="$(OutDir)testplugins\dup\%(RecursiveDir)" />
     <Copy SourceFiles="@(ThrowingPluginOut)" DestinationFolder="$(OutDir)testplugins\throwing\%(RecursiveDir)" />
     <Copy SourceFiles="@(MetadataPluginOut)" DestinationFolder="$(OutDir)testplugins\browsemeta\%(RecursiveDir)" />
+    <Copy SourceFiles="@(MusicPluginOut)" DestinationFolder="$(OutDir)testplugins\musiclib\%(RecursiveDir)" />
   </Target>
 
 </Project>
