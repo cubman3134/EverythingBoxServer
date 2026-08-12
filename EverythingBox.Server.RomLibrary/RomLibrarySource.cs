@@ -84,12 +84,70 @@ public sealed class RomLibrarySource : IMediaSource
         return Task.FromResult(new SourceCatalog("Games", ordered, capped));
     }
 
-    // Filled in Task 2.
+    private static readonly EnumerationOptions TopLevelFiles = new()
+    {
+        RecurseSubdirectories = false,
+        AttributesToSkip = FileAttributes.ReparsePoint,
+        IgnoreInaccessible = true,
+    };
+
+    // Not-a-game files that commonly sit beside ROMs. A dotfile or one of these extensions is skipped;
+    // everything else in a system folder is treated as a playable ROM (the folder is authoritative,
+    // matching how the client accepts any non-junk file under a system folder).
+    private static readonly HashSet<string> JunkExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".txt", ".nfo", ".xml", ".dat", ".md", ".ini", ".cfg", ".db", ".log",
+        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif",
+        ".m3u", ".srm", ".state", ".sav", ".bak",
+    };
+
+    private static bool IsRom(string path)
+    {
+        var name = Path.GetFileName(path);
+        if (name.Length == 0 || name[0] == '.') return false; // dotfiles
+        return !JunkExtensions.Contains(Path.GetExtension(path));
+    }
+
+    // A platform id is a system folder (a real directory strictly inside a root, per ResolveSafeDir).
+    // Its immediate non-junk files are the games. A game/file id has nothing to expand → empty.
     public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
-        => Task.FromResult(SourceCatalog.Empty("ROM Library"));
+    {
+        if (_files.ResolveSafeDir(itemId) is not { } systemDir)
+            return Task.FromResult(SourceCatalog.Empty("ROM Library"));
+
+        var items = new List<CatalogItem>();
+
+        foreach (var path in Directory.EnumerateFiles(systemDir, "*", TopLevelFiles))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!IsRom(path)) continue;
+            if (!_files.IsContained(path)) continue; // backstop
+            if (items.Count >= MaxItems) break;
+
+            items.Add(new CatalogItem(
+                Id: SafeLocalFileServer.EncodeId(path),
+                Title: Path.GetFileNameWithoutExtension(path),
+                Subtitle: Path.GetFileName(path),
+                MediaType: "game",
+                ThumbnailUrl: null,
+                Expandable: false));
+        }
+
+        var title = RomSystems.Resolve(Path.GetFileName(systemDir))?.Title ?? Path.GetFileName(systemDir);
+        var ordered = items.OrderBy(i => i.Title, StringComparer.OrdinalIgnoreCase).ToList();
+        return Task.FromResult(new SourceCatalog(title, ordered));
+    }
 
     public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
-        => Task.FromResult<SourceStream?>(null);
+    {
+        if (_files.ResolveSafeFile(itemId) is not { } path)
+            return Task.FromResult<SourceStream?>(null);
+
+        // A relative addon path the host serves from the proxy route (OpenAsync). The filename — with
+        // its extension — is in the path, so the client keeps the extension for the emulator.
+        var url = $"proxy/{Key}/{itemId}/{Uri.EscapeDataString(Path.GetFileName(path))}";
+        return Task.FromResult<SourceStream?>(new SourceStream(url, MimeFor(path)));
+    }
 
     public Task<ProxyResponse?> OpenAsync(string itemId, string? rangeHeader, CancellationToken ct)
         => _files.OpenAsync(itemId, rangeHeader, ct);
