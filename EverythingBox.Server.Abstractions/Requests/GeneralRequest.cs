@@ -34,4 +34,8 @@ public sealed class GeneralRequest : MediaRequest
     /// selected if it matches <em>any</em> tag. Falls back to the title when empty.
     /// </summary>
     public IReadOnlyList<string> FileFilters { get; init; } = [];
+
+    public override MediaRequest WithTitle(string title) => new GeneralRequest
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+      Kind = Kind, FileType = FileType, FileTypes = FileTypes, FileFilters = FileFilters };
 }

@@ -125,6 +125,7 @@ public static class GrabberFactory
                 ? TimeSpan.FromSeconds(config.Grabber.ProviderTimeoutSeconds)
                 : TimeSpan.Zero,
             PreferCachedReleases = config.Grabber.PreferCachedReleases,
+            MaxConcurrentSearches = config.Grabber.MaxConcurrentSearches,
         };
 
         var builder = new GrabberBuilder().Configure(options);
@@ -180,6 +181,7 @@ public static class GrabberFactory
                 ? TimeSpan.FromSeconds(config.Grabber.ProviderTimeoutSeconds)
                 : TimeSpan.Zero,
             PreferCachedReleases = config.Grabber.PreferCachedReleases,
+            MaxConcurrentSearches = config.Grabber.MaxConcurrentSearches,
         };
 
         var builder = new GrabberBuilder().Configure(options);

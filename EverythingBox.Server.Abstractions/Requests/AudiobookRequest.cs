@@ -10,4 +10,8 @@ public sealed class AudiobookRequest : MediaRequest
 
     public string? Author { get; init; }
     public string? Narrator { get; init; }
+
+    public override MediaRequest WithTitle(string title) => new AudiobookRequest
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+      Author = Author, Narrator = Narrator };
 }

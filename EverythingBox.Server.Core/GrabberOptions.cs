@@ -41,4 +41,9 @@ public sealed class GrabberOptions
     /// on the first release that merely clears the score.
     /// </summary>
     public bool PreferCachedReleases { get; init; }
+
+    /// <summary>Maximum provider queries in flight at once across the whole title × provider
+    /// fan-out. With no alternate titles this only bounds provider concurrency; a request with
+    /// several titles can otherwise launch titles × providers queries at once. Default 8.</summary>
+    public int MaxConcurrentSearches { get; init; } = 8;
 }

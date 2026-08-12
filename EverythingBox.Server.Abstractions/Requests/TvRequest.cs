@@ -20,4 +20,8 @@ public sealed class TvRequest : MediaRequest
 
     /// <summary>Prefer a single season pack rather than an individual episode.</summary>
     public bool FullSeason { get; init; }
+
+    public override MediaRequest WithTitle(string title) => new TvRequest
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+      Season = Season, Episode = Episode, AbsoluteEpisode = AbsoluteEpisode, FullSeason = FullSeason };
 }

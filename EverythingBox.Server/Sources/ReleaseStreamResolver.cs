@@ -23,6 +23,8 @@ namespace EverythingBox.Server.Sources;
 internal sealed class UnknownMediaTypeRequest : MediaRequest
 {
     public override MediaType MediaType => MediaType.Other;
+    public override MediaRequest WithTitle(string title) => new UnknownMediaTypeRequest
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles };
 }
 
 /// <summary>

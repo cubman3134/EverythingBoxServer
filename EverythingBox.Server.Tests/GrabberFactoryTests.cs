@@ -128,6 +128,7 @@ public class GrabberFactoryTests
                 QuickGrabScore = 85.5,
                 ProviderTimeoutSeconds = 12,
                 PreferCachedReleases = true,
+                MaxConcurrentSearches = 5,
             },
         };
 
@@ -136,6 +137,7 @@ public class GrabberFactoryTests
         Assert.Equal(85.5, grabber.Options.QuickGrabScore);
         Assert.Equal(TimeSpan.FromSeconds(12), grabber.Options.ProviderTimeout);
         Assert.True(grabber.Options.PreferCachedReleases);
+        Assert.Equal(5, grabber.Options.MaxConcurrentSearches);
     }
 
     [Fact]
@@ -153,6 +155,7 @@ public class GrabberFactoryTests
                 QuickGrabScore = 73.25,
                 ProviderTimeoutSeconds = 19,
                 PreferCachedReleases = true,
+                MaxConcurrentSearches = 3,
             },
         };
 
@@ -162,6 +165,7 @@ public class GrabberFactoryTests
         Assert.Equal(73.25, grabber.Options.QuickGrabScore);
         Assert.Equal(TimeSpan.FromSeconds(19), grabber.Options.ProviderTimeout);
         Assert.True(grabber.Options.PreferCachedReleases);
+        Assert.Equal(3, grabber.Options.MaxConcurrentSearches);
     }
 
     [Fact]
@@ -175,6 +179,7 @@ public class GrabberFactoryTests
         Assert.Null(grabber.Options.QuickGrabScore);
         Assert.Equal(TimeSpan.FromSeconds(30), grabber.Options.ProviderTimeout);
         Assert.False(grabber.Options.PreferCachedReleases);
+        Assert.Equal(8, grabber.Options.MaxConcurrentSearches);
     }
 
     [Fact]

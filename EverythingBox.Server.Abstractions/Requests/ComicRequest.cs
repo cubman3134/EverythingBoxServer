@@ -22,4 +22,8 @@ public sealed class ComicRequest : MediaRequest
 
     /// <summary>Preferred file format, e.g. "CBZ", "CBR", "PDF".</summary>
     public string? Format { get; init; }
+
+    public override MediaRequest WithTitle(string title) => new ComicRequest
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+      Author = Author, Volume = Volume, Issue = Issue, Chapter = Chapter, Format = Format };
 }

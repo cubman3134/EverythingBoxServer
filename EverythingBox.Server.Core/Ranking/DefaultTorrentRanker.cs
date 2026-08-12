@@ -80,17 +80,42 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
 
     private static bool IsRelevant(MediaRequest request, TorrentResult r, out string why)
     {
-        // Title overlap: every significant token of the requested subject should
-        // appear in the release title. For music the subject is the album/artist
-        // (the pack that's actually on the indexer), not the individual song —
-        // otherwise an album release would be filtered out when you want one track.
-        var subject = request is MusicRequest music ? (music.Album ?? music.Title) : request.Title;
-        var wanted = Tokenize(subject);
+        // Title overlap: every significant token of a requested title should appear in the release
+        // title. A request may carry alternate names (regional/localised); a match against the primary
+        // OR any alternate counts. For music the primary subject is the album/artist (the pack that's
+        // actually on the indexer), not the individual song.
+        var primary = request is MusicRequest music ? (music.Album ?? music.Title) : request.Title;
+        var candidates = new List<string> { primary };
+        candidates.AddRange(request.AlternateTitles);
+
         var have = Tokenize(r.Title);
-        var missing = wanted.Where(t => !have.Contains(t)).ToList();
-        if (missing.Count > 0)
+        List<string>? primaryMissing = null;
+        var matched = false;
+        var evaluatedAny = false;
+        foreach (var candidate in candidates)
         {
-            why = $"title missing terms: {string.Join(", ", missing)}";
+            if (string.IsNullOrWhiteSpace(candidate)) continue;
+            var candidateTokens = Tokenize(candidate);
+            // Tokenize keeps only [a-z0-9] runs of length >1, so a purely non-Latin candidate
+            // (CJK/Cyrillic/etc.) tokenizes to the EMPTY set. Empty ⊆ anything would match every
+            // release and silently disable the gate, so skip it — like a blank candidate — rather
+            // than let it wildcard containment.
+            if (candidateTokens.Count == 0) continue;
+            evaluatedAny = true;
+            var missing = candidateTokens.Where(t => !have.Contains(t)).ToList();
+            if (missing.Count == 0) { matched = true; break; }
+            primaryMissing ??= missing; // report the primary subject's gap when nothing matches
+        }
+        // If no candidate was tokenizable at all (every candidate blank or non-Latin — e.g. a
+        // purely-CJK request), title relevance can't be assessed: fall back to accept rather than
+        // reject every release (which would break legitimate non-Latin-only searches and the
+        // pre-existing accept for a blank primary). A tokenizable candidate that didn't match still
+        // rejects.
+        if (!matched && !evaluatedAny)
+            matched = true;
+        if (!matched)
+        {
+            why = $"title missing terms: {string.Join(", ", primaryMissing ?? [])}";
             return false;
         }
 
