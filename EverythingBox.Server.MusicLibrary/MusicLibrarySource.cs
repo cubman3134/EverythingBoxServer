@@ -14,13 +14,14 @@ namespace EverythingBox.Server.MusicLibrary;
 /// byte is served; an id is never trusted on its own. Track/cover ids are the encoded absolute path, so
 /// they round-trip through that server; artist/album ids are content hashes the index resolves.
 /// </summary>
-public sealed class MusicLibrarySource : IMediaSource
+public sealed class MusicLibrarySource : IMediaSource, IMusicLibrary
 {
     private const int MaxItems = 100_000;
 
     private readonly IReadOnlyList<string> _roots;
     private readonly string _coverCacheDir;
     private readonly LibraryMetaCache _meta;
+    private readonly MusicStateStore _store;
     private readonly ILogger _logger;
 
     // One server over the music roots AND the cover cache dir. Track files live under a root; a sibling
@@ -34,13 +35,15 @@ public sealed class MusicLibrarySource : IMediaSource
     private readonly SemaphoreSlim _buildLock = new(1, 1);
     private volatile MusicIndex? _index;
 
-    public MusicLibrarySource(IReadOnlyList<string> roots, string coverCacheDir, IResolverCache? cache, ILogger logger)
+    public MusicLibrarySource(IReadOnlyList<string> roots, string coverCacheDir, IResolverCache? cache, ILogger logger,
+        string? stateDir = null)
     {
         _roots = roots;
         _coverCacheDir = coverCacheDir;
         _logger = logger;
         _files = new SafeLocalFileServer([.. roots, coverCacheDir], MimeFor);
         _meta = new LibraryMetaCache(cache);
+        _store = new MusicStateStore(stateDir);
 
         // The cover cache dir is one of _files' roots; SafeLocalFileServer resolves every root (following
         // reparse points) on each containment check and throws on a path that does not exist. The scanner
@@ -186,4 +189,173 @@ public sealed class MusicLibrarySource : IMediaSource
             _ => "application/octet-stream",
         };
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // IMusicLibrary — the Subsonic/OpenSubsonic domain surface. This projects the SAME lazily-built
+    // MusicIndex the IMediaSource shelf browses (one scan, one cache) into the music DTOs, and routes
+    // the mutating calls (stars/scrobbles/playlists) to the local MusicStateStore. The IMediaSource
+    // behavior above is untouched: these are additional read projections plus the store, sharing nothing
+    // mutable with the browse path. Cover-art ids are the encoded absolute cover path — identical to the
+    // cover ids CoverUrl mints — so CoverArt() decodes and containment-checks them through the same
+    // audited SafeLocalFileServer that serves them.
+    // ------------------------------------------------------------------------------------------------
+
+    // The synchronous DTO reads need the index in hand; the async build is blocked once here. A scan is
+    // IO-bound and the result is cached, so this pays the cost at most once per source lifetime.
+    private MusicIndex Index() => IndexAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+    private IEnumerable<MusicAlbum> AllAlbums() => Index().Artists.SelectMany(a => a.Albums);
+    private IEnumerable<MusicTrack> AllTracks() => AllAlbums().SelectMany(a => a.Tracks);
+
+    // A cover-art id is the cover file's own encoded absolute path (null when the album has no cover),
+    // so it round-trips through _files exactly like a track id.
+    private static string? CoverIdFor(string? coverPath)
+        => coverPath is null ? null : SafeLocalFileServer.EncodeId(coverPath);
+
+    private static long? SizeOf(string path)
+    {
+        try { return new FileInfo(path).Length; }
+        catch { return null; }
+    }
+
+    private ArtistInfo ToArtistInfo(MusicArtist a)
+        => new(a.Id, a.Name, a.Albums.Count,
+            CoverIdFor(a.Albums.Select(al => al.CoverPath).FirstOrDefault(c => c is not null)));
+
+    private AlbumInfo ToAlbumInfo(MusicAlbum a)
+        => new(a.Id, a.Name, a.ArtistId, a.ArtistName, a.Year, Genre: null,
+            SongCount: a.Tracks.Count, DurationSec: a.Tracks.Sum(t => t.DurationSec ?? 0),
+            CoverArtId: CoverIdFor(a.CoverPath), Starred: _store.IsStarred(a.Id));
+
+    private SongInfo ToSongInfo(MusicTrack t)
+    {
+        var album = Index().Album(t.AlbumId);
+        return new SongInfo(
+            Id: t.Id, Title: t.Title,
+            AlbumId: t.AlbumId, Album: album?.Name ?? string.Empty,
+            ArtistId: album?.ArtistId ?? string.Empty, Artist: t.ArtistName,
+            Track: t.TrackNo, Disc: t.DiscNo, Year: album?.Year, Genre: null,
+            DurationSec: t.DurationSec,
+            Suffix: Path.GetExtension(t.Path).TrimStart('.').ToLowerInvariant(),
+            ContentType: MimeFor(t.Path),
+            SizeBytes: SizeOf(t.Path),
+            CoverArtId: CoverIdFor(album?.CoverPath),
+            Starred: _store.IsStarred(t.Id));
+    }
+
+    private PlaylistInfo ToPlaylistInfo((string Id, string Name, IReadOnlyList<string> SongIds) p)
+    {
+        var songs = p.SongIds.Select(Song).Where(s => s is not null).Select(s => s!).ToList();
+        return new PlaylistInfo(p.Id, p.Name, songs.Count, songs.Sum(s => s.DurationSec ?? 0), songs);
+    }
+
+    // v1 exposes the whole library as a single music folder.
+    public IReadOnlyList<MusicFolderInfo> Folders() => [new MusicFolderInfo("1", "Music")];
+
+    public IReadOnlyList<ArtistInfo> Artists() => Index().Artists.Select(ToArtistInfo).ToList();
+
+    public (ArtistInfo Artist, IReadOnlyList<AlbumInfo> Albums)? Artist(string id)
+        => Index().Artist(id) is { } a ? (ToArtistInfo(a), a.Albums.Select(ToAlbumInfo).ToList()) : null;
+
+    public (AlbumInfo Album, IReadOnlyList<SongInfo> Songs)? Album(string id)
+        => Index().Album(id) is { } a ? (ToAlbumInfo(a), a.Tracks.Select(ToSongInfo).ToList()) : null;
+
+    public SongInfo? Song(string id) => Index().Track(id) is { } t ? ToSongInfo(t) : null;
+
+    public IReadOnlyList<AlbumInfo> AlbumList(string type, int size, int offset, string? genre, int? fromYear, int? toYear)
+    {
+        var albums = AllAlbums();
+        IEnumerable<MusicAlbum> ordered = type switch
+        {
+            "newest" => albums.OrderByDescending(a => a.Year ?? int.MinValue),
+            "alphabeticalByName" => albums.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase),
+            "alphabeticalByArtist" => albums.OrderBy(a => a.ArtistName, StringComparer.OrdinalIgnoreCase),
+            // A per-call shuffle: a fresh seed each call is exactly the Subsonic contract for "random".
+            "random" => albums.OrderBy(_ => Guid.NewGuid()),
+            "starred" => albums.Where(a => _store.IsStarred(a.Id)),
+            // The scanned index carries no genre, so a genre filter matches nothing (structurally a
+            // valid type, honestly empty) rather than pretending to filter.
+            "byGenre" => [],
+            "byYear" => ByYear(albums, fromYear, toYear),
+            // recent/frequent are honest projections of the local listening history when we have it.
+            "recent" => ByHistory(albums, mostFrequent: false),
+            "frequent" => ByHistory(albums, mostFrequent: true),
+            _ => null!,
+        };
+
+        if (ordered is null) return [];   // unknown type → empty; the route reports the honest error.
+        return ordered.Skip(Math.Max(0, offset)).Take(Math.Max(0, size)).Select(ToAlbumInfo).ToList();
+    }
+
+    private static IEnumerable<MusicAlbum> ByYear(IEnumerable<MusicAlbum> albums, int? fromYear, int? toYear)
+    {
+        var from = fromYear ?? int.MinValue;
+        var to = toYear ?? int.MaxValue;
+        var lo = Math.Min(from, to);
+        var hi = Math.Max(from, to);
+        var inRange = albums.Where(a => a.Year is { } y && y >= lo && y <= hi);
+        // Subsonic reads a reversed from/to as a descending listing.
+        return from <= to ? inRange.OrderBy(a => a.Year) : inRange.OrderByDescending(a => a.Year);
+    }
+
+    private IEnumerable<MusicAlbum> ByHistory(IEnumerable<MusicAlbum> albums, bool mostFrequent)
+    {
+        var byAlbum = Index();
+        // Album id → its listen rows, derived from the per-song scrobble history.
+        var rows = _store.Scrobbles()
+            .Select(s => byAlbum.Track(s.SongId) is { } t ? (t.AlbumId, s.PlayedAt) : ((string, DateTimeOffset)?)null)
+            .Where(x => x is not null)
+            .Select(x => x!.Value)
+            .ToList();
+        if (rows.Count == 0) return [];
+
+        var ranked = mostFrequent
+            ? rows.GroupBy(r => r.Item1).Select(g => (Album: g.Key, Rank: (double)g.Count()))
+            : rows.GroupBy(r => r.Item1).Select(g => (Album: g.Key, Rank: (double)g.Max(r => r.Item2).ToUnixTimeSeconds()));
+
+        var order = ranked.OrderByDescending(x => x.Rank).Select(x => x.Album).ToList();
+        return order.Select(id => albums.FirstOrDefault(a => a.Id == id)).Where(a => a is not null).Select(a => a!);
+    }
+
+    public SearchResult Search(string query, int artistCount, int albumCount, int songCount)
+    {
+        bool Match(string name) => name.Contains(query ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        var artists = Index().Artists.Where(a => Match(a.Name)).Take(Math.Max(0, artistCount)).Select(ToArtistInfo).ToList();
+        var albums = AllAlbums().Where(a => Match(a.Name)).Take(Math.Max(0, albumCount)).Select(ToAlbumInfo).ToList();
+        var songs = AllTracks().Where(t => Match(t.Title)).Take(Math.Max(0, songCount)).Select(ToSongInfo).ToList();
+        return new SearchResult(artists, albums, songs);
+    }
+
+    public IReadOnlyList<SongInfo> RandomSongs(int size, string? genre)
+    {
+        // The index carries no genre, so a genre filter can only ever narrow to nothing — honour the
+        // request rather than silently ignoring it.
+        var tracks = genre is null ? AllTracks() : [];
+        return tracks.OrderBy(_ => Guid.NewGuid()).Take(Math.Max(0, size)).Select(ToSongInfo).ToList();
+    }
+
+    public (string Path, string ContentType)? CoverArt(string coverArtId)
+    {
+        // A cover id is an encoded absolute path; decode + containment-check it through the same server
+        // that serves it, then only hand back genuine image files.
+        if (_files.ResolveSafeFile(coverArtId) is not { } path) return null;
+        var mime = MimeFor(path);
+        return mime.StartsWith("image/", StringComparison.Ordinal) ? (path, mime) : null;
+    }
+
+    public async Task<ProxyResponse?> OpenTrackAsync(string songId, string? rangeHeader, CancellationToken ct)
+    {
+        // Gate on the id being a known track so a forged/foreign contained id serves nothing here.
+        var idx = await IndexAsync(ct).ConfigureAwait(false);
+        if (idx.Track(songId) is null) return null;
+        return await _files.OpenAsync(songId, rangeHeader, ct).ConfigureAwait(false);
+    }
+
+    public void Scrobble(string songId, DateTimeOffset playedAt) => _store.Scrobble(songId, playedAt);
+
+    public void SetStarred(string id, bool starred) => _store.SetStarred(id, starred);
+
+    public IReadOnlyList<PlaylistInfo> Playlists() => _store.Playlists().Select(ToPlaylistInfo).ToList();
+
+    public PlaylistInfo? Playlist(string id) => _store.Playlist(id) is { } p ? ToPlaylistInfo(p) : null;
 }

@@ -14,8 +14,16 @@ public sealed class MusicLibraryPlugin : IPlugin
         var config = context.GetConfig<MusicLibraryConfig>() ?? new MusicLibraryConfig();
         var cache = new FileResolverCache(Path.Combine(context.CacheDirectory, "meta"), 16L * 1024 * 1024);
         var coverDir = Path.Combine(context.CacheDirectory, "covers");
-        registry.AddSource(new MusicLibrarySource(
+        var stateDir = Path.Combine(context.CacheDirectory, "state");
+
+        // One instance backs both surfaces: the browsable IMediaSource shelf AND the Subsonic-shaped
+        // IMusicLibrary domain — so both project the same single scanned index and share the same
+        // local star/scrobble/playlist state.
+        var src = new MusicLibrarySource(
             config.Roots, coverDir, cache,
-            context.Loggers.CreateLogger<MusicLibrarySource>()));
+            context.Loggers.CreateLogger<MusicLibrarySource>(),
+            stateDir);
+        registry.AddSource(src);
+        registry.AddMusicLibrary(src);
     }
 }
