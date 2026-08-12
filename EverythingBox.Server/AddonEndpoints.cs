@@ -393,7 +393,7 @@ public static class AddonEndpoints
                     id = SourceRouter.Prefix(sourceKey, i.Id),
                     title = i.Title,
                     subtitle = i.Subtitle,
-                    type = i.MediaType,
+                    type = i.Kind,
                     thumbnailUrl = i.ThumbnailUrl,
                     expandable = i.Expandable,
                 }).ToArray(),

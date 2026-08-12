@@ -126,7 +126,7 @@ public sealed class LocalLibrarySource : IMediaSource
                     Id: SafeLocalFileServer.EncodeId(path),
                     Title: title,
                     Subtitle: Path.GetFileName(Path.GetDirectoryName(path)) ?? string.Empty,
-                    MediaType: "movie",
+                    Kind: MediaTypeNames.Movie,
                     ThumbnailUrl: PosterUrl(meta.PosterPath),
                     Expandable: false));
             }
@@ -180,7 +180,7 @@ public sealed class LocalLibrarySource : IMediaSource
                 if (items.Count >= MaxItems) { capped = true; break; }
 
                 items.Add(new CatalogItem(Id: SafeLocalFileServer.EncodeId(dir), Title: title, Subtitle: string.Empty,
-                    MediaType: "series", ThumbnailUrl: PosterUrl(meta.PosterPath), Expandable: true));
+                    Kind: MediaTypeNames.Series, ThumbnailUrl: PosterUrl(meta.PosterPath), Expandable: true));
             }
             if (capped) break;
         }
@@ -230,7 +230,7 @@ public sealed class LocalLibrarySource : IMediaSource
                 Id: SafeLocalFileServer.EncodeId(path),
                 Title: epTitle,
                 Subtitle: Path.GetFileName(path),
-                MediaType: "series",
+                Kind: MediaTypeNames.Series,
                 Expandable: false)));
         }
 

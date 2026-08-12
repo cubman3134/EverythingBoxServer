@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_14_now_that_a_shared_local_file_server_ships()
+    public void Version_is_1_15_now_that_catalog_kind_replaces_media_type()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(14, ServerApi.Current.Minor);
+        Assert.Equal(15, ServerApi.Current.Minor);
     }
 
     [Fact]

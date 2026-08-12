@@ -74,4 +74,27 @@ public class MediaTypeNamesTests
         Assert.Equal(MediaType.Comic, parsed);
         Assert.Equal("comic", MediaTypeNames.ToProtocolString(MediaType.Comic));
     }
+
+    [Fact]
+    public void Each_protocol_constant_equals_its_literal_value()
+    {
+        // The consts are the single source of truth for the client vocabulary; pin their values.
+        Assert.Equal("movie", MediaTypeNames.Movie);
+        Assert.Equal("series", MediaTypeNames.Series);
+        Assert.Equal("comic", MediaTypeNames.Comic);
+        Assert.Equal("manga", MediaTypeNames.Manga);
+        Assert.Equal("book", MediaTypeNames.Book);
+        Assert.Equal("audiobook", MediaTypeNames.Audiobook);
+        Assert.Equal("music", MediaTypeNames.Music);
+        Assert.Equal("game", MediaTypeNames.Game);
+        Assert.Equal("platform", MediaTypeNames.Platform);
+    }
+
+    [Fact]
+    public void Platform_does_not_parse_to_an_enum_member()
+    {
+        // Intentional regression guard: "platform" is a client-only container type with no
+        // MediaType member, so it must never resolve to a pipeline enum value.
+        Assert.False(MediaTypeNames.TryParseProtocol("platform", out _));
+    }
 }

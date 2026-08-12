@@ -139,7 +139,7 @@ public class IndexerSearchSourceTests
     public void Declares_a_catalog_per_searchable_media_type()
     {
         var types = Source(new RecordingGrabber()).Catalogs
-            .Select(c => c.MediaType)
+            .Select(c => c.Kind)
             .OrderBy(t => t, StringComparer.Ordinal)
             .ToArray();
 
@@ -153,7 +153,7 @@ public class IndexerSearchSourceTests
 
         var declared = source.MediaTypes.Select(t => t.Type).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var needed = source.Catalogs
-            .Select(c => c.MediaType)
+            .Select(c => c.Kind)
             .Where(t => t is not ("movie" or "series"))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -214,7 +214,7 @@ public class IndexerSearchSourceTests
 
         var item = Assert.Single(catalog.Items);
         Assert.Equal("Some Release 1080p", item.Title);
-        Assert.Equal("movie", item.MediaType);
+        Assert.Equal("movie", item.Kind);
         Assert.Contains("42", item.Subtitle);          // seeders are worth seeing
         Assert.False(string.IsNullOrWhiteSpace(item.Id));
     }

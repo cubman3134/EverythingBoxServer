@@ -125,7 +125,7 @@ public class MetadataBackedVideoSourceTests
     {
         var source = Source([new StubMetadata("s", ["movie"])]);
 
-        var types = source.Catalogs.Select(c => c.MediaType).ToArray();
+        var types = source.Catalogs.Select(c => c.Kind).ToArray();
         Assert.Equal(["movie"], types);
     }
 
@@ -134,7 +134,7 @@ public class MetadataBackedVideoSourceTests
     {
         var source = Source([new StubMetadata("a", ["movie"]), new StubMetadata("b", ["series"])]);
 
-        var types = source.Catalogs.Select(c => c.MediaType).OrderBy(t => t, StringComparer.Ordinal).ToArray();
+        var types = source.Catalogs.Select(c => c.Kind).OrderBy(t => t, StringComparer.Ordinal).ToArray();
         Assert.Equal(["movie", "series"], types);
     }
 

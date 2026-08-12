@@ -26,7 +26,7 @@ public class RomLibrarySourceTests : IDisposable
     {
         var c = Assert.Single(Roms().Catalogs);
         Assert.Equal("games", c.Id);
-        Assert.Equal("game", c.MediaType);
+        Assert.Equal("game", c.Kind);
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public class RomLibrarySourceTests : IDisposable
 
         var catalog = await Roms().SearchAsync("games", null, Ctx(), default);
         Assert.Equal(2, catalog.Items.Count);
-        Assert.All(catalog.Items, i => Assert.Equal("platform", i.MediaType));
+        Assert.All(catalog.Items, i => Assert.Equal("platform", i.Kind));
         Assert.All(catalog.Items, i => Assert.True(i.Expandable));
         Assert.Contains(catalog.Items, i => i.Title == RomSystems.Resolve("snes")!.Value.Title);
         Assert.Contains(catalog.Items, i => i.Title == RomSystems.Resolve("psx")!.Value.Title);
@@ -51,7 +51,7 @@ public class RomLibrarySourceTests : IDisposable
 
         var item = Assert.Single((await Roms().SearchAsync("games", null, Ctx(), default)).Items);
         Assert.Equal("weirdbox", item.Title);
-        Assert.Equal("platform", item.MediaType);
+        Assert.Equal("platform", item.Kind);
     }
 
     [Fact]
@@ -83,7 +83,7 @@ public class RomLibrarySourceTests : IDisposable
         var catalog = await Roms().DetailAsync(platformId, Ctx(), default);
 
         Assert.Equal(2, catalog.Items.Count);
-        Assert.All(catalog.Items, i => Assert.Equal("game", i.MediaType));
+        Assert.All(catalog.Items, i => Assert.Equal("game", i.Kind));
         Assert.All(catalog.Items, i => Assert.False(i.Expandable));
         Assert.Equal(new[] { "Game A", "Game B" }, catalog.Items.Select(i => i.Title).ToArray());
         Assert.DoesNotContain(catalog.Items, i => i.Title.Contains("notes"));

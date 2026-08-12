@@ -1,8 +1,9 @@
 namespace EverythingBox.Server.Abstractions;
 
-/// <summary>A catalog a source offers. <paramref name="MediaType"/> is a protocol
-/// string ("movie", "series", "comic", "manga", "book", "audiobook", "game").</summary>
-public sealed record CatalogDescriptor(string Id, string Name, string MediaType);
+/// <summary>A catalog a source offers. <paramref name="Kind"/> is a protocol
+/// string ("movie", "series", "comic", "manga", "book", "audiobook", "music", "game",
+/// "platform").</summary>
+public sealed record CatalogDescriptor(string Id, string Name, string Kind);
 
 /// <summary>Presentation for a media type the client does not know natively.
 /// "movie" and "series" are built in and never need declaring.</summary>
@@ -14,12 +15,14 @@ public sealed record MediaTypeDescriptor(
     string DetailLayout);
 
 /// <summary><paramref name="Id"/> is the source's OWN id — the host prefixes it
-/// with the source key before it reaches the client.</summary>
+/// with the source key before it reaches the client. <paramref name="Kind"/> is a
+/// protocol string ("movie", "series", "comic", "manga", "book", "audiobook", "music",
+/// "game", "platform").</summary>
 public sealed record CatalogItem(
     string Id,
     string Title,
     string Subtitle,
-    string MediaType,
+    string Kind,
     string? ThumbnailUrl = null,
     bool Expandable = false);
 
