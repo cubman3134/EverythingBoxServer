@@ -8,6 +8,10 @@ public class LibraryMetaCacheTests : IDisposable
     // A small public shape to exercise the now-generic cache independently of any plugin type.
     private sealed record TestMeta(string? NfoTitle, int? Year, string? Plot, string? PosterPath);
 
+    // Two distinct shapes for the same (path, mtimes) — must not deserialize into each other.
+    private sealed record Alpha(string V);
+    private sealed record Beta(int N);
+
     private sealed class MemoryCache : IResolverCache
     {
         public ConcurrentDictionary<string, string> Store { get; } = new();
@@ -81,6 +85,19 @@ public class LibraryMetaCacheTests : IDisposable
         File.SetLastWriteTimeUtc(nfo, File.GetLastWriteTimeUtc(nfo).AddSeconds(5));
         await cache.GetOrComputeAsync(media, nfo, compute, default);
         Assert.Equal(2, count());
+    }
+
+    [Fact]
+    public async Task Different_value_types_for_the_same_path_do_not_collide()
+    {
+        var cache = new LibraryMetaCache(new MemoryCache());
+        var f = WriteFile("collide.mkv", [1]);
+
+        var a = await cache.GetOrComputeAsync<Alpha>(f, null, () => new Alpha("a"), default);
+        var b = await cache.GetOrComputeAsync<Beta>(f, null, () => new Beta(7), default);
+
+        Assert.Equal("a", a.V);
+        Assert.Equal(7, b.N);   // must NOT deserialize Alpha's JSON into Beta (defaulted N=0) or vice-versa
     }
 
     [Fact]
