@@ -31,6 +31,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EverythingBox.Server.LocalL
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EverythingBox.Server.RomLibrary", "EverythingBox.Server.RomLibrary\EverythingBox.Server.RomLibrary.csproj", "{A278F9B2-6659-4931-A12A-247880E83F15}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EverythingBox.Server.MusicLibrary", "EverythingBox.Server.MusicLibrary\EverythingBox.Server.MusicLibrary.csproj", "{82ACE722-11A7-4AD7-9F76-5C7F9955042E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -197,6 +199,18 @@ Global
 		{A278F9B2-6659-4931-A12A-247880E83F15}.Release|x64.Build.0 = Release|Any CPU
 		{A278F9B2-6659-4931-A12A-247880E83F15}.Release|x86.ActiveCfg = Release|Any CPU
 		{A278F9B2-6659-4931-A12A-247880E83F15}.Release|x86.Build.0 = Release|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Debug|x64.Build.0 = Debug|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Debug|x86.Build.0 = Debug|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Release|x64.ActiveCfg = Release|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Release|x64.Build.0 = Release|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Release|x86.ActiveCfg = Release|Any CPU
+		{82ACE722-11A7-4AD7-9F76-5C7F9955042E}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

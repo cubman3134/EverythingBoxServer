@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- Sets CopyLocalLockFileAssemblies=true so this plugin's NuGet dependency (ATL) and its
+         transitive assemblies are COPIED into bin/. Without it a plain classlib emits only the
+         plugin dll + .deps.json, and AssemblyDependencyResolver in the per-plugin load context
+         cannot resolve ATL once the folder is deployed to plugins/musiclib/ — the plugin then
+         FileNotFounds on ATL at first browse. Abstractions stays Private="false" (shared contract),
+         and Microsoft.Extensions.Logging.Abstractions being copied is harmless: PluginLoadContext
+         lists it in SharedAssemblies and defers it to the default ALC. -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="EverythingBox.Server.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The host supplies Abstractions at load time; shipping a second copy makes every cast fail. -->
+    <ProjectReference Include="..\EverythingBox.Server.Abstractions\EverythingBox.Server.Abstractions.csproj" Private="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- First plugin with a NuGet dependency: audio-tag reader. Pinned to the latest 6.x. -->
+    <PackageReference Include="z440.atl.core" Version="6.26.0" />
+  </ItemGroup>
+</Project>
