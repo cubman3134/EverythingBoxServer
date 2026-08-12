@@ -13,13 +13,13 @@ public class RomLibrarySourceTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } GC.SuppressFinalize(this); }
 
     private RomLibrarySource Roms(params string[] roots)
-        => new(roots.Length == 0 ? [_root] : roots, NullLogger<RomLibrarySource>.Instance);
+        => new(roots.Length == 0 ? [_root] : roots, null, NullLogger<RomLibrarySource>.Instance);
 
     private static SourceContext Ctx() => new();
 
     [Fact]
     public void No_roots_configured_has_no_catalogs()
-        => Assert.Empty(new RomLibrarySource([], NullLogger<RomLibrarySource>.Instance).Catalogs);
+        => Assert.Empty(new RomLibrarySource([], null, NullLogger<RomLibrarySource>.Instance).Catalogs);
 
     [Fact]
     public void A_configured_root_advertises_the_games_catalog()
@@ -174,5 +174,138 @@ public class RomLibrarySourceTests : IDisposable
             Assert.Null(await Roms().OpenAsync(evilId, null, default));
         }
         finally { File.Delete(outside); }
+    }
+
+    // ---- Task 3: gamelist titles, boxart, a meta panel, and traversal safety ----
+
+    // A snes folder with: "Game A.sfc" described by a gamelist.xml that names it and points at a boxart;
+    // "Game B.sfc" absent from the gamelist but with a sibling "<stem>-image.png".
+    private string MakeSnesWithGamelist()
+    {
+        var snes = Path.Combine(_root, "snes");
+        Directory.CreateDirectory(snes);
+        File.WriteAllBytes(Path.Combine(snes, "Game A.sfc"), new byte[] { 1, 2, 3, 4 });
+        File.WriteAllBytes(Path.Combine(snes, "Game B.sfc"), new byte[] { 5, 6, 7, 8 });
+        File.WriteAllBytes(Path.Combine(snes, "Game B-image.png"), new byte[] { 9, 9, 9 });
+        Directory.CreateDirectory(Path.Combine(snes, "boxart"));
+        File.WriteAllBytes(Path.Combine(snes, "boxart", "a.png"), new byte[] { 42, 42, 42, 42 });
+        File.WriteAllText(Path.Combine(snes, "gamelist.xml"),
+            "<?xml version=\"1.0\"?>\n" +
+            "<gameList>\n" +
+            "  <game>\n" +
+            "    <path>./Game A.sfc</path>\n" +
+            "    <name>Super Game A</name>\n" +
+            "    <desc>A grand adventure.</desc>\n" +
+            "    <genre>Platformer</genre>\n" +
+            "    <releasedate>19911121T000000</releasedate>\n" +
+            "    <developer>Acme</developer>\n" +
+            "    <publisher>Publisher X</publisher>\n" +
+            "    <players>1-2</players>\n" +
+            "    <image>./boxart/a.png</image>\n" +
+            "  </game>\n" +
+            "</gameList>\n");
+        return snes;
+    }
+
+    private static string IdOf(string proxyUrl) => proxyUrl.Split('/')[2];
+
+    [Fact]
+    public async Task Gamelist_name_and_boxart_appear_on_the_item()
+    {
+        var snes = MakeSnesWithGamelist();
+        var platformId = SafeLocalFileServer.EncodeId(snes);
+
+        var catalog = await Roms().DetailAsync(platformId, Ctx(), default);
+
+        var a = Assert.Single(catalog.Items, i => i.Subtitle == "Game A.sfc");
+        Assert.Equal("Super Game A", a.Title);
+        Assert.NotNull(a.ThumbnailUrl);
+        Assert.StartsWith("proxy/romlib/", a.ThumbnailUrl);
+        Assert.EndsWith("/a.png", a.ThumbnailUrl);
+        Assert.Equal(Path.GetFullPath(Path.Combine(snes, "boxart", "a.png")),
+            SafeLocalFileServer.TryDecodeId(IdOf(a.ThumbnailUrl!)));
+    }
+
+    [Fact]
+    public async Task Meta_panel_carries_overview_boxart_and_facts()
+    {
+        var snes = MakeSnesWithGamelist();
+        var romId = SafeLocalFileServer.EncodeId(Path.Combine(snes, "Game A.sfc"));
+
+        var detail = await Roms().MetaAsync(romId, Ctx(), default);
+
+        Assert.NotNull(detail);
+        Assert.Equal("Super Game A", detail!.Title);
+        Assert.Equal("A grand adventure.", detail.Overview);
+        Assert.NotNull(detail.ImageUrl);
+        Assert.EndsWith("/a.png", detail.ImageUrl);
+        Assert.NotNull(detail.Facts);
+        Assert.Contains(detail.Facts!, f => f.Label == "Year" && f.Value == "1991");
+        Assert.Contains(detail.Facts!, f => f.Label == "Genre" && f.Value == "Platformer");
+    }
+
+    [Fact]
+    public async Task A_game_absent_from_the_gamelist_uses_its_stem_and_sibling_art()
+    {
+        var snes = MakeSnesWithGamelist();
+        var platformId = SafeLocalFileServer.EncodeId(snes);
+
+        var catalog = await Roms().DetailAsync(platformId, Ctx(), default);
+
+        var b = Assert.Single(catalog.Items, i => i.Subtitle == "Game B.sfc");
+        Assert.Equal("Game B", b.Title);
+        Assert.NotNull(b.ThumbnailUrl);
+        Assert.Equal(Path.GetFullPath(Path.Combine(snes, "Game B-image.png")),
+            SafeLocalFileServer.TryDecodeId(IdOf(b.ThumbnailUrl!)));
+    }
+
+    [Fact]
+    public async Task A_traversal_image_in_the_gamelist_yields_no_art()
+    {
+        var nes = Path.Combine(_root, "nes");
+        Directory.CreateDirectory(nes);
+        File.WriteAllBytes(Path.Combine(nes, "Evil.nes"), new byte[] { 1 });
+        // An EXISTING file OUTSIDE the roots, two levels up from the system folder.
+        var secret = Path.GetFullPath(Path.Combine(nes, "..", "..", "secret.png"));
+        File.WriteAllBytes(secret, new byte[] { 7, 7, 7 });
+        try
+        {
+            File.WriteAllText(Path.Combine(nes, "gamelist.xml"),
+                "<?xml version=\"1.0\"?>\n" +
+                "<gameList>\n" +
+                "  <game>\n" +
+                "    <path>./Evil.nes</path>\n" +
+                "    <name>Evil Game</name>\n" +
+                "    <image>../../secret.png</image>\n" +
+                "  </game>\n" +
+                "</gameList>\n");
+
+            var platformId = SafeLocalFileServer.EncodeId(nes);
+            var catalog = await Roms().DetailAsync(platformId, Ctx(), default);
+
+            var item = Assert.Single(catalog.Items);
+            Assert.Equal("Evil Game", item.Title);
+            Assert.Null(item.ThumbnailUrl); // the outside file is never addressed
+
+            var romId = SafeLocalFileServer.EncodeId(Path.Combine(nes, "Evil.nes"));
+            var detail = await Roms().MetaAsync(romId, Ctx(), default);
+            Assert.NotNull(detail);
+            Assert.Null(detail!.ImageUrl);
+        }
+        finally { File.Delete(secret); }
+    }
+
+    [Fact]
+    public async Task Boxart_serves_with_200()
+    {
+        var snes = MakeSnesWithGamelist();
+        var boxId = SafeLocalFileServer.EncodeId(Path.Combine(snes, "boxart", "a.png"));
+
+        await using var resp = await Roms().OpenAsync(boxId, null, default);
+        Assert.NotNull(resp);
+        Assert.Equal(200, resp!.StatusCode);
+        using var sink = new MemoryStream();
+        await resp.Body.CopyToAsync(sink);
+        Assert.Equal(new byte[] { 42, 42, 42, 42 }, sink.ToArray());
     }
 }

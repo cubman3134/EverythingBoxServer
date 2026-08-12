@@ -8,6 +8,10 @@ public class LibraryMetaCacheTests : IDisposable
     // A small public shape to exercise the now-generic cache independently of any plugin type.
     private sealed record TestMeta(string? NfoTitle, int? Year, string? Plot, string? PosterPath);
 
+    // Two distinct shapes for the same (path, mtimes) — must not deserialize into each other.
+    private sealed record Alpha(string V);
+    private sealed record Beta(int N);
+
     private sealed class MemoryCache : IResolverCache
     {
         public ConcurrentDictionary<string, string> Store { get; } = new();
@@ -84,12 +88,28 @@ public class LibraryMetaCacheTests : IDisposable
     }
 
     [Fact]
+    public async Task Different_value_types_for_the_same_path_do_not_collide()
+    {
+        var cache = new LibraryMetaCache(new MemoryCache());
+        var f = WriteFile("collide.mkv", [1]);
+
+        var a = await cache.GetOrComputeAsync<Alpha>(f, null, () => new Alpha("a"), default);
+        var b = await cache.GetOrComputeAsync<Beta>(f, null, () => new Beta(7), default);
+
+        Assert.Equal("a", a.V);
+        Assert.Equal(7, b.N);   // must NOT deserialize Alpha's JSON into Beta (defaulted N=0) or vice-versa
+    }
+
+    [Fact]
     public async Task A_corrupt_cached_value_is_recomputed()
     {
         var store = new MemoryCache();
         var cache = new LibraryMetaCache(store);
         var media = WriteFile("e.mkv", [1]);
-        var key = $"{media}|{File.GetLastWriteTimeUtc(media).Ticks}|0";
+        // The cache keys by value type (typeof(T).FullName prefix), so the poison must sit under the
+        // SAME key GetOrComputeAsync<TestMeta> will read — otherwise this regresses to a plain miss and
+        // never exercises the JsonException → recompute path.
+        var key = $"{typeof(TestMeta).FullName}|{media}|{File.GetLastWriteTimeUtc(media).Ticks}|0";
         store.Store[key] = "not json";
         var (compute, count) = Counting(new TestMeta("Recovered", null, null, null));
         var result = await cache.GetOrComputeAsync(media, null, compute, default);

@@ -16,7 +16,7 @@ public sealed class LibraryMetaCache(IResolverCache? cache)
     {
         if (cache is null) return compute();
 
-        var key = $"{mediaPath}|{File.GetLastWriteTimeUtc(mediaPath).Ticks}|" +
+        var key = $"{typeof(T).FullName}|{mediaPath}|{File.GetLastWriteTimeUtc(mediaPath).Ticks}|" +
                   (nfoPath is null ? "0" : File.GetLastWriteTimeUtc(nfoPath).Ticks.ToString());
 
         // Reading the cache is best-effort too: a non-conforming IResolverCache that throws on read
