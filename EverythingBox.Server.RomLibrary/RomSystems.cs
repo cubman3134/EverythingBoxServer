@@ -37,8 +37,8 @@ internal static class RomSystems
         Add("gc", "Nintendo GameCube", "gc", "gamecube", "ngc");
         Add("virtualboy", "Nintendo Virtual Boy", "virtualboy", "vb");
         Add("genesis", "Sega Genesis", "genesis", "megadrive", "md", "segagenesis", "segamegadrive");
-        Add("genesis", "Sega Master System", "mastersystem", "sms", "segamastersystem");
-        Add("genesis", "Sega Game Gear", "gamegear", "gg", "segagamegear");
+        Add("mastersystem", "Sega Master System", "mastersystem", "sms", "segamastersystem");
+        Add("gamegear", "Sega Game Gear", "gamegear", "gg", "segagamegear");
         Add("32x", "Sega 32X", "32x", "sega32x");
         Add("segacd", "Sega CD", "segacd", "megacd");
         Add("saturn", "Sega Saturn", "saturn", "segasaturn");

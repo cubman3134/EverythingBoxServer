@@ -116,13 +116,14 @@ public sealed class RomLibrarySource : IMediaSource
             return Task.FromResult(SourceCatalog.Empty("ROM Library"));
 
         var items = new List<CatalogItem>();
+        var capped = false;
 
         foreach (var path in Directory.EnumerateFiles(systemDir, "*", TopLevelFiles))
         {
             ct.ThrowIfCancellationRequested();
             if (!IsRom(path)) continue;
             if (!_files.IsContained(path)) continue; // backstop
-            if (items.Count >= MaxItems) break;
+            if (items.Count >= MaxItems) { capped = true; break; }
 
             items.Add(new CatalogItem(
                 Id: SafeLocalFileServer.EncodeId(path),
@@ -135,7 +136,7 @@ public sealed class RomLibrarySource : IMediaSource
 
         var title = RomSystems.Resolve(Path.GetFileName(systemDir))?.Title ?? Path.GetFileName(systemDir);
         var ordered = items.OrderBy(i => i.Title, StringComparer.OrdinalIgnoreCase).ToList();
-        return Task.FromResult(new SourceCatalog(title, ordered));
+        return Task.FromResult(new SourceCatalog(title, ordered, capped));
     }
 
     public Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
