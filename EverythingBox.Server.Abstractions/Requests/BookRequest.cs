@@ -12,4 +12,8 @@ public sealed class BookRequest : MediaRequest
 
     /// <summary>Preferred file format, e.g. "EPUB", "PDF", "MOBI".</summary>
     public string? Format { get; init; }
+
+    public override MediaRequest WithTitle(string title) => new BookRequest
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+      Author = Author, Format = Format };
 }

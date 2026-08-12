@@ -30,4 +30,14 @@ public abstract class MediaRequest
 
     /// <summary>Extra free-form terms appended to the search query.</summary>
     public IReadOnlyList<string> AdditionalTerms { get; init; } = [];
+
+    /// <summary>Additional names the same work is indexed under (regional/localised/alternate
+    /// titles). The primary <see cref="Title"/> stays the display name; these only widen what
+    /// counts as a relevance hit and add search terms in the grabber's fan-out.</summary>
+    public IReadOnlyList<string> AlternateTitles { get; init; } = [];
+
+    /// <summary>Return a copy of this request with a different primary <see cref="Title"/> and all
+    /// other fields preserved. Used by the grabber to query a provider under an alternate title
+    /// without the provider changing. Polymorphic because each subtype carries its own fields.</summary>
+    public abstract MediaRequest WithTitle(string title);
 }

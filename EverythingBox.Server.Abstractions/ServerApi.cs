@@ -11,7 +11,7 @@ public static class ServerApi
     /// a 1.1 host. A static readonly field would resolve to the HOST's value at runtime,
     /// making the compatibility check compare the host against itself and always pass.
     /// </summary>
-    public const string VersionString = "1.15";
+    public const string VersionString = "1.16";
 
     public static Version Current { get; } = new(VersionString);
 

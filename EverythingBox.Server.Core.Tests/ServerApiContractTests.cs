@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_15_now_that_catalog_kind_replaces_media_type()
+    public void Version_is_1_16_now_that_mediarequest_carries_alternate_titles()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(15, ServerApi.Current.Minor);
+        Assert.Equal(16, ServerApi.Current.Minor);
     }
 
     [Fact]

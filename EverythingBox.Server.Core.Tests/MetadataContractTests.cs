@@ -32,10 +32,10 @@ public class MetadataContractTests
     }
 
     [Fact]
-    public void ApiVersion_is_1_15_now_that_catalog_kind_replaces_media_type()
+    public void ApiVersion_is_1_16_now_that_mediarequest_carries_alternate_titles()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(15, ServerApi.Current.Minor);
+        Assert.Equal(16, ServerApi.Current.Minor);
     }
 
     [Theory]
@@ -54,6 +54,7 @@ public class MetadataContractTests
     [InlineData(1, 12)]
     [InlineData(1, 13)]
     [InlineData(1, 14)]
+    [InlineData(1, 15)]
     public void Plugins_built_against_any_earlier_minor_still_load(int major, int minor)
         => Assert.True(ServerApi.IsCompatible(new Version(major, minor)));
 }

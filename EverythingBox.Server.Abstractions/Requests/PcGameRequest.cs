@@ -8,4 +8,7 @@ namespace EverythingBox.Server.Abstractions;
 public sealed class PcGameRequest : MediaRequest
 {
     public override MediaType MediaType => MediaType.PcGame;
+
+    public override MediaRequest WithTitle(string title) => new PcGameRequest
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles };
 }

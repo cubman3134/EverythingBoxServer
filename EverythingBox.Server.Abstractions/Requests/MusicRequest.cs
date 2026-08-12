@@ -14,4 +14,8 @@ public sealed class MusicRequest : MediaRequest
 
     /// <summary>A single track, when you want one song rather than a release.</summary>
     public string? Track { get; init; }
+
+    public override MediaRequest WithTitle(string title) => new MusicRequest
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+      Artist = Artist, Album = Album, Track = Track };
 }

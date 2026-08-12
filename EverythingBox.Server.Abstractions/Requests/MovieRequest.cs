@@ -7,4 +7,7 @@ public sealed class MovieRequest : MediaRequest
 
     /// <summary>Preferred edition, e.g. "Director's Cut", "Extended", "IMAX".</summary>
     public string? Edition { get; init; }
+
+    public override MediaRequest WithTitle(string title) => new MovieRequest
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles, Edition = Edition };
 }
