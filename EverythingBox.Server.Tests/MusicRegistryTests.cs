@@ -13,6 +13,7 @@ file sealed class FakeMusicLibrary : IMusicLibrary
     public IReadOnlyList<AlbumInfo> AlbumList(string type, int size, int offset, string? genre, int? fromYear, int? toYear) => [];
     public SearchResult Search(string query, int artistCount, int albumCount, int songCount) => new([], [], []);
     public IReadOnlyList<SongInfo> RandomSongs(int size, string? genre) => [];
+    public IReadOnlyList<GenreInfo> Genres() => [];
     public (string Path, string ContentType)? CoverArt(string coverArtId) => null;
     public Task<ProxyResponse?> OpenTrackAsync(string songId, string? rangeHeader, CancellationToken ct) => Task.FromResult<ProxyResponse?>(null);
     public void Scrobble(string songId, DateTimeOffset playedAt) { }

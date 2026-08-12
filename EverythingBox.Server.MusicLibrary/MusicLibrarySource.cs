@@ -223,7 +223,7 @@ public sealed class MusicLibrarySource : IMediaSource, IMusicLibrary
             CoverIdFor(a.Albums.Select(al => al.CoverPath).FirstOrDefault(c => c is not null)));
 
     private AlbumInfo ToAlbumInfo(MusicAlbum a)
-        => new(a.Id, a.Name, a.ArtistId, a.ArtistName, a.Year, Genre: null,
+        => new(a.Id, a.Name, a.ArtistId, a.ArtistName, a.Year, Genre: a.Genre,
             SongCount: a.Tracks.Count, DurationSec: a.Tracks.Sum(t => t.DurationSec ?? 0),
             CoverArtId: CoverIdFor(a.CoverPath), Starred: _store.IsStarred(a.Id));
 
@@ -234,7 +234,9 @@ public sealed class MusicLibrarySource : IMediaSource, IMusicLibrary
             Id: t.Id, Title: t.Title,
             AlbumId: t.AlbumId, Album: album?.Name ?? string.Empty,
             ArtistId: album?.ArtistId ?? string.Empty, Artist: t.ArtistName,
-            Track: t.TrackNo, Disc: t.DiscNo, Year: album?.Year, Genre: null,
+            // Year is the TRACK's own year (a mixed-year compilation keeps per-track years); the
+            // album year stays the album-level value on AlbumInfo.
+            Track: t.TrackNo, Disc: t.DiscNo, Year: t.Year, Genre: t.Genre,
             DurationSec: t.DurationSec,
             Suffix: Path.GetExtension(t.Path).TrimStart('.').ToLowerInvariant(),
             ContentType: MimeFor(t.Path),
@@ -273,9 +275,11 @@ public sealed class MusicLibrarySource : IMediaSource, IMusicLibrary
             // A per-call shuffle: a fresh seed each call is exactly the Subsonic contract for "random".
             "random" => albums.OrderBy(_ => Guid.NewGuid()),
             "starred" => albums.Where(a => _store.IsStarred(a.Id)),
-            // The scanned index carries no genre, so a genre filter matches nothing (structurally a
-            // valid type, honestly empty) rather than pretending to filter.
-            "byGenre" => [],
+            // Albums whose (dominant) genre matches the requested one, case-insensitive. A byGenre
+            // request with no genre matches nothing.
+            "byGenre" => string.IsNullOrWhiteSpace(genre)
+                ? []
+                : albums.Where(a => string.Equals(a.Genre, genre, StringComparison.OrdinalIgnoreCase)),
             "byYear" => ByYear(albums, fromYear, toYear),
             // recent/frequent are honest projections of the local listening history when we have it.
             "recent" => ByHistory(albums, mostFrequent: false),
@@ -328,10 +332,31 @@ public sealed class MusicLibrarySource : IMediaSource, IMusicLibrary
 
     public IReadOnlyList<SongInfo> RandomSongs(int size, string? genre)
     {
-        // The index carries no genre, so a genre filter can only ever narrow to nothing — honour the
-        // request rather than silently ignoring it.
-        var tracks = genre is null ? AllTracks() : [];
+        // A genre filter narrows to the tracks tagged with that genre (case-insensitive); no genre
+        // shuffles the whole library.
+        var tracks = string.IsNullOrWhiteSpace(genre)
+            ? AllTracks()
+            : AllTracks().Where(t => string.Equals(t.Genre, genre, StringComparison.OrdinalIgnoreCase));
         return tracks.OrderBy(_ => Guid.NewGuid()).Take(Math.Max(0, size)).Select(ToSongInfo).ToList();
+    }
+
+    public IReadOnlyList<GenreInfo> Genres()
+    {
+        // Distinct genres across the library, each with its song and album counts. A genre is counted
+        // once per album whose (dominant) genre matches; songs are counted per tagged track. Names are
+        // grouped case-insensitively but reported with their first-seen casing, sorted by name.
+        var songsByGenre = AllTracks()
+            .Where(t => !string.IsNullOrEmpty(t.Genre))
+            .GroupBy(t => t.Genre!, StringComparer.OrdinalIgnoreCase);
+        var albumCounts = AllAlbums()
+            .Where(a => !string.IsNullOrEmpty(a.Genre))
+            .GroupBy(a => a.Genre!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
+        return songsByGenre
+            .Select(g => new GenreInfo(g.Key, g.Count(), albumCounts.GetValueOrDefault(g.Key)))
+            .OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public (string Path, string ContentType)? CoverArt(string coverArtId)

@@ -54,7 +54,7 @@ public sealed class MusicLibraryImplTests : IDisposable
     private static string WriteTaggedTrack(
         string dir, string fileName,
         string? artist = null, string? albumArtist = null, string? album = null, string? title = null,
-        int trackNo = 0, int discNo = 0, int year = 0)
+        int trackNo = 0, int discNo = 0, int year = 0, string? genre = null)
     {
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, fileName);
@@ -68,22 +68,24 @@ public sealed class MusicLibraryImplTests : IDisposable
         if (trackNo > 0) t.TrackNumber = trackNo;
         if (discNo > 0) t.DiscNumber = discNo;
         if (year > 0) t.Year = year;
+        if (genre is not null) t.Genre = genre;
         Assert.True(t.Save(), $"ATL failed to write tags to {fileName}");
         return path;
     }
 
-    // Alice/Debut (2001) with a sibling cover.jpg + one track; Zed/Later (2010) with one track. The two
-    // album names sort A-before-Z, giving AlbumList("alphabeticalByName") a deterministic order to assert.
+    // Alice/Debut (2001, Rock) with a sibling cover.jpg + one track; Zed/Later (2010, Jazz) with one
+    // track. The two album names sort A-before-Z, giving AlbumList("alphabeticalByName") a deterministic
+    // order to assert; the two distinct genres give byGenre/RandomSongs/Genres something to filter on.
     private void MakeLibrary()
     {
         var aliceDir = Path.Combine(_root, "Alice - Debut");
         WriteTaggedTrack(aliceDir, "01 - Intro.mp3",
-            artist: "Alice", album: "Debut", title: "Intro", trackNo: 1, year: 2001);
+            artist: "Alice", album: "Debut", title: "Intro", trackNo: 1, year: 2001, genre: "Rock");
         File.WriteAllBytes(Path.Combine(aliceDir, "cover.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]);
 
         var zedDir = Path.Combine(_root, "Zed - Later");
         WriteTaggedTrack(zedDir, "01 - Outro.mp3",
-            artist: "Zed", album: "Later", title: "Outro", trackNo: 1, year: 2010);
+            artist: "Zed", album: "Later", title: "Outro", trackNo: 1, year: 2010, genre: "Jazz");
     }
 
     private SongInfo AliceSong()
@@ -169,6 +171,58 @@ public sealed class MusicLibraryImplTests : IDisposable
     {
         MakeLibrary();
         Assert.Empty(Library().AlbumList("no-such-type", 50, 0, null, null, null));
+    }
+
+    // ---- Genre ----
+
+    [Fact]
+    public void Album_and_Song_carry_the_track_genre()
+    {
+        MakeLibrary();
+        var lib = Library();
+
+        var song = AliceSong();
+        Assert.Equal("Rock", song.Genre);
+
+        var alice = Assert.Single(lib.Artists(), a => a.Name == "Alice");
+        var debut = Assert.Single(lib.Artist(alice.Id)!.Value.Albums);
+        Assert.Equal("Rock", debut.Genre);
+    }
+
+    [Fact]
+    public void AlbumList_byGenre_returns_only_matching_albums()
+    {
+        MakeLibrary();
+        // Case-insensitive match; only the Rock album (Debut) comes back, not the Jazz one (Later).
+        var rock = Library().AlbumList("byGenre", 50, 0, genre: "rock", fromYear: null, toYear: null);
+        var album = Assert.Single(rock);
+        Assert.Equal("Debut", album.Name);
+        Assert.Equal("Rock", album.Genre);
+
+        // A byGenre with no genre matches nothing.
+        Assert.Empty(Library().AlbumList("byGenre", 50, 0, genre: null, fromYear: null, toYear: null));
+    }
+
+    [Fact]
+    public void RandomSongs_byGenre_returns_only_matching_songs()
+    {
+        MakeLibrary();
+        var jazz = Library().RandomSongs(size: 50, genre: "Jazz");
+        var song = Assert.Single(jazz);
+        Assert.Equal("Outro", song.Title);
+        Assert.Equal("Jazz", song.Genre);
+    }
+
+    [Fact]
+    public void Genres_lists_the_distinct_genres_with_counts()
+    {
+        MakeLibrary();
+        var genres = Library().Genres();
+
+        // Sorted by name: Jazz before Rock, one song + one album each.
+        Assert.Equal(["Jazz", "Rock"], genres.Select(g => g.Name).ToArray());
+        Assert.All(genres, g => Assert.Equal(1, g.SongCount));
+        Assert.All(genres, g => Assert.Equal(1, g.AlbumCount));
     }
 
     // ---- Search ----

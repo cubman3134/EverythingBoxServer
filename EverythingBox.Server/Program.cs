@@ -153,8 +153,17 @@ builder.Services.AddSingleton(sp =>
     // be shadowed by it.
     // Capture the one music library a plugin registered (first in load order wins), for the
     // IMusicLibrary DI registration below. There is no config-driven equivalent — a music
-    // library always comes from a plugin, same as metadata sources above.
-    loadedMusicLibrary = plugins.Select(p => p.MusicLibrary).FirstOrDefault(m => m is not null);
+    // library always comes from a plugin, same as metadata sources above. If more than one plugin
+    // registered a non-null library, warn — naming the winner and the dropped key(s) — instead of
+    // dropping the rest silently (mirrors ProviderTrackerReconciler.Resolve above).
+    var withMusicLibrary = plugins.Where(p => p.MusicLibrary is not null).ToList();
+    if (withMusicLibrary.Count > 1)
+    {
+        log.LogWarning(
+            "{Count} plugins each registered a music library ({Keys}); only '{Winner}' (first in load order) is used.",
+            withMusicLibrary.Count, string.Join(", ", withMusicLibrary.Select(p => p.Key)), withMusicLibrary[0].Key);
+    }
+    loadedMusicLibrary = withMusicLibrary.Count > 0 ? withMusicLibrary[0].MusicLibrary : null;
 
     var pluginMetadata = plugins.SelectMany(p => p.MetadataSources).ToList();
     var metadataSource = new MetadataBackedVideoSource(
