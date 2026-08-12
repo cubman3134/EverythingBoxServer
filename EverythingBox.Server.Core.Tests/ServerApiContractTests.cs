@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_16_now_that_mediarequest_carries_alternate_titles()
+    public void Version_is_1_17_now_that_plugins_can_register_a_music_library()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(16, ServerApi.Current.Minor);
+        Assert.Equal(17, ServerApi.Current.Minor);
     }
 
     [Fact]
