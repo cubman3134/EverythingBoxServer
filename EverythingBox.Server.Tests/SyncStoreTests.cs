@@ -23,6 +23,7 @@ public sealed class SyncStoreTests : IDisposable
     [InlineData("p1")]
     [InlineData("Prof-2.a_b")]
     [InlineData("A")]
+    [InlineData("a.b")] // an interior dot is fine
     public void IsValidNamespace_accepts_safe_names(string ns) => Assert.True(SyncStore.IsValidNamespace(ns));
 
     [Theory]
@@ -32,6 +33,8 @@ public sealed class SyncStoreTests : IDisposable
     [InlineData("a/b")]
     [InlineData("a\\b")]
     [InlineData("../x")]
+    [InlineData("a.")]   // trailing dot: Windows aliases "a." to "a" → different lock, shared index
+    [InlineData("foo.")]
     public void IsValidNamespace_rejects_unsafe_names(string ns) => Assert.False(SyncStore.IsValidNamespace(ns));
 
     [Fact]

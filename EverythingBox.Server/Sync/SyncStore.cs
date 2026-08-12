@@ -28,11 +28,18 @@ public sealed partial class SyncStore
         try { Directory.CreateDirectory(_root); } catch { /* created lazily on first write too */ }
     }
 
+    /// <summary>The configured per-object byte cap. Exposed so the PUT route can raise Kestrel's
+    /// per-request body limit to it — the store's own <see cref="CopyCappedAsync"/> still enforces
+    /// the cap, but without this the small default limit would 413 large bodies before we count them.</summary>
+    public long MaxObjectBytes => _maxObjectBytes;
+
     [GeneratedRegex(@"^[A-Za-z0-9._-]{1,64}$")]
     private static partial Regex NamespacePattern();
 
     public static bool IsValidNamespace(string ns)
-        => !string.IsNullOrEmpty(ns) && ns is not ("." or "..") && NamespacePattern().IsMatch(ns);
+        // A trailing '.' is stripped by Windows path resolution ("a." and "a" name the same directory),
+        // so it would get a different per-namespace lock yet share the index — reject it outright.
+        => !string.IsNullOrEmpty(ns) && ns is not ("." or "..") && NamespacePattern().IsMatch(ns) && !ns.EndsWith('.');
 
     // ---- internal index model (persisted as index.json) ----
     private sealed class IndexEntry
@@ -81,8 +88,12 @@ public sealed partial class SyncStore
         Directory.CreateDirectory(nsDir);
         var path = Path.Combine(nsDir, "index.json");
         var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(index, Json));
-        File.Move(temp, path, overwrite: true);
+        try
+        {
+            File.WriteAllText(temp, JsonSerializer.Serialize(index, Json));
+            File.Move(temp, path, overwrite: true);
+        }
+        catch { TryDelete(temp); throw; } // a failed write/move (e.g. disk full) must not orphan the .tmp
     }
 
     public async Task<IReadOnlyList<SyncObjectInfo>> ListAsync(string ns, CancellationToken ct)
@@ -150,7 +161,8 @@ public sealed partial class SyncStore
             }
 
             var blob = Path.Combine(nsDir, BlobName(key));
-            File.Move(temp, blob, overwrite: true);
+            try { File.Move(temp, blob, overwrite: true); }
+            catch { TryDelete(temp); throw; } // e.g. a Windows sharing violation while another request streams the blob — never orphan the temp
             var version = NewVersion();
             index.Objects[key] = new IndexEntry { Version = version, Meta = meta, Size = size, Deleted = false, ModifiedUtc = DateTime.UtcNow };
             SaveIndex(nsDir, index);

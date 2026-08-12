@@ -30,6 +30,11 @@ public static class SyncEndpoints
         app.MapPut($"{prefix}/sync/{{ns}}/{{**key}}", async (string ns, string key, SyncStore store, HttpContext http, CancellationToken ct) =>
         {
             if (!SyncStore.IsValidNamespace(ns)) return Results.BadRequest();
+            // Kestrel's small default request-body limit (~30MB) would 413 a large savestate before the
+            // store can count it against MaxObjectBytes (which can be far larger). Raise the cap for THIS
+            // request only, to the store's real cap — CopyCappedAsync still enforces it (→ 400 TooLarge).
+            var feat = http.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+            if (feat is { IsReadOnly: false }) feat.MaxRequestBodySize = store.MaxObjectBytes;
             var condition = ParseCondition(http.Request);
             var meta = http.Request.Headers.TryGetValue("X-Sync-Meta", out var m) ? m.ToString() : null;
             var outcome = await store.PutAsync(ns, key, http.Request.Body, condition, meta, ct);
