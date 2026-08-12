@@ -6,6 +6,7 @@ using EverythingBox.Server.Download;
 using EverythingBox.Server.Plugins;
 using EverythingBox.Server.Routing;
 using EverythingBox.Server.Sources;
+using EverythingBox.Server.Sync;
 
 var config = ServerConfig.Load();
 
@@ -38,6 +39,12 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<PluginHost>();
 
 builder.Services.AddSingleton(_ => new FileCache(config.ResolvedFilesCacheDir));
+
+// The sync object-store singleton exists only when the opt-in Sync config is enabled, so a
+// default server constructs nothing and MapSync below is never mapped.
+if (config.Sync.Enabled)
+    builder.Services.AddSingleton(_ => new SyncStore(
+        config.Sync.ResolvedSyncDirectory, config.Sync.PerNamespaceQuotaBytes, config.Sync.MaxObjectBytes));
 
 // The self-download fallback is opt-in and OFF by default (see ServerConfig.Download).
 // Register the downloader in DI — rather than newing it inline inside the SourceRouter
@@ -186,6 +193,9 @@ app.MapGet("/health", () => Results.Json(new { ok = true }));
 app.MapBrowse(prefix);
 app.MapStreams(prefix);
 app.MapFiles(prefix);
+
+if (config.Sync.Enabled)
+    app.MapSync(prefix);
 
 // Force plugin loading now, so failures surface at startup rather than on first request.
 var sourceRouter = app.Services.GetRequiredService<SourceRouter>();
