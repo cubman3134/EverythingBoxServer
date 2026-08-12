@@ -71,18 +71,16 @@ public class SyncBodyLimitTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
     }
 
-    // The raise does not remove the ceiling: it lifts the per-request limit to EXACTLY
-    // MaxObjectBytes, so a body over that is still rejected — under a real Kestrel transport with a
-    // Content-Length, Kestrel enforces the raised limit itself and returns 413 before the store
-    // streams the body. (The store's own CopyCappedAsync → 400 mapping is a backstop, covered
-    // directly by SyncEndpointsTests.A_single_body_over_the_object_cap_is_400, whose TestServer host
-    // does not enforce the Kestrel limit and so reaches the store.) Either way an oversize body is
-    // refused with a 4xx; here the meaningful assertion is that the ceiling is still at MaxObjectBytes.
+    // Removing Kestrel's per-request limit does NOT remove the ceiling — it makes the STORE the sole
+    // adjudicator: CopyCappedAsync streams and aborts at MaxObjectBytes, so an over-cap body is refused
+    // with the store's deterministic 400 (TooLarge), even under a real Kestrel transport with a
+    // Content-Length. This is the same 400 SyncEndpointsTests.A_single_body_over_the_object_cap_is_400
+    // asserts on the TestServer host — now proven to hold over real Kestrel too, with no 413 coincidence.
     [Fact]
-    public async Task Body_over_the_object_cap_is_still_rejected()
+    public async Task Body_over_the_object_cap_is_rejected_with_400()
     {
         var tooBig = new byte[MaxObjectBytes + 1];
         var resp = await _client.PutAsync("/sync/bodylim/big", new ByteArrayContent(tooBig));
-        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
 }
