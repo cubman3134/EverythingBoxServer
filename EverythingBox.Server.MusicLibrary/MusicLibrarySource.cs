@@ -220,12 +220,13 @@ public sealed class MusicLibrarySource : IMediaSource, IMusicLibrary
 
     private ArtistInfo ToArtistInfo(MusicArtist a)
         => new(a.Id, a.Name, a.Albums.Count,
-            CoverIdFor(a.Albums.Select(al => al.CoverPath).FirstOrDefault(c => c is not null)));
+            CoverIdFor(a.Albums.Select(al => al.CoverPath).FirstOrDefault(c => c is not null)),
+            StarredAt: _store.StarredAt(a.Id));
 
     private AlbumInfo ToAlbumInfo(MusicAlbum a)
         => new(a.Id, a.Name, a.ArtistId, a.ArtistName, a.Year, Genre: a.Genre,
             SongCount: a.Tracks.Count, DurationSec: a.Tracks.Sum(t => t.DurationSec ?? 0),
-            CoverArtId: CoverIdFor(a.CoverPath), Starred: _store.IsStarred(a.Id));
+            CoverArtId: CoverIdFor(a.CoverPath), StarredAt: _store.StarredAt(a.Id));
 
     private SongInfo ToSongInfo(MusicTrack t)
     {
@@ -242,7 +243,7 @@ public sealed class MusicLibrarySource : IMediaSource, IMusicLibrary
             ContentType: MimeFor(t.Path),
             SizeBytes: SizeOf(t.Path),
             CoverArtId: CoverIdFor(album?.CoverPath),
-            Starred: _store.IsStarred(t.Id));
+            StarredAt: _store.StarredAt(t.Id));
     }
 
     private PlaylistInfo ToPlaylistInfo((string Id, string Name, IReadOnlyList<string> SongIds) p)
@@ -379,6 +380,17 @@ public sealed class MusicLibrarySource : IMediaSource, IMusicLibrary
     public void Scrobble(string songId, DateTimeOffset playedAt) => _store.Scrobble(songId, playedAt);
 
     public void SetStarred(string id, bool starred) => _store.SetStarred(id, starred);
+
+    // getStarred2: the starred artists/albums/songs across the library, each carrying its StarredAt. The
+    // store holds ids only, so we walk the index and keep whatever the store still marks starred (a star on
+    // an id that no longer resolves — a since-deleted file — simply drops out).
+    public SearchResult Starred()
+    {
+        var artists = Index().Artists.Where(a => _store.IsStarred(a.Id)).Select(ToArtistInfo).ToList();
+        var albums = AllAlbums().Where(a => _store.IsStarred(a.Id)).Select(ToAlbumInfo).ToList();
+        var songs = AllTracks().Where(t => _store.IsStarred(t.Id)).Select(ToSongInfo).ToList();
+        return new SearchResult(artists, albums, songs);
+    }
 
     public IReadOnlyList<PlaylistInfo> Playlists() => _store.Playlists().Select(ToPlaylistInfo).ToList();
 

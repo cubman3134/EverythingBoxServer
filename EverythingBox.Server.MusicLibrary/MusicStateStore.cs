@@ -18,7 +18,9 @@ public sealed class MusicStateStore
     private readonly Lock _gate = new();
 
     // In-memory authoritative copy; the file is a durable mirror. Ordinal because ids are opaque tokens.
-    private readonly HashSet<string> _starred = new(StringComparer.Ordinal);
+    // Stars are datetimes (id → the instant it was starred), so the Subsonic surface can render
+    // starred="<ISO8601>"; a missing key means unstarred.
+    private readonly Dictionary<string, DateTimeOffset> _starred = new(StringComparer.Ordinal);
     private readonly List<ScrobbleRow> _scrobbles = [];
     private readonly Dictionary<string, PlaylistRow> _playlists = new(StringComparer.Ordinal);
 
@@ -38,15 +40,30 @@ public sealed class MusicStateStore
 
     public bool IsStarred(string id)
     {
-        lock (_gate) return _starred.Contains(id);
+        lock (_gate) return _starred.ContainsKey(id);
     }
 
+    /// <summary>The instant an id was starred, or null when it is not starred.</summary>
+    public DateTimeOffset? StarredAt(string id)
+    {
+        lock (_gate) return _starred.TryGetValue(id, out var at) ? at : null;
+    }
+
+    /// <summary>Stars (records <c>now</c>) or unstars an id. Re-starring an already-starred id refreshes its
+    /// timestamp; unstarring an unstarred id is a no-op. Persisted immediately (best-effort).</summary>
     public void SetStarred(string id, bool starred)
     {
         lock (_gate)
         {
-            var changed = starred ? _starred.Add(id) : _starred.Remove(id);
-            if (changed) Persist();
+            if (starred)
+            {
+                _starred[id] = DateTimeOffset.UtcNow;
+                Persist();
+            }
+            else if (_starred.Remove(id))
+            {
+                Persist();
+            }
         }
     }
 
@@ -110,7 +127,7 @@ public sealed class MusicStateStore
             var model = JsonSerializer.Deserialize<StateModel>(json, JsonOptions);
             if (model is null) return;
 
-            foreach (var id in model.Starred ?? []) _starred.Add(id);
+            foreach (var kv in model.Starred ?? []) _starred[kv.Key] = kv.Value;
             foreach (var s in model.Scrobbles ?? []) _scrobbles.Add(s);
             foreach (var p in model.Playlists ?? [])
                 if (!string.IsNullOrEmpty(p.Id)) _playlists[p.Id] = p;
@@ -127,7 +144,7 @@ public sealed class MusicStateStore
         {
             var model = new StateModel
             {
-                Starred = [.. _starred],
+                Starred = new Dictionary<string, DateTimeOffset>(_starred, StringComparer.Ordinal),
                 Scrobbles = [.. _scrobbles],
                 Playlists = [.. _playlists.Values],
             };
@@ -146,7 +163,9 @@ public sealed class MusicStateStore
 
     private sealed class StateModel
     {
-        public List<string>? Starred { get; set; }
+        // id → the instant it was starred. (Was a bare List<string> before stars became datetimes; an old
+        // file in that shape simply fails to deserialize and degrades to empty state, like any other fault.)
+        public Dictionary<string, DateTimeOffset>? Starred { get; set; }
         public List<ScrobbleRow>? Scrobbles { get; set; }
         public List<PlaylistRow>? Playlists { get; set; }
     }

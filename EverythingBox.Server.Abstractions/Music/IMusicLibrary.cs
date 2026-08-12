@@ -1,12 +1,16 @@
 namespace EverythingBox.Server.Abstractions;
 
 public sealed record MusicFolderInfo(string Id, string Name);
-public sealed record ArtistInfo(string Id, string Name, int AlbumCount, string? CoverArtId);
+// Stars are DATETIMES, not bools: Subsonic renders a starred item as starred="<ISO8601>" (the instant it
+// was starred) and omits the attribute entirely when unstarred. StarredAt carries that instant (null when
+// not starred) across the DTOs.
+public sealed record ArtistInfo(string Id, string Name, int AlbumCount, string? CoverArtId,
+    DateTimeOffset? StarredAt = null);
 public sealed record AlbumInfo(string Id, string Name, string ArtistId, string Artist,
-    int? Year, string? Genre, int SongCount, int DurationSec, string? CoverArtId, bool Starred);
+    int? Year, string? Genre, int SongCount, int DurationSec, string? CoverArtId, DateTimeOffset? StarredAt);
 public sealed record SongInfo(string Id, string Title, string AlbumId, string Album, string ArtistId, string Artist,
     int? Track, int? Disc, int? Year, string? Genre, int? DurationSec, string Suffix, string ContentType,
-    long? SizeBytes, string? CoverArtId, bool Starred);
+    long? SizeBytes, string? CoverArtId, DateTimeOffset? StarredAt);
 public sealed record GenreInfo(string Name, int SongCount, int AlbumCount);
 public sealed record PlaylistInfo(string Id, string Name, int SongCount, int DurationSec, IReadOnlyList<SongInfo> Songs);
 public sealed record SearchResult(IReadOnlyList<ArtistInfo> Artists, IReadOnlyList<AlbumInfo> Albums, IReadOnlyList<SongInfo> Songs);
@@ -40,6 +44,9 @@ public interface IMusicLibrary
 
     void Scrobble(string songId, DateTimeOffset playedAt);
     void SetStarred(string id, bool starred);
+    /// <summary>The currently-starred artists/albums/songs (each carrying its <see cref="ArtistInfo.StarredAt"/>),
+    /// for Subsonic getStarred2. Empty lists when nothing is starred.</summary>
+    SearchResult Starred();
     IReadOnlyList<PlaylistInfo> Playlists();
     PlaylistInfo? Playlist(string id);
 }

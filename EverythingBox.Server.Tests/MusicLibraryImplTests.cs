@@ -142,7 +142,7 @@ public sealed class MusicLibraryImplTests : IDisposable
         Assert.NotNull(song.SizeBytes);
         Assert.True(song.SizeBytes > 0);
         Assert.NotNull(song.CoverArtId);            // album cover id
-        Assert.False(song.Starred);
+        Assert.Null(song.StarredAt);                // not starred → no timestamp
 
         // Song(id) round-trips to the same track.
         Assert.Equal(song.Id, lib.Song(song.Id)!.Id);
@@ -298,7 +298,7 @@ public sealed class MusicLibraryImplTests : IDisposable
         // ...and a FRESH source over the same state dir sees it — proving it persisted, not in-memory.
         var reloaded = Library().Song(song.Id);
         Assert.NotNull(reloaded);
-        Assert.True(reloaded!.Starred);
+        Assert.NotNull(reloaded!.StarredAt);        // starred → carries the instant it was starred
     }
 
     [Fact]

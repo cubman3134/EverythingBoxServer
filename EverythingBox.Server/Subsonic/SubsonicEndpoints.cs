@@ -53,7 +53,12 @@ public static class SubsonicEndpoints
                         "download" => await Download(req, http, music, loggerFactory, ct),
                         "getCoverArt" => GetCoverArt(req, music),
 
-                        // Writes (star/scrobble/playlists) arrive in Increment 4 Task 2.
+                        // ---- Increment 4 Task 2 writes: stars (as datetimes) + scrobble (record-only). ----
+                        "star" => SetStars(req, music, starred: true),
+                        "unstar" => SetStars(req, music, starred: false),
+                        "getStarred2" => GetStarred2(req, music),
+                        "scrobble" => Scrobble(req, music),
+
                         _ => SubsonicResponse.Error(req, 0, $"Endpoint not implemented: {name}"),
                     };
                 }
@@ -80,7 +85,8 @@ public static class SubsonicEndpoints
             .Attr("id", a.Id)
             .Attr("name", a.Name)
             .AttrNum("albumCount", a.AlbumCount)
-            .Attr("coverArt", a.CoverArtId);
+            .Attr("coverArt", a.CoverArtId)
+            .Attr("starred", StarredIso(a.StarredAt));
 
     private static SubsonicNode Album(AlbumInfo a) =>
         new SubsonicNode("album")
@@ -92,7 +98,8 @@ public static class SubsonicEndpoints
             .AttrNum("songCount", a.SongCount)
             .AttrNum("duration", a.DurationSec)
             .AttrNum("year", a.Year)
-            .Attr("genre", a.Genre);
+            .Attr("genre", a.Genre)
+            .Attr("starred", StarredIso(a.StarredAt));
 
     private static SubsonicNode Song(SongInfo s) =>
         new SubsonicNode("song")
@@ -113,7 +120,14 @@ public static class SubsonicEndpoints
             .Attr("suffix", s.Suffix)
             .Attr("contentType", s.ContentType)
             .AttrBool("isDir", false)
-            .Attr("type", "music");
+            .Attr("type", "music")
+            .Attr("starred", StarredIso(s.StarredAt));
+
+    // Subsonic renders a star as starred="<ISO8601, UTC, millisecond>"; when unstarred the attribute is
+    // OMITTED (never starred="false"). Returning null here makes Attr() drop it — that omission is the
+    // "unstarred" wire signal a client relies on.
+    private static string? StarredIso(DateTimeOffset? at)
+        => at is { } s ? s.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ") : null;
 
     // Subsonic quirk: a <genre> carries its NAME as the element TEXT node (not an attribute), while
     // songCount/albumCount are numeric attributes. The dual renderer maps .Text → XML text / JSON "value".
@@ -237,6 +251,57 @@ public static class SubsonicEndpoints
         var root = new SubsonicNode("randomSongs");
         foreach (var s in music.RandomSongs(size, genre)) root.Add(Song(s));
         return SubsonicResponse.Ok(req, root);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Writes (Increment 4 Task 2): star / unstar / getStarred2 / scrobble.
+    // ---------------------------------------------------------------------------------------------
+
+    // star / unstar: Subsonic sends `id` for songs, `albumId` for albums, `artistId` for artists — all
+    // three names are accepted and each may repeat, so a single call can (un)star a mix of items. An empty
+    // ok envelope is the Subsonic contract; an id that resolves to nothing is silently tolerated (matches
+    // Subsonic — starring an unknown id succeeds and simply records the star, corrupting no other state).
+    private static IResult SetStars(HttpRequest req, IMusicLibrary music, bool starred)
+    {
+        foreach (var id in StarIds(req)) music.SetStarred(id, starred);
+        return SubsonicResponse.Ok(req, null);
+    }
+
+    private static IEnumerable<string> StarIds(HttpRequest req)
+        => new[] { "id", "albumId", "artistId" }
+            .SelectMany(key => (IEnumerable<string?>)SubsonicParams.Get(req, key))
+            .Where(v => !string.IsNullOrEmpty(v))
+            .Select(v => v!);
+
+    // getStarred2 → <starred2> with the starred <artist>/<album>/<song> nodes (each carrying its own
+    // starred="<iso>" via the shared node builders).
+    private static IResult GetStarred2(HttpRequest req, IMusicLibrary music)
+    {
+        var starred = music.Starred();
+        var root = new SubsonicNode("starred2");
+        foreach (var a in starred.Artists) root.Add(Artist(a));
+        foreach (var a in starred.Albums) root.Add(Album(a));
+        foreach (var s in starred.Songs) root.Add(Song(s));
+        return SubsonicResponse.Ok(req, root);
+    }
+
+    // scrobble: record a play in the local listening history. `id` is required (missing → code 10);
+    // `time` is an optional ms-epoch play instant (default: now); `submission` (default true) distinguishes
+    // a completed play from a "now playing" ping — we only record the former. RECORD-ONLY: the history feeds
+    // this server's own recent/frequent lists; there is deliberately NO Last.fm/ListenBrainz forwarding —
+    // that external-scrobbler boundary is out of scope (issue #192).
+    private static IResult Scrobble(HttpRequest req, IMusicLibrary music)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+
+        var submission = ParseBool(SubsonicParams.Get(req, "submission"), fallback: true);
+        if (submission)
+        {
+            var ms = ParseLongOrNull(SubsonicParams.Get(req, "time"));
+            var playedAt = ms is { } t ? DateTimeOffset.FromUnixTimeMilliseconds(t) : DateTimeOffset.UtcNow;
+            music.Scrobble(id, playedAt);
+        }
+        return SubsonicResponse.Ok(req, null);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -375,4 +440,17 @@ public static class SubsonicEndpoints
 
     private static int? ParseIntOrNull(StringValues v)
         => int.TryParse(v.ToString(), out var n) ? n : null;
+
+    private static long? ParseLongOrNull(StringValues v)
+        => long.TryParse(v.ToString(), out var n) ? n : null;
+
+    // Subsonic booleans are "true"/"false"; also accept 1/0. A blank/garbage value falls back.
+    private static bool ParseBool(StringValues v, bool fallback)
+    {
+        var s = v.ToString();
+        if (bool.TryParse(s, out var b)) return b;
+        if (s == "1") return true;
+        if (s == "0") return false;
+        return fallback;
+    }
 }

@@ -217,6 +217,7 @@ internal sealed class ThrowingMusicLibrary : EverythingBox.Server.Abstractions.I
     public Task<EverythingBox.Server.Abstractions.ProxyResponse?> OpenTrackAsync(string songId, string? rangeHeader, CancellationToken ct) => throw Boom();
     public void Scrobble(string songId, DateTimeOffset playedAt) => throw Boom();
     public void SetStarred(string id, bool starred) => throw Boom();
+    public EverythingBox.Server.Abstractions.SearchResult Starred() => throw Boom();
     public IReadOnlyList<EverythingBox.Server.Abstractions.PlaylistInfo> Playlists() => throw Boom();
     public EverythingBox.Server.Abstractions.PlaylistInfo? Playlist(string id) => throw Boom();
 }
