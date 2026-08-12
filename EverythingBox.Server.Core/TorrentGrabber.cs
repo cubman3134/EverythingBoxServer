@@ -124,7 +124,12 @@ public sealed class TorrentGrabber : ITorrentGrabber
         // must land on a cached result — instant availability is the whole point.
         var requireCached = _options.PreferCachedReleases && _debridService is ICachedAvailabilityChecker;
 
-        var tasks = capable.Select(p => QueryProviderAsync(p, request, cts.Token, cancellationToken)).ToList();
+        // Fan out over (provider × distinct title), best-provider-first with the primary title first
+        // per provider (RequestsPerTitle yields it first). cts.Cancel() on a clearing pick stops all
+        // remaining title × provider queries.
+        var gate = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrentSearches));
+        var pairs = capable.SelectMany(p => RequestsPerTitle(request).Select(req => (provider: p, request: req))).ToList();
+        var tasks = pairs.Select(x => BoundedQueryAsync(gate, x.provider, x.request, cts.Token, cancellationToken)).ToList();
 
         GrabResult? early = null;
         try
@@ -298,21 +303,57 @@ public sealed class TorrentGrabber : ITorrentGrabber
             cts.CancelAfter(_options.ProviderTimeout);
         var token = cts.Token;
 
+        // Fan out over (capable provider × distinct search title), bounded by MaxConcurrentSearches.
+        // Prepare/Rank downstream still receive the ORIGINAL request, so cross-title hits merge.
+        var gate = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrentSearches));
+        var pairs = capable.SelectMany(p => RequestsPerTitle(request).Select(req => (provider: p, request: req))).ToList();
+
         List<QueryResult> queryResults;
         if (_options.QueryProvidersInParallel)
         {
-            queryResults = [.. await Task.WhenAll(capable.Select(p => QueryProviderAsync(p, request, token, cancellationToken))).ConfigureAwait(false)];
+            queryResults = [.. await Task.WhenAll(
+                pairs.Select(x => BoundedQueryAsync(gate, x.provider, x.request, token, cancellationToken))).ConfigureAwait(false)];
         }
         else
         {
+            // The sequential path is already concurrency-1, so it needs no gate.
             queryResults = [];
-            foreach (var provider in capable)
-                queryResults.Add(await QueryProviderAsync(provider, request, token, cancellationToken).ConfigureAwait(false));
+            foreach (var x in pairs)
+                queryResults.Add(await QueryProviderAsync(x.provider, x.request, token, cancellationToken).ConfigureAwait(false));
         }
 
         // If the caller cancelled (vs. a provider timing out), surface it.
         cancellationToken.ThrowIfCancellationRequested();
         return queryResults;
+    }
+
+    // The distinct search titles for a request: the primary first (queried via the ORIGINAL request
+    // so the single-title case is byte-identical to before), then each alternate that is non-blank and
+    // not a case-insensitive duplicate of the primary or an earlier alternate.
+    private static IEnumerable<MediaRequest> RequestsPerTitle(MediaRequest request)
+    {
+        yield return request;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { request.Title.Trim() };
+        foreach (var alt in request.AlternateTitles)
+        {
+            if (string.IsNullOrWhiteSpace(alt)) continue;
+            if (!seen.Add(alt.Trim())) continue;
+            yield return request.WithTitle(alt);
+        }
+    }
+
+    // Acquire a concurrency slot before querying; a cancellation while WAITING for the slot is
+    // reported as a stopped query (matching QueryProviderAsync), not thrown, unless the CALLER cancelled.
+    private async Task<QueryResult> BoundedQueryAsync(
+        SemaphoreSlim gate, ITorrentProvider provider, MediaRequest request,
+        CancellationToken token, CancellationToken callerToken)
+    {
+        try { await gate.WaitAsync(token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
+        { return new QueryResult(SafeProviderName(provider), [], "stopped before completing", TimeSpan.Zero); }
+
+        try { return await QueryProviderAsync(provider, request, token, callerToken).ConfigureAwait(false); }
+        finally { gate.Release(); }
     }
 
     private async Task<QueryResult> QueryProviderAsync(
