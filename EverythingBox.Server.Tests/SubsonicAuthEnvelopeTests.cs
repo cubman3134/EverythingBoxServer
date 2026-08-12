@@ -110,7 +110,8 @@ public class SubsonicAuthEnvelopeTests
     {
         var resp = await _factory.CreateClient().GetAsync($"/rest/getLicense.view?f=json&{TokenAuth("saltlj")}");
         var body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("\"license\":{\"valid\":\"true\"}", body);
+        // valid is a native JSON boolean now (typed-JSON hardening), not the quoted "true".
+        Assert.Contains("\"license\":{\"valid\":true}", body);
     }
 
     [Fact]

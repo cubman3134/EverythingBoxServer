@@ -1,4 +1,8 @@
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace EverythingBox.Server.Tests;
 
@@ -95,6 +99,10 @@ public sealed class SubsonicServerFactory : WebApplicationFactory<Program>
     public string FilesDirectory => Path.Combine(_root, "files");
     public string RootsDirectory => Path.Combine(_root, "music");
 
+    /// <summary>Every formatted log line, so a test can assert Subsonic credentials (p / t / s) never reach
+    /// the request log — the C1 leak: /rest carries credentials in the query, not the path.</summary>
+    public List<string> LoggedMessages { get; } = [];
+
     public SubsonicServerFactory()
     {
         SubsonicHostStaging.StageMusicPlugin(PluginsDirectory);
@@ -115,6 +123,9 @@ public sealed class SubsonicServerFactory : WebApplicationFactory<Program>
 
         CreateClient().Dispose();
     }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+        => builder.ConfigureLogging(logging => logging.Services.AddSingleton<ILoggerProvider>(new CapturingLoggerProvider(LoggedMessages)));
 
     protected override void Dispose(bool disposing)
     {
@@ -170,12 +181,85 @@ public sealed class SubsonicDisabledServerFactory : WebApplicationFactory<Progra
     }
 }
 
-/// <summary>Its own non-parallel collection so the two factories' process-wide EBS_* env-var writes do
+/// <summary>An <see cref="IMusicLibrary"/> whose every read throws — a stand-in for a misbehaving
+/// plugin, so a test can prove the endpoint dispatch contains the throw in a code-0 envelope rather than
+/// letting a raw 500 escape.</summary>
+internal sealed class ThrowingMusicLibrary : EverythingBox.Server.Abstractions.IMusicLibrary
+{
+    private static InvalidOperationException Boom() => new("plugin blew up");
+
+    public IReadOnlyList<EverythingBox.Server.Abstractions.MusicFolderInfo> Folders() => throw Boom();
+    public IReadOnlyList<EverythingBox.Server.Abstractions.ArtistInfo> Artists() => throw Boom();
+    public (EverythingBox.Server.Abstractions.ArtistInfo Artist, IReadOnlyList<EverythingBox.Server.Abstractions.AlbumInfo> Albums)? Artist(string id) => throw Boom();
+    public (EverythingBox.Server.Abstractions.AlbumInfo Album, IReadOnlyList<EverythingBox.Server.Abstractions.SongInfo> Songs)? Album(string id) => throw Boom();
+    public EverythingBox.Server.Abstractions.SongInfo? Song(string id) => throw Boom();
+    public IReadOnlyList<EverythingBox.Server.Abstractions.AlbumInfo> AlbumList(string type, int size, int offset, string? genre, int? fromYear, int? toYear) => throw Boom();
+    public EverythingBox.Server.Abstractions.SearchResult Search(string query, int artistCount, int albumCount, int songCount) => throw Boom();
+    public IReadOnlyList<EverythingBox.Server.Abstractions.SongInfo> RandomSongs(int size, string? genre) => throw Boom();
+    public IReadOnlyList<EverythingBox.Server.Abstractions.GenreInfo> Genres() => throw Boom();
+    public (string Path, string ContentType)? CoverArt(string coverArtId) => throw Boom();
+    public Task<EverythingBox.Server.Abstractions.ProxyResponse?> OpenTrackAsync(string songId, string? rangeHeader, CancellationToken ct) => throw Boom();
+    public void Scrobble(string songId, DateTimeOffset playedAt) => throw Boom();
+    public void SetStarred(string id, bool starred) => throw Boom();
+    public IReadOnlyList<EverythingBox.Server.Abstractions.PlaylistInfo> Playlists() => throw Boom();
+    public EverythingBox.Server.Abstractions.PlaylistInfo? Playlist(string id) => throw Boom();
+}
+
+/// <summary>The same enabled host, but overrides the DI <see cref="IMusicLibrary"/> with
+/// <see cref="ThrowingMusicLibrary"/> (a later singleton wins), so every endpoint call throws — proving
+/// the dispatch's try/catch containment. Pins its config in the constructor exactly like its siblings.</summary>
+public sealed class SubsonicThrowingServerFactory : WebApplicationFactory<Program>
+{
+    public const string Token = "subsonic-throw-tok";
+
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "ebs-subsonic-throw-host-" + Guid.NewGuid().ToString("N"));
+
+    public string PluginsDirectory => Path.Combine(_root, "plugins");
+    public string FilesDirectory => Path.Combine(_root, "files");
+    public string RootsDirectory => Path.Combine(_root, "music");
+
+    public SubsonicThrowingServerFactory()
+    {
+        SubsonicHostStaging.StageMusicPlugin(PluginsDirectory);
+        Directory.CreateDirectory(FilesDirectory);
+        SubsonicHostStaging.WriteTaggedTree(RootsDirectory);
+
+        var configPath = Path.Combine(_root, "everythingbox-server.json");
+        File.WriteAllText(configPath,
+            "{ \"AccessToken\": \"" + Token + "\", " +
+            "\"Subsonic\": { \"Enabled\": true }, " +
+            "\"Plugins\": { \"musiclib\": { \"Roots\": [" +
+            System.Text.Json.JsonSerializer.Serialize(RootsDirectory) + "] } } }");
+
+        Environment.SetEnvironmentVariable("EBS_PLUGINS_DIR", PluginsDirectory);
+        Environment.SetEnvironmentVariable("EBS_FILES_DIR", FilesDirectory);
+        Environment.SetEnvironmentVariable("EBS_CONFIG", configPath);
+        Environment.SetEnvironmentVariable("EBS_SYNC_DIR", null);
+
+        CreateClient().Dispose();
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+        => builder.ConfigureTestServices(services =>
+            services.AddSingleton<EverythingBox.Server.Abstractions.IMusicLibrary>(new ThrowingMusicLibrary()));
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
+        }
+    }
+}
+
+/// <summary>Its own non-parallel collection so the factories' process-wide EBS_* env-var writes do
 /// not race the other server factories (or each other — xUnit constructs a collection's fixtures
 /// sequentially, and each pins its config by building its host in its constructor).</summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class SubsonicServerCollection
-    : ICollectionFixture<SubsonicServerFactory>, ICollectionFixture<SubsonicDisabledServerFactory>
+    : ICollectionFixture<SubsonicServerFactory>, ICollectionFixture<SubsonicDisabledServerFactory>,
+      ICollectionFixture<SubsonicThrowingServerFactory>
 {
     public const string Name = "subsonic-server";
 }

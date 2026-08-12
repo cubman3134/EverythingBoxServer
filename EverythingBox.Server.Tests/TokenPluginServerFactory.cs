@@ -6,8 +6,9 @@ using Microsoft.Extensions.Logging;
 namespace EverythingBox.Server.Tests;
 
 /// <summary>Captures every formatted log message, so a test can assert on what actually got
-/// written without depending on any real logging provider (console, file, ...).</summary>
-file sealed class CapturingLoggerProvider(List<string> sink) : ILoggerProvider
+/// written without depending on any real logging provider (console, file, ...). Shared by the token and
+/// Subsonic factories — the latter asserts credentials never reach the request log.</summary>
+internal sealed class CapturingLoggerProvider(List<string> sink) : ILoggerProvider
 {
     public ILogger CreateLogger(string categoryName) => new CapturingLogger(sink);
     public void Dispose() { }

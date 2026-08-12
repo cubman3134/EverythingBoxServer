@@ -206,14 +206,22 @@ app.Use(async (ctx, next) =>
     started.Stop();
 
     var path = ctx.Request.Path.Value ?? "";
+    var query = ctx.Request.QueryString.Value ?? "";
     // ASP.NET's routing matches literal segments case-insensitively, so "/TOKEN/manifest.json"
     // reaches the same route as "/token/manifest.json" — the redaction has to match that or a
     // differently-cased request leaks the token into the log in plaintext (this was already
     // fixed once elsewhere in this file as a Critical; do not regress it here too).
     if (!string.IsNullOrEmpty(token)) path = path.Replace("/" + token, "/<token>", StringComparison.OrdinalIgnoreCase);
 
+    // Subsonic /rest requests carry credentials in the QUERY, not the path: legacy p=<accessToken>
+    // logs the whole-server token, and the t=md5(token+salt)&s=salt pair logs a replayable hash+salt.
+    // The token-in-path redaction above never touches the query, so blank the entire /rest query string
+    // before it reaches the log. StartsWithSegments matches "/rest" and "/rest/ping" but not "/restfoo".
+    if (ctx.Request.Path.StartsWithSegments("/rest", StringComparison.OrdinalIgnoreCase) && query.Length > 0)
+        query = "?<redacted>";
+
     log.LogInformation("{Method} {Path}{Query} -> {Status} ({Ms} ms)",
-        ctx.Request.Method, path, ctx.Request.QueryString.Value, ctx.Response.StatusCode, started.ElapsedMilliseconds);
+        ctx.Request.Method, path, query, ctx.Response.StatusCode, started.ElapsedMilliseconds);
 });
 
 app.MapGet("/", () => Results.Text(

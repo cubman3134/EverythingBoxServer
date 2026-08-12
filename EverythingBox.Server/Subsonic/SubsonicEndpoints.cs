@@ -14,7 +14,7 @@ public static class SubsonicEndpoints
     public static void MapSubsonic(this WebApplication app)
     {
         app.MapMethods("/rest/{endpoint}", ["GET", "POST"],
-            (string endpoint, HttpContext http, IMusicLibrary music, ServerConfig config) =>
+            (string endpoint, HttpContext http, IMusicLibrary music, ServerConfig config, ILoggerFactory loggerFactory) =>
             {
                 // Clients hit either /rest/ping or /rest/ping.view — strip a trailing ".view".
                 var name = endpoint.EndsWith(".view", StringComparison.OrdinalIgnoreCase) ? endpoint[..^5] : endpoint;
@@ -23,28 +23,40 @@ public static class SubsonicEndpoints
                     return SubsonicResponse.Error(http.Request, 40, "Wrong username or password.");
 
                 var req = http.Request;
-                return name switch
+                try
                 {
-                    "ping" => SubsonicResponse.Ok(req, null),
-                    "getLicense" => SubsonicResponse.Ok(req, new SubsonicNode("license").Attr("valid", "true")),
+                    return name switch
+                    {
+                        "ping" => SubsonicResponse.Ok(req, null),
+                        "getLicense" => SubsonicResponse.Ok(req, new SubsonicNode("license").AttrBool("valid", true)),
 
-                    // ---- Increment 3 read endpoints. Each reads params off req.Query, calls IMusicLibrary,
-                    // wraps a node payload in Ok; a bad/unknown id → 70, a missing required param → 10. ----
-                    "getMusicFolders" => SubsonicResponse.Ok(req, MusicFolders(music)),
-                    "getIndexes" => SubsonicResponse.Ok(req, Indexes("indexes", music)),
-                    "getArtists" => SubsonicResponse.Ok(req, Indexes("artists", music)),
-                    "getArtist" => GetArtist(req, music),
-                    "getAlbum" => GetAlbum(req, music),
-                    "getSong" => GetSong(req, music),
-                    "getAlbumList2" => GetAlbumList2(req, music),
-                    "getGenres" => GetGenres(req, music),
-                    "search3" => Search3(req, music),
-                    "getRandomSongs" => GetRandomSongs(req, music),
+                        // ---- Increment 3 read endpoints. Each reads params via SubsonicParams (query, or a
+                        // form POST body), calls IMusicLibrary, wraps a node payload in Ok; a bad/unknown id →
+                        // 70, a missing required param → 10. ----
+                        "getMusicFolders" => SubsonicResponse.Ok(req, MusicFolders(music)),
+                        "getIndexes" => SubsonicResponse.Ok(req, Indexes("indexes", music)),
+                        "getArtists" => SubsonicResponse.Ok(req, Indexes("artists", music)),
+                        "getArtist" => GetArtist(req, music),
+                        "getAlbum" => GetAlbum(req, music),
+                        "getSong" => GetSong(req, music),
+                        "getAlbumList2" => GetAlbumList2(req, music),
+                        "getGenres" => GetGenres(req, music),
+                        "search3" => Search3(req, music),
+                        "getRandomSongs" => GetRandomSongs(req, music),
 
-                    // Media streaming (stream/download/getCoverArt) + writes (star/scrobble/playlists)
-                    // arrive in Increment 4.
-                    _ => SubsonicResponse.Error(req, 0, $"Endpoint not implemented: {name}"),
-                };
+                        // Media streaming (stream/download/getCoverArt) + writes (star/scrobble/playlists)
+                        // arrive in Increment 4.
+                        _ => SubsonicResponse.Error(req, 0, $"Endpoint not implemented: {name}"),
+                    };
+                }
+                catch (Exception ex)
+                {
+                    // Plugin-authored IMusicLibrary can throw; contain it to a code-0 Subsonic envelope rather
+                    // than leaking a raw 500 (matches the host's plugin-containment discipline). The endpoint
+                    // name is not a credential, but nothing else about the request is logged.
+                    loggerFactory.CreateLogger("Subsonic").LogWarning(ex, "Subsonic endpoint {Endpoint} threw", name);
+                    return SubsonicResponse.Error(req, 0, "Server error");
+                }
             });
     }
 
@@ -53,11 +65,13 @@ public static class SubsonicEndpoints
     // names. Attr() drops nulls, so every optional (coverArt/year/genre/track/…) simply omits itself.
     // ---------------------------------------------------------------------------------------------
 
+    // ids and names STAY strings (Attr) even when all-digit — a JSON id must remain quoted. Counts,
+    // durations, years, track/disc and size are AttrNum (raw JSON numbers); isDir is AttrBool.
     private static SubsonicNode Artist(ArtistInfo a) =>
         new SubsonicNode("artist")
             .Attr("id", a.Id)
             .Attr("name", a.Name)
-            .Attr("albumCount", a.AlbumCount.ToString())
+            .AttrNum("albumCount", a.AlbumCount)
             .Attr("coverArt", a.CoverArtId);
 
     private static SubsonicNode Album(AlbumInfo a) =>
@@ -67,9 +81,9 @@ public static class SubsonicEndpoints
             .Attr("artist", a.Artist)
             .Attr("artistId", a.ArtistId)
             .Attr("coverArt", a.CoverArtId)
-            .Attr("songCount", a.SongCount.ToString())
-            .Attr("duration", a.DurationSec.ToString())
-            .Attr("year", a.Year?.ToString())
+            .AttrNum("songCount", a.SongCount)
+            .AttrNum("duration", a.DurationSec)
+            .AttrNum("year", a.Year)
             .Attr("genre", a.Genre);
 
     private static SubsonicNode Song(SongInfo s) =>
@@ -82,23 +96,24 @@ public static class SubsonicEndpoints
             .Attr("artistId", s.ArtistId)
             .Attr("albumId", s.AlbumId)
             .Attr("coverArt", s.CoverArtId)
-            .Attr("duration", s.DurationSec?.ToString())
-            .Attr("track", s.Track?.ToString())
-            .Attr("discNumber", s.Disc?.ToString())
-            .Attr("year", s.Year?.ToString())
+            .AttrNum("size", s.SizeBytes)
+            .AttrNum("duration", s.DurationSec)
+            .AttrNum("track", s.Track)
+            .AttrNum("discNumber", s.Disc)
+            .AttrNum("year", s.Year)
             .Attr("genre", s.Genre)
             .Attr("suffix", s.Suffix)
             .Attr("contentType", s.ContentType)
-            .Attr("isDir", "false")
+            .AttrBool("isDir", false)
             .Attr("type", "music");
 
     // Subsonic quirk: a <genre> carries its NAME as the element TEXT node (not an attribute), while
-    // songCount/albumCount are attributes. The dual renderer maps .Text → XML text / JSON "value".
+    // songCount/albumCount are numeric attributes. The dual renderer maps .Text → XML text / JSON "value".
     private static SubsonicNode Genre(GenreInfo g)
     {
         var node = new SubsonicNode("genre")
-            .Attr("songCount", g.SongCount.ToString())
-            .Attr("albumCount", g.AlbumCount.ToString());
+            .AttrNum("songCount", g.SongCount)
+            .AttrNum("albumCount", g.AlbumCount);
         node.Text = g.Name;
         return node;
     }
@@ -170,14 +185,13 @@ public static class SubsonicEndpoints
 
     private static IResult GetAlbumList2(HttpRequest req, IMusicLibrary music)
     {
-        var q = req.Query;
-        var type = q["type"].ToString();
+        var type = SubsonicParams.Get(req, "type").ToString();
         if (string.IsNullOrEmpty(type)) type = "alphabeticalByName";
-        var size = Math.Clamp(ParseInt(q["size"], 10), 0, 500);   // Subsonic caps size at 500.
-        var offset = Math.Max(0, ParseInt(q["offset"], 0));
-        var genre = Blank(q["genre"]);
-        var fromYear = ParseIntOrNull(q["fromYear"]);
-        var toYear = ParseIntOrNull(q["toYear"]);
+        var size = Math.Clamp(ParseInt(SubsonicParams.Get(req, "size"), 10), 0, 500);   // Subsonic caps size at 500.
+        var offset = Math.Max(0, ParseInt(SubsonicParams.Get(req, "offset"), 0));
+        var genre = Blank(SubsonicParams.Get(req, "genre"));
+        var fromYear = ParseIntOrNull(SubsonicParams.Get(req, "fromYear"));
+        var toYear = ParseIntOrNull(SubsonicParams.Get(req, "toYear"));
 
         var albums = music.AlbumList(type, size, offset, genre, fromYear, toYear);
         var root = new SubsonicNode("albumList2");
@@ -194,11 +208,10 @@ public static class SubsonicEndpoints
 
     private static IResult Search3(HttpRequest req, IMusicLibrary music)
     {
-        var q = req.Query;
-        var query = q["query"].ToString();   // may be "" for browse-all; the library caps the result.
-        var artistCount = ParseInt(q["artistCount"], 20);
-        var albumCount = ParseInt(q["albumCount"], 20);
-        var songCount = ParseInt(q["songCount"], 20);
+        var query = SubsonicParams.Get(req, "query").ToString();   // may be "" for browse-all; the library caps the result.
+        var artistCount = ParseInt(SubsonicParams.Get(req, "artistCount"), 20);
+        var albumCount = ParseInt(SubsonicParams.Get(req, "albumCount"), 20);
+        var songCount = ParseInt(SubsonicParams.Get(req, "songCount"), 20);
 
         var result = music.Search(query, artistCount, albumCount, songCount);
         var root = new SubsonicNode("searchResult3");
@@ -210,9 +223,8 @@ public static class SubsonicEndpoints
 
     private static IResult GetRandomSongs(HttpRequest req, IMusicLibrary music)
     {
-        var q = req.Query;
-        var size = Math.Max(0, ParseInt(q["size"], 10));
-        var genre = Blank(q["genre"]);
+        var size = Math.Clamp(ParseInt(SubsonicParams.Get(req, "size"), 10), 0, 500);   // clamp high too, like getAlbumList2.
+        var genre = Blank(SubsonicParams.Get(req, "genre"));
 
         var root = new SubsonicNode("randomSongs");
         foreach (var s in music.RandomSongs(size, genre)) root.Add(Song(s));
@@ -227,7 +239,7 @@ public static class SubsonicEndpoints
     // and `id` holds the value.
     private static bool RequireId(HttpRequest req, out string id, out IResult? missing)
     {
-        id = req.Query["id"].ToString();
+        id = SubsonicParams.Get(req, "id").ToString();
         if (string.IsNullOrEmpty(id))
         {
             missing = SubsonicResponse.Error(req, 10, "Required parameter is missing.");

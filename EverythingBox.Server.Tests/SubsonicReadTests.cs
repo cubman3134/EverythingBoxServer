@@ -168,8 +168,20 @@ public class SubsonicReadTests
         var album = resp.GetProperty("album");
         Assert.Equal("Nova Nights", album.GetProperty("name").GetString());
 
+        // Typed JSON: songCount is a native number (not "2"), while id/name stay strings.
+        var songCount = album.GetProperty("songCount");
+        Assert.Equal(JsonValueKind.Number, songCount.ValueKind);
+        Assert.Equal(2, songCount.GetInt32());
+        Assert.Equal(JsonValueKind.String, album.GetProperty("id").ValueKind);
+
         var songs = album.GetProperty("song").EnumerateArray().ToList();
         Assert.Equal(2, songs.Count);
+        // isDir is a native boolean; duration/track are native numbers on each song.
+        Assert.All(songs, s =>
+        {
+            Assert.Equal(JsonValueKind.False, s.GetProperty("isDir").ValueKind);
+            Assert.Equal(JsonValueKind.Number, s.GetProperty("duration").ValueKind);
+        });
         Assert.All(songs, s =>
         {
             Assert.Equal("mp3", s.GetProperty("suffix").GetString());
