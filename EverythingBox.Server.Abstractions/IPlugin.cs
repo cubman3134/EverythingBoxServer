@@ -45,6 +45,10 @@ public interface IPluginRegistry
     /// applies across the whole server.
     /// </summary>
     void AddProviderTracker(IProviderPerformanceTracker tracker);
+
+    /// <summary>Register the music library a Subsonic-style API serves from. At most one applies
+    /// across the whole server; a second registration is a configuration mistake and throws.</summary>
+    void AddMusicLibrary(IMusicLibrary music);
 }
 
 public interface IPluginContext

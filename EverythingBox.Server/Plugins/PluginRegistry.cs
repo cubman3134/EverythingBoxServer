@@ -10,12 +10,17 @@ public sealed class PluginRegistry : IPluginRegistry
     private readonly List<ITorrentProvider> _indexers = [];
     private readonly List<IMetadataSource> _metadata = [];
     private IProviderPerformanceTracker? _providerTracker;
+    private IMusicLibrary? _musicLibrary;
 
     public IReadOnlyCollection<IMediaSource> Sources => _sources.Values;
 
     /// <summary>The tracker this plugin registered, or null if none. Consumed by the
     /// host to feed GrabberBuilder.UseProviderTracker.</summary>
     public IProviderPerformanceTracker? ProviderTracker => _providerTracker;
+
+    /// <summary>The music library this plugin registered, or null if none. Consumed by the
+    /// host to back the Subsonic-style API.</summary>
+    public IMusicLibrary? MusicLibrary => _musicLibrary;
 
     /// <summary>Indexers registered so far. Consumed by the host to feed the pipeline
     /// that backs <see cref="IServerServices.Grabber"/>.</summary>
@@ -75,6 +80,28 @@ public sealed class PluginRegistry : IPluginRegistry
                 "A provider tracker is already registered — at most one applies across the whole server.");
 
         _providerTracker = tracker;
+    }
+
+    // Deliberately does NOT invoke any member of the library (Artists/Search/OpenTrackAsync …).
+    // Those are plugin-authored code and can throw (the host learned this the hard way in
+    // milestone 1, where reading a plugin property outside a try/catch let one bad plugin 500
+    // the manifest for everyone). Do not "helpfully" probe the instance here — it reintroduces
+    // that hazard.
+    //
+    // At most one music library applies across the whole server (one Subsonic surface serves
+    // from it), so a second registration is a real configuration mistake, not something to
+    // silently paper over. It throws — same as AddSource's duplicate-key check — rather than
+    // silently replacing the first library, which would leave whoever wrote the first
+    // registration wondering why it's never consulted.
+    public void AddMusicLibrary(IMusicLibrary music)
+    {
+        ArgumentNullException.ThrowIfNull(music);
+
+        if (_musicLibrary is not null)
+            throw new InvalidOperationException(
+                "A music library is already registered — at most one applies across the whole server.");
+
+        _musicLibrary = music;
     }
 
     internal static void ValidateKey(string key, string paramName)

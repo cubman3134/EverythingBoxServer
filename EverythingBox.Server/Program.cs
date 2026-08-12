@@ -61,6 +61,14 @@ if (config.Download.Enabled)
         sp.GetRequiredService<HttpClient>()));
 }
 
+// At most one plugin registers a music library. Plugins load lazily inside the SourceRouter
+// factory below (its body runs post-Build, when the router is first resolved), so the library
+// cannot be handed to builder.Services from in there. This closure carries the captured value
+// out to the IMusicLibrary registration below, which forces the SourceRouter factory to run
+// first — the same "load plugins once, then read what they registered" shape as the indexer,
+// metadata and provider-tracker readbacks in the factory.
+IMusicLibrary? loadedMusicLibrary = null;
+
 builder.Services.AddSingleton(sp =>
 {
     var host = sp.GetRequiredService<PluginHost>();
@@ -143,12 +151,36 @@ builder.Services.AddSingleton(sp =>
     // built with `deferredGrabber` because SearchAsync/ResolveAsync run later, and
     // appended AFTER every plugin source (alongside indexerSource) so a plugin can never
     // be shadowed by it.
+    // Capture the one music library a plugin registered (first in load order wins), for the
+    // IMusicLibrary DI registration below. There is no config-driven equivalent — a music
+    // library always comes from a plugin, same as metadata sources above. If more than one plugin
+    // registered a non-null library, warn — naming the winner and the dropped key(s) — instead of
+    // dropping the rest silently (mirrors ProviderTrackerReconciler.Resolve above).
+    var withMusicLibrary = plugins.Where(p => p.MusicLibrary is not null).ToList();
+    if (withMusicLibrary.Count > 1)
+    {
+        log.LogWarning(
+            "{Count} plugins each registered a music library ({Keys}); only '{Winner}' (first in load order) is used.",
+            withMusicLibrary.Count, string.Join(", ", withMusicLibrary.Select(p => p.Key)), withMusicLibrary[0].Key);
+    }
+    loadedMusicLibrary = withMusicLibrary.Count > 0 ? withMusicLibrary[0].MusicLibrary : null;
+
     var pluginMetadata = plugins.SelectMany(p => p.MetadataSources).ToList();
     var metadataSource = new MetadataBackedVideoSource(
         pluginMetadata, deferredGrabber, resolver, loggers.CreateLogger<MetadataBackedVideoSource>());
 
     var sources = plugins.SelectMany(p => p.Sources).Append(indexerSource).Append(metadataSource);
     return new SourceRouter(sources, log);
+});
+
+// The music library a plugin registered, exposed for the coming Subsonic-style API to resolve
+// from DI. Resolving SourceRouter first forces plugin loading, so loadedMusicLibrary is set by
+// the time we read it. When no plugin supplies one, the factory returns null and the API layer
+// (Increment 3) skips mapping — GetService returns null, exactly as with the opt-in downloader.
+builder.Services.AddSingleton<IMusicLibrary>(sp =>
+{
+    sp.GetRequiredService<SourceRouter>();
+    return loadedMusicLibrary!;
 });
 
 var app = builder.Build();

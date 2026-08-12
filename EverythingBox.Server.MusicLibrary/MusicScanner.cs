@@ -91,8 +91,8 @@ public sealed class MusicScanner
             albumBuilder.Year ??= tags.Year;
             var trackArtist = Blank(tags.Artist) ?? albumArtist;
             albumBuilder.Tracks.Add(new MusicTrack(
-                MusicIndex.TrackId(path), title, tags.TrackNo, tags.DiscNo, tags.DurationSec,
-                path, trackArtist, albumId));
+                MusicIndex.TrackId(path), title, tags.TrackNo, tags.DiscNo, tags.Year, Blank(tags.Genre),
+                tags.DurationSec, path, trackArtist, albumId));
 
             if (tags.HasEmbeddedCover) albumBuilder.EmbeddedCoverSource ??= path;
         }
@@ -112,10 +112,11 @@ public sealed class MusicScanner
                     .ToList();
 
                 var cover = ResolveCover(albumBuilder, coverCacheDir);
+                var genre = AlbumGenre(tracks);
 
                 albums.Add(new MusicAlbum(
                     albumBuilder.Id, albumBuilder.ArtistId, albumBuilder.ArtistName,
-                    albumBuilder.Name, albumBuilder.Year, cover, tracks));
+                    albumBuilder.Name, albumBuilder.Year, genre, cover, tracks));
             }
 
             artists.Add(new MusicArtist(artistBuilder.Id, artistBuilder.Name, albums));
@@ -205,6 +206,20 @@ public sealed class MusicScanner
     };
 
     private static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    /// <summary>An album's genre is the most common non-empty track genre (ties broken by first
+    /// occurrence), else the first non-empty track genre, else null — so a single-genre album takes
+    /// that genre and a mixed compilation takes its dominant one rather than dropping genre entirely.</summary>
+    private static string? AlbumGenre(IReadOnlyList<MusicTrack> tracks)
+    {
+        var genres = tracks.Select(t => t.Genre).Where(g => !string.IsNullOrEmpty(g)).ToList();
+        if (genres.Count == 0) return null;
+        return genres
+            .GroupBy(g => g, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => genres.IndexOf(g.First()))
+            .First().First();
+    }
 
     private sealed class ArtistBuilder(string name)
     {

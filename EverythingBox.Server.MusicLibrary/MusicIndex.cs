@@ -4,8 +4,8 @@ using System.Text;
 
 namespace EverythingBox.Server.MusicLibrary;
 
-public sealed record MusicTrack(string Id, string Title, int? TrackNo, int? DiscNo, int? DurationSec, string Path, string ArtistName, string AlbumId);
-public sealed record MusicAlbum(string Id, string ArtistId, string ArtistName, string Name, int? Year, string? CoverPath, IReadOnlyList<MusicTrack> Tracks);
+public sealed record MusicTrack(string Id, string Title, int? TrackNo, int? DiscNo, int? Year, string? Genre, int? DurationSec, string Path, string ArtistName, string AlbumId);
+public sealed record MusicAlbum(string Id, string ArtistId, string ArtistName, string Name, int? Year, string? Genre, string? CoverPath, IReadOnlyList<MusicTrack> Tracks);
 public sealed record MusicArtist(string Id, string Name, IReadOnlyList<MusicAlbum> Albums);
 
 public sealed class MusicIndex
