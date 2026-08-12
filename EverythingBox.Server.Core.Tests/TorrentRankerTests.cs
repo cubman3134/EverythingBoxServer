@@ -361,4 +361,87 @@ public class TorrentRankerTests
 
         Assert.Single(ranked); // default list is empty → term contributes 0, result still ranks
     }
+
+    [Fact]
+    public void ReleaseMatchingOnlyAnAlternateTitleIsEligible()
+    {
+        var alt = Make("Localised Name 1080p BluRay", MediaType.Movie);
+        var ranked = _ranker.Rank(
+            new MovieRequest { Title = "The Matrix", AlternateTitles = ["Localised Name"] },
+            [alt], RankingOptions.Default);
+
+        Assert.Single(ranked);
+    }
+
+    [Fact]
+    public void ReleaseMatchingNeitherPrimaryNorAlternateIsRejected()
+    {
+        var wrong = Make("Completely Different Film 1080p BluRay", MediaType.Movie);
+        var request = new MovieRequest { Title = "The Matrix", AlternateTitles = ["Localised Name"] };
+
+        // Rejected: it never ranks...
+        Assert.Empty(_ranker.Rank(request, [wrong], RankingOptions.Default));
+        // ...and the relevance gate reports the primary subject's missing terms.
+        var (relevant, why) = InvokeIsRelevant(request, wrong);
+        Assert.False(relevant);
+        Assert.Contains("title missing terms", why);
+    }
+
+    [Fact]
+    public void PrimaryStillMatchesWhenAlternatesDoNot()
+    {
+        var byPrimary = Make("The Matrix 1080p BluRay", MediaType.Movie);
+        var ranked = _ranker.Rank(
+            new MovieRequest { Title = "The Matrix", AlternateTitles = ["Localised Name"] },
+            [byPrimary], RankingOptions.Default);
+
+        Assert.Single(ranked);
+    }
+
+    [Fact]
+    public void MusicAlbumPrimaryAcceptsAlternateAlbumTitledRelease()
+    {
+        var altAlbum = Make("Alt Album FLAC", MediaType.Music);
+        var ranked = _ranker.Rank(
+            new MusicRequest { Title = "song", Album = "The Album", AlternateTitles = ["Alt Album"] },
+            [altAlbum], RankingOptions.Default);
+
+        Assert.Single(ranked);
+    }
+
+    [Fact]
+    public void AlternateTitleDoesNotLoosenSeasonCheck()
+    {
+        // Alternate matches the title, but the release is season 1 for a season-2 request.
+        var season1 = Make("Localised Name S01E01 1080p WEB-DL", MediaType.Tv);
+        var ranked = _ranker.Rank(
+            new TvRequest { Title = "The Show", Season = 2, AlternateTitles = ["Localised Name"] },
+            [season1], RankingOptions.Default);
+
+        Assert.Empty(ranked);
+    }
+
+    [Fact]
+    public void AlternateTitleDoesNotLoosenYearCheck()
+    {
+        // Alternate matches the title, but the release year is 2001 for a 1999 request.
+        var wrongYear = Make("Localised Name 2001 1080p BluRay", MediaType.Movie);
+        var ranked = _ranker.Rank(
+            new MovieRequest { Title = "The Matrix", Year = 1999, AlternateTitles = ["Localised Name"] },
+            [wrongYear], RankingOptions.Default);
+
+        Assert.Empty(ranked);
+    }
+
+    // Rank() surfaces only eligibility, not the rejection reason, so read the private
+    // IsRelevant(request, result, out why) directly to assert the message shape.
+    private (bool Relevant, string Why) InvokeIsRelevant(MediaRequest request, TorrentResult r)
+    {
+        var method = typeof(DefaultTorrentRanker).GetMethod(
+            "IsRelevant",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var args = new object?[] { request, r, null };
+        var relevant = (bool)method.Invoke(null, args)!;
+        return (relevant, (string)args[2]!);
+    }
 }
