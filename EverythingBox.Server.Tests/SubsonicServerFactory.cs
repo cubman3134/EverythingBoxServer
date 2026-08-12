@@ -37,13 +37,44 @@ internal static class SubsonicHostStaging
         return buf;
     }
 
+    // Synthesizes a small but structurally complete tagged library so the read endpoints have artists to
+    // index, albums with songs, genres to count, and — crucially — a COMPILATION (album-artist "Various
+    // Artists", per-track performers) that the scanner collapses into one artist rather than one per
+    // performer. Every file is a byte template ATL tags on Save() — no committed audio fixture.
+    //   Alice          → Debut (2001, Rock)           : Intro
+    //   Nova           → Nova Nights (2015, Jazz)      : Nova Theme, Second Star
+    //                    Nova Dawn  (2018, Jazz)       : Dawn
+    //   Various Artists→ Summer Hits (2020, Pop)       : Sun (by Carol), Sea (by Dave)
     public static void WriteTaggedTree(string rootsDir)
     {
-        var albumDir = Path.Combine(rootsDir, "Alice - Debut");
+        WriteTrack(rootsDir, "Alice - Debut", "01 - Intro.mp3",
+            artist: "Alice", albumArtist: null, album: "Debut", title: "Intro", track: 1, year: 2001, genre: "Rock");
+
+        WriteTrack(rootsDir, "Nova - Nova Nights", "01 - Nova Theme.mp3",
+            artist: "Nova", albumArtist: null, album: "Nova Nights", title: "Nova Theme", track: 1, year: 2015, genre: "Jazz");
+        WriteTrack(rootsDir, "Nova - Nova Nights", "02 - Second Star.mp3",
+            artist: "Nova", albumArtist: null, album: "Nova Nights", title: "Second Star", track: 2, year: 2015, genre: "Jazz");
+        WriteTrack(rootsDir, "Nova - Nova Dawn", "01 - Dawn.mp3",
+            artist: "Nova", albumArtist: null, album: "Nova Dawn", title: "Dawn", track: 1, year: 2018, genre: "Jazz");
+
+        WriteTrack(rootsDir, "Various - Summer Hits", "01 - Sun.mp3",
+            artist: "Carol", albumArtist: "Various Artists", album: "Summer Hits", title: "Sun", track: 1, year: 2020, genre: "Pop");
+        WriteTrack(rootsDir, "Various - Summer Hits", "02 - Sea.mp3",
+            artist: "Dave", albumArtist: "Various Artists", album: "Summer Hits", title: "Sea", track: 2, year: 2020, genre: "Pop");
+    }
+
+    private static void WriteTrack(string rootsDir, string albumFolder, string file,
+        string artist, string? albumArtist, string album, string title, int track, int year, string genre)
+    {
+        var albumDir = Path.Combine(rootsDir, albumFolder);
         Directory.CreateDirectory(albumDir);
-        var path = Path.Combine(albumDir, "01 - Intro.mp3");
+        var path = Path.Combine(albumDir, file);
         File.WriteAllBytes(path, SilentMp3());
-        var t = new ATL.Track(path) { Artist = "Alice", Album = "Debut", Title = "Intro", TrackNumber = 1, Year = 2001 };
+        var t = new ATL.Track(path)
+        {
+            Artist = artist, Album = album, Title = title, TrackNumber = track, Year = year, Genre = genre,
+        };
+        if (albumArtist is not null) t.AlbumArtist = albumArtist;
         Assert.True(t.Save(), "ATL failed to write tags to the synthesized fixture track");
     }
 }
