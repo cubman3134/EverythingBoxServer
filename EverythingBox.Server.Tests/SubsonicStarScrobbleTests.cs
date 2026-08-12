@@ -153,6 +153,18 @@ public class SubsonicStarScrobbleTests
     }
 
     [Fact]
+    public async Task Scrobble_with_an_out_of_range_time_is_tolerated_not_a_code_0()
+    {
+        var songId = await ASongId();
+        // A time far beyond DateTimeOffset's representable range once mistakenly threw
+        // ArgumentOutOfRangeException → a generic code-0; a garbage time must be tolerated (fall back to
+        // now) like every other bad param, returning ok.
+        var resp = await _factory.CreateClient()
+            .GetAsync($"/rest/scrobble?id={songId}&time=99999999999999999&{Auth()}");
+        AssertOk(await resp.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task Star_of_an_unknown_id_is_tolerated_and_corrupts_no_state()
     {
         const string unknown = "star-of-a-ghost-id";

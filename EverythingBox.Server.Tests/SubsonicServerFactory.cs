@@ -1,3 +1,5 @@
+using EverythingBox.Server.Abstractions;
+using EverythingBox.Server.MusicLibrary;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -109,6 +111,14 @@ public sealed class SubsonicServerFactory : WebApplicationFactory<Program>
 {
     public const string Token = "subsonic-tok";
 
+    // A playlist SEEDED into the plugin's local store BEFORE the host boots (there is no create verb on
+    // the Subsonic surface — playlists are populated out of band), so getPlaylists/getPlaylist have a real
+    // playlist to project. Its single member is Nova's "Nova Theme" track, whose id is the encoded absolute
+    // path — identical to the id the scanner mints — so it resolves to a full <entry>.
+    public const string SeededPlaylistId = "pl-seed";
+    public const string SeededPlaylistName = "Road Trip";
+    public string SeededSongId { get; }
+
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ebs-subsonic-host-" + Guid.NewGuid().ToString("N"));
 
     public string PluginsDirectory => Path.Combine(_root, "plugins");
@@ -124,6 +134,15 @@ public sealed class SubsonicServerFactory : WebApplicationFactory<Program>
         SubsonicHostStaging.StageMusicPlugin(PluginsDirectory);
         Directory.CreateDirectory(FilesDirectory);
         SubsonicHostStaging.WriteTaggedTree(RootsDirectory);
+
+        // Seed a playlist into the plugin's state store BEFORE the host boots. The store loads once at the
+        // source's construction (during the CreateClient() below), so the seed must exist first. The state
+        // dir mirrors MusicLibraryPlugin: <files>/plugins/musiclib/state; the song id is the encoded
+        // absolute path of a synthesized track, exactly what MusicIndex.TrackId mints.
+        SeededSongId = SafeLocalFileServer.EncodeId(
+            Path.Combine(RootsDirectory, "Nova - Nova Nights", "01 - Nova Theme.mp3"));
+        var stateDir = Path.Combine(FilesDirectory, "plugins", "musiclib", "state");
+        new MusicStateStore(stateDir).SavePlaylist(SeededPlaylistId, SeededPlaylistName, [SeededSongId]);
 
         var configPath = Path.Combine(_root, "everythingbox-server.json");
         File.WriteAllText(configPath,

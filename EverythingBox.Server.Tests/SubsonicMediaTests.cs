@@ -190,6 +190,30 @@ public class SubsonicMediaTests
         AssertFailed(await resp.Content.ReadAsStringAsync(), "10");
     }
 
+    // ---- cross-type id refusals: an id of one kind must not serve bytes of another ----
+
+    [Fact]
+    public async Task GetCoverArt_with_a_TRACK_id_fails_with_code_70_not_audio()
+    {
+        // A real, valid track id — but getCoverArt's image-mime gate must refuse it (an mp3 is not an
+        // image), so no audio ever leaks out of the cover endpoint.
+        var trackId = await ASongIdWithCover();
+        var resp = await _factory.CreateClient().GetAsync($"/rest/getCoverArt?id={trackId}&{Auth()}");
+        AssertFailed(await resp.Content.ReadAsStringAsync(), "70");
+        Assert.DoesNotContain("audio/", resp.Content.Headers.ContentType?.MediaType ?? "");
+    }
+
+    [Fact]
+    public async Task Stream_with_a_COVER_art_id_fails_with_code_70_not_an_image()
+    {
+        // A real, valid cover-art id — but stream gates on the id being a known TRACK, so a contained
+        // image id serves nothing and comes back as a parseable code-70, not the image bytes.
+        var coverId = await ACoverArtId();
+        var resp = await _factory.CreateClient().GetAsync($"/rest/stream?id={coverId}&{Auth()}");
+        AssertFailed(await resp.Content.ReadAsStringAsync(), "70");
+        Assert.DoesNotContain("image/", resp.Content.Headers.ContentType?.MediaType ?? "");
+    }
+
     // ---- helpers ----
 
     private static void AssertFailed(string body, string code)

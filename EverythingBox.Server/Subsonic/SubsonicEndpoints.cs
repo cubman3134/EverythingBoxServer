@@ -59,6 +59,12 @@ public static class SubsonicEndpoints
                         "getStarred2" => GetStarred2(req, music),
                         "scrobble" => Scrobble(req, music),
 
+                        // ---- Playlists (read): getPlaylists lists them, getPlaylist expands one into
+                        // its <entry> songs. v1 has no create/update verb — playlists are populated out of
+                        // band into the local store. ----
+                        "getPlaylists" => SubsonicResponse.Ok(req, Playlists(music)),
+                        "getPlaylist" => GetPlaylist(req, music),
+
                         _ => SubsonicResponse.Error(req, 0, $"Endpoint not implemented: {name}"),
                     };
                 }
@@ -101,8 +107,13 @@ public static class SubsonicEndpoints
             .Attr("genre", a.Genre)
             .Attr("starred", StarredIso(a.StarredAt));
 
-    private static SubsonicNode Song(SongInfo s) =>
-        new SubsonicNode("song")
+    // A <song>. A playlist renders the SAME attributes under the element name <entry>, so the shape is
+    // built once by SongNode and Song/Entry only pick the element name.
+    private static SubsonicNode Song(SongInfo s) => SongNode("song", s);
+    private static SubsonicNode Entry(SongInfo s) => SongNode("entry", s);
+
+    private static SubsonicNode SongNode(string element, SongInfo s) =>
+        new SubsonicNode(element)
             .Attr("id", s.Id)
             .Attr("parent", s.AlbumId)
             .Attr("title", s.Title)
@@ -139,6 +150,16 @@ public static class SubsonicEndpoints
         node.Text = g.Name;
         return node;
     }
+
+    // A <playlist>: id/name plus the numeric songCount/duration. owner/public are not modeled (this server
+    // has a single identity and no per-playlist visibility), so those optional attributes are omitted. The
+    // song members are added as <entry> children only by getPlaylist.
+    private static SubsonicNode Playlist(PlaylistInfo p) =>
+        new SubsonicNode("playlist")
+            .Attr("id", p.Id)
+            .Attr("name", p.Name)
+            .AttrNum("songCount", p.SongCount)
+            .AttrNum("duration", p.DurationSec);
 
     // ---------------------------------------------------------------------------------------------
     // Endpoints.
@@ -253,6 +274,27 @@ public static class SubsonicEndpoints
         return SubsonicResponse.Ok(req, root);
     }
 
+    // getPlaylists → <playlists> of <playlist id name songCount duration> from the local store. Empty
+    // when no playlist has been created.
+    private static SubsonicNode Playlists(IMusicLibrary music)
+    {
+        var root = new SubsonicNode("playlists");
+        foreach (var p in music.Playlists()) root.Add(Playlist(p));
+        return root;
+    }
+
+    // getPlaylist?id=… → the <playlist> with its member songs as <entry> nodes. A missing id → code 10;
+    // an unknown id → code 70.
+    private static IResult GetPlaylist(HttpRequest req, IMusicLibrary music)
+    {
+        if (RequireId(req, out var id, out var missing)) return missing!;
+        if (music.Playlist(id) is not { } playlist) return SubsonicResponse.Error(req, 70, "not found");
+
+        var node = Playlist(playlist);
+        foreach (var song in playlist.Songs) node.Add(Entry(song));
+        return SubsonicResponse.Ok(req, node);
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Writes (Increment 4 Task 2): star / unstar / getStarred2 / scrobble.
     // ---------------------------------------------------------------------------------------------
@@ -296,11 +338,7 @@ public static class SubsonicEndpoints
 
         var submission = ParseBool(SubsonicParams.Get(req, "submission"), fallback: true);
         if (submission)
-        {
-            var ms = ParseLongOrNull(SubsonicParams.Get(req, "time"));
-            var playedAt = ms is { } t ? DateTimeOffset.FromUnixTimeMilliseconds(t) : DateTimeOffset.UtcNow;
-            music.Scrobble(id, playedAt);
-        }
+            music.Scrobble(id, PlayedAt(SubsonicParams.Get(req, "time")));
         return SubsonicResponse.Ok(req, null);
     }
 
@@ -389,7 +427,12 @@ public static class SubsonicEndpoints
                 if (!http.Response.HasStarted)
                 {
                     // Nothing has flushed — undo the partial headers and hand back a clean Subsonic envelope.
+                    // Crucially, RESET the status too: a mid-relay throw arrives AFTER the upstream's 206 +
+                    // range headers were copied, so without this the client would get an HTTP 206 carrying an
+                    // XML code-70 error body. Subsonic error envelopes always ride HTTP 200 (AddonEndpoints
+                    // resets to 404 in the same spot; here 200, because a Subsonic envelope is always a 200).
                     log.LogError(ex, "Subsonic media: the music library failed before any bytes were sent — returning a failed envelope");
+                    http.Response.StatusCode = StatusCodes.Status200OK;
                     http.Response.ContentLength = null;
                     http.Response.Headers.Remove("Accept-Ranges");
                     http.Response.Headers.Remove("Content-Range");
@@ -443,6 +486,16 @@ public static class SubsonicEndpoints
 
     private static long? ParseLongOrNull(StringValues v)
         => long.TryParse(v.ToString(), out var n) ? n : null;
+
+    // A scrobble's ms-epoch play instant, defaulting to now. A missing, unparseable, OR out-of-range value
+    // falls back to now rather than erroring — DateTimeOffset.FromUnixTimeMilliseconds throws on a value
+    // outside its representable range, and a garbage time must be tolerated like every other bad param.
+    private static DateTimeOffset PlayedAt(StringValues v)
+    {
+        if (ParseLongOrNull(v) is not { } ms) return DateTimeOffset.UtcNow;
+        try { return DateTimeOffset.FromUnixTimeMilliseconds(ms); }
+        catch (ArgumentOutOfRangeException) { return DateTimeOffset.UtcNow; }
+    }
 
     // Subsonic booleans are "true"/"false"; also accept 1/0. A blank/garbage value falls back.
     private static bool ParseBool(StringValues v, bool fallback)
