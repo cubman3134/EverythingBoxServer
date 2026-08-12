@@ -106,7 +106,10 @@ public class LibraryMetaCacheTests : IDisposable
         var store = new MemoryCache();
         var cache = new LibraryMetaCache(store);
         var media = WriteFile("e.mkv", [1]);
-        var key = $"{media}|{File.GetLastWriteTimeUtc(media).Ticks}|0";
+        // The cache keys by value type (typeof(T).FullName prefix), so the poison must sit under the
+        // SAME key GetOrComputeAsync<TestMeta> will read — otherwise this regresses to a plain miss and
+        // never exercises the JsonException → recompute path.
+        var key = $"{typeof(TestMeta).FullName}|{media}|{File.GetLastWriteTimeUtc(media).Ticks}|0";
         store.Store[key] = "not json";
         var (compute, count) = Counting(new TestMeta("Recovered", null, null, null));
         var result = await cache.GetOrComputeAsync(media, null, compute, default);
