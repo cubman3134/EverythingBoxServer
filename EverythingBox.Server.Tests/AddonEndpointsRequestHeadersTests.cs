@@ -109,4 +109,21 @@ public class AddonEndpointsRequestHeadersTests
 
         Assert.Null(source.LastContext!.RequestHeaders);
     }
+
+    [Fact]
+    public async Task Detail_forwards_a_plain_header_but_excludes_sensitive_ones()
+    {
+        var source = new CapturingSource();
+        var router = new SourceRouter([source]);
+        var http = RequestWithHeaders();
+
+        await AddonEndpoints.DetailAsync("movie", "capturing:x", http, router, NullLoggerFactory.Instance, CancellationToken.None);
+
+        Assert.NotNull(source.LastContext);
+        var headers = source.LastContext!.RequestHeaders;
+        Assert.NotNull(headers);
+        Assert.Equal("v", headers!["x-test"]);           // case-insensitive; forwarded
+        Assert.False(headers.ContainsKey("Authorization")); // sensitive; blocked
+        Assert.False(headers.ContainsKey("Cookie"));
+    }
 }

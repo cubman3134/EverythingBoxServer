@@ -72,7 +72,7 @@ public class AddonEndpointsCancellationTests
         cts.Cancel();
 
         await AssertPropagatesAsync(() =>
-            AddonEndpoints.DetailAsync("movie", "genuinelycanceling:x", router, NullLoggerFactory.Instance, cts.Token));
+            AddonEndpoints.DetailAsync("movie", "genuinelycanceling:x", new DefaultHttpContext(), router, NullLoggerFactory.Instance, cts.Token));
     }
 
     [Fact]
