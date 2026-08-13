@@ -13,13 +13,17 @@ public class RomLibrarySourceTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } GC.SuppressFinalize(this); }
 
     private RomLibrarySource Roms(params string[] roots)
-        => new(roots.Length == 0 ? [_root] : roots, null, NullLogger<RomLibrarySource>.Instance);
+        => new(roots.Length == 0 ? [_root] : roots, true, null, NullLogger<RomLibrarySource>.Instance);
+
+    // Grouping toggled explicitly (Increment 2): true collapses a title's base+update+DLC, false lists flat.
+    private RomLibrarySource RomsGrouped(bool group)
+        => new([_root], group, null, NullLogger<RomLibrarySource>.Instance);
 
     private static SourceContext Ctx() => new();
 
     [Fact]
     public void No_roots_configured_has_no_catalogs()
-        => Assert.Empty(new RomLibrarySource([], null, NullLogger<RomLibrarySource>.Instance).Catalogs);
+        => Assert.Empty(new RomLibrarySource([], true, null, NullLogger<RomLibrarySource>.Instance).Catalogs);
 
     [Fact]
     public void A_configured_root_advertises_the_games_catalog()
@@ -307,5 +311,123 @@ public class RomLibrarySourceTests : IDisposable
         using var sink = new MemoryStream();
         await resp.Body.CopyToAsync(sink);
         Assert.Equal(new byte[] { 42, 42, 42, 42 }, sink.ToArray());
+    }
+
+    // ---- Increment 2: group a title's base + update + DLC into one expandable game; drill to members ----
+
+    // A switch folder holding one title (base [..0000] + an update [..0800] v65536 + a DLC [..1000], all
+    // sharing base id 0100AAAABBBB0000) plus an unrelated plain game with no title id. Grouping is by the
+    // filename's title id, so tiny byte content is enough — no real ROM.
+    private (string Dir, string BasePath, string UpdatePath, string DlcPath, string OtherPath) MakeSwitchTitle()
+    {
+        var dir = Path.Combine(_root, "switch");
+        Directory.CreateDirectory(dir);
+        var basePath = Path.Combine(dir, "[0100AAAABBBB0000].nsp");
+        var updatePath = Path.Combine(dir, "[0100AAAABBBB0800][v65536].nsp");
+        var dlcPath = Path.Combine(dir, "[0100AAAABBBB1000].nsp");
+        var otherPath = Path.Combine(dir, "Other Game.nsp");
+        File.WriteAllBytes(basePath, new byte[] { 1 });
+        File.WriteAllBytes(updatePath, new byte[] { 2 });
+        File.WriteAllBytes(dlcPath, new byte[] { 3 });
+        File.WriteAllBytes(otherPath, new byte[] { 4 });
+        return (dir, basePath, updatePath, dlcPath, otherPath);
+    }
+
+    [Fact]
+    public async Task Grouped_platform_collapses_a_title_into_one_expandable_base()
+    {
+        var t = MakeSwitchTitle();
+        var platformId = SafeLocalFileServer.EncodeId(t.Dir);
+
+        var catalog = await RomsGrouped(true).DetailAsync(platformId, Ctx(), default);
+
+        // TWO items: the grouped base + the plain game — NOT four flat leaves.
+        Assert.Equal(2, catalog.Items.Count);
+
+        var grouped = Assert.Single(catalog.Items, i => i.Id == SafeLocalFileServer.EncodeId(t.BasePath));
+        Assert.True(grouped.Expandable);
+        Assert.Equal("1 update · 1 DLC", grouped.Subtitle);
+
+        var plain = Assert.Single(catalog.Items, i => i.Id == SafeLocalFileServer.EncodeId(t.OtherPath));
+        Assert.False(plain.Expandable);
+        Assert.Equal("Other Game.nsp", plain.Subtitle);
+
+        // The update and DLC files are NOT separate top-level leaves.
+        Assert.DoesNotContain(catalog.Items, i => i.Id == SafeLocalFileServer.EncodeId(t.UpdatePath));
+        Assert.DoesNotContain(catalog.Items, i => i.Id == SafeLocalFileServer.EncodeId(t.DlcPath));
+    }
+
+    [Fact]
+    public async Task Drilling_a_grouped_base_lists_its_members_each_streamable()
+    {
+        var t = MakeSwitchTitle();
+        var baseId = SafeLocalFileServer.EncodeId(t.BasePath);
+        var source = RomsGrouped(true);
+
+        var catalog = await source.DetailAsync(baseId, Ctx(), default);
+
+        Assert.Equal(3, catalog.Items.Count);
+        Assert.All(catalog.Items, i => Assert.Equal("game", i.Kind));
+        Assert.All(catalog.Items, i => Assert.False(i.Expandable));
+        Assert.Equal(new[] { "Base game", "Update v65536", "DLC" },
+            catalog.Items.Select(i => i.Title).ToArray());
+
+        // Each member id resolves to its own file's proxy stream.
+        foreach (var item in catalog.Items)
+        {
+            var stream = await source.ResolveAsync(item.Id, 0, Ctx(), default);
+            Assert.NotNull(stream);
+            Assert.StartsWith("proxy/romlib/", stream!.Url);
+        }
+        // The member ids are the three distinct files.
+        Assert.Equal(
+            new[] { t.BasePath, t.UpdatePath, t.DlcPath }.Select(SafeLocalFileServer.EncodeId).ToHashSet(),
+            catalog.Items.Select(i => i.Id).ToHashSet());
+    }
+
+    [Fact]
+    public async Task Drilling_a_member_or_plain_game_is_empty()
+    {
+        var t = MakeSwitchTitle();
+        var source = RomsGrouped(true);
+
+        // A DLC (a member of the base's group, not a base with members of its own) → nothing to expand.
+        Assert.Empty((await source.DetailAsync(SafeLocalFileServer.EncodeId(t.DlcPath), Ctx(), default)).Items);
+        // A plain game with no members → nothing to expand.
+        Assert.Empty((await source.DetailAsync(SafeLocalFileServer.EncodeId(t.OtherPath), Ctx(), default)).Items);
+    }
+
+    [Fact]
+    public async Task Grouping_off_lists_every_file_flat()
+    {
+        var t = MakeSwitchTitle();
+        var platformId = SafeLocalFileServer.EncodeId(t.Dir);
+
+        var catalog = await RomsGrouped(false).DetailAsync(platformId, Ctx(), default);
+
+        // All FOUR files list flat, none expandable, each subtitled by its own filename.
+        Assert.Equal(4, catalog.Items.Count);
+        Assert.All(catalog.Items, i => Assert.False(i.Expandable));
+        Assert.Equal(
+            new[] { t.BasePath, t.UpdatePath, t.DlcPath, t.OtherPath }.Select(SafeLocalFileServer.EncodeId).ToHashSet(),
+            catalog.Items.Select(i => i.Id).ToHashSet());
+    }
+
+    [Fact]
+    public async Task A_base_with_no_update_or_dlc_is_a_non_expandable_leaf()
+    {
+        var dir = Path.Combine(_root, "switch");
+        Directory.CreateDirectory(dir);
+        var basePath = Path.Combine(dir, "[0100CCCCDDDD0000].nsp");
+        File.WriteAllBytes(basePath, new byte[] { 1 });
+        var platformId = SafeLocalFileServer.EncodeId(dir);
+
+        var catalog = await RomsGrouped(true).DetailAsync(platformId, Ctx(), default);
+
+        var only = Assert.Single(catalog.Items);
+        Assert.False(only.Expandable);
+        Assert.Equal("[0100CCCCDDDD0000].nsp", only.Subtitle);
+        // A lone base has no members to drill.
+        Assert.Empty((await RomsGrouped(true).DetailAsync(only.Id, Ctx(), default)).Items);
     }
 }

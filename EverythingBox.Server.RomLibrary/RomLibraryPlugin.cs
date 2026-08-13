@@ -13,6 +13,6 @@ public sealed class RomLibraryPlugin : IPlugin
     {
         var config = context.GetConfig<RomLibraryConfig>() ?? new RomLibraryConfig();
         var cache = new FileResolverCache(Path.Combine(context.CacheDirectory, "meta"), 16L * 1024 * 1024);
-        registry.AddSource(new RomLibrarySource(config.Roms, cache, context.Loggers.CreateLogger<RomLibrarySource>()));
+        registry.AddSource(new RomLibrarySource(config.Roms, config.GroupUpdatesAndDlc, cache, context.Loggers.CreateLogger<RomLibrarySource>()));
     }
 }
