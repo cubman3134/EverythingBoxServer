@@ -36,6 +36,12 @@ public abstract class MediaRequest
     /// counts as a relevance hit and add search terms in the grabber's fan-out.</summary>
     public IReadOnlyList<string> AlternateTitles { get; init; } = [];
 
+    /// <summary>A caller's per-request preferred content language, as a release-language NAME
+    /// (e.g. "Spanish") — folded ahead of the configured Ranking languages when scoring a
+    /// release's audio and subtitle languages. Null = no per-request preference (config only).
+    /// Produced from an Accept-Language header via <see cref="ContentLanguage"/>.</summary>
+    public string? PreferredLanguage { get; init; }
+
     /// <summary>Return a copy of this request with a different primary <see cref="Title"/> and all
     /// other fields preserved. Used by the grabber to query a provider under an alternate title
     /// without the provider changing. Polymorphic because each subtype carries its own fields.</summary>

@@ -16,6 +16,6 @@ public sealed class MusicRequest : MediaRequest
     public string? Track { get; init; }
 
     public override MediaRequest WithTitle(string title) => new MusicRequest
-    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles, PreferredLanguage = PreferredLanguage,
       Artist = Artist, Album = Album, Track = Track };
 }
