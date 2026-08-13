@@ -60,7 +60,7 @@ public static class AddonEndpoints
 
     /// <summary>Same cancellation-vs-exception-type reasoning as <see cref="CatalogAsync"/>.</summary>
     internal static async Task<IResult> DetailAsync(
-        string type, string id, SourceRouter router, ILoggerFactory loggers, CancellationToken ct)
+        string type, string id, HttpContext http, SourceRouter router, ILoggerFactory loggers, CancellationToken ct)
     {
         if (!router.TryResolve(id, out var source, out var payload))
             return Results.Json(Empty());
@@ -70,7 +70,7 @@ public static class AddonEndpoints
         // on its own even when DetailAsync itself succeeded.
         try
         {
-            var catalog = await source.DetailAsync(payload, new SourceContext(), ct);
+            var catalog = await source.DetailAsync(payload, new SourceContext { RequestHeaders = ForwardableHeaders(http) }, ct);
             return Results.Json(ToWire(catalog, source.Key));
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
