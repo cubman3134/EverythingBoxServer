@@ -16,6 +16,7 @@ public sealed class RomLibrarySource : IMediaSource
     private const int MaxItems = 5000;
 
     private readonly IReadOnlyList<string> _roots;
+    private readonly bool _group;
     private readonly LibraryMetaCache _meta;
     private readonly ILogger _logger;
 
@@ -24,9 +25,10 @@ public sealed class RomLibrarySource : IMediaSource
     // single root class, so unlike LocalLibrary one instance covers both file and directory resolution.
     private readonly SafeLocalFileServer _files;
 
-    public RomLibrarySource(IReadOnlyList<string> roots, IResolverCache? cache, ILogger logger)
+    public RomLibrarySource(IReadOnlyList<string> roots, bool groupUpdatesAndDlc, IResolverCache? cache, ILogger logger)
     {
         _roots = roots;
+        _group = groupUpdatesAndDlc;
         _logger = logger;
         _files = new SafeLocalFileServer(roots, MimeFor);
         _meta = new LibraryMetaCache(cache);
@@ -146,13 +148,40 @@ public sealed class RomLibrarySource : IMediaSource
         return !JunkExtensions.Contains(Path.GetExtension(path));
     }
 
-    // A platform id is a system folder (a real directory strictly inside a root, per ResolveSafeDir).
-    // Its immediate non-junk files are the games. A game/file id has nothing to expand → empty.
+    // Two shapes of id expand here:
+    //  • a platform id (a system folder, per ResolveSafeDir) → the platform's games, collapsed into one
+    //    expandable item per title when grouping is on (ListPlatformAsync);
+    //  • a base-game id (a contained file that heads a title with members) → that title's member files
+    //    (MemberCatalog) — only when grouping is on.
+    // A member's / plain game's / foreign id has nothing to expand → empty.
     public async Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
     {
-        if (_files.ResolveSafeDir(itemId) is not { } systemDir)
-            return SourceCatalog.Empty("ROM Library");
+        if (_files.ResolveSafeDir(itemId) is { } systemDir)
+            return await ListPlatformAsync(systemDir, ct).ConfigureAwait(false);
 
+        if (_group && _files.ResolveSafeFile(itemId) is { } basePath)
+        {
+            var dir = Path.GetDirectoryName(basePath);
+            if (dir is not null)
+            {
+                var romPaths = Directory.EnumerateFiles(dir, "*", TopLevelFiles)
+                    .Where(p => IsRom(p) && _files.IsContained(p)).ToList();
+                var group = TitleGrouper.Group(romPaths)
+                    .FirstOrDefault(g => string.Equals(g.BasePath, basePath, StringComparison.Ordinal)
+                                      && (g.Updates.Count > 0 || g.Dlc.Count > 0));
+                if (group is not null)
+                    return MemberCatalog(group, dir, ct);
+            }
+        }
+
+        return SourceCatalog.Empty("ROM Library");
+    }
+
+    // The platform listing: immediate non-junk files are the games. When grouping is on, a title's
+    // base + update(s) + DLC collapse into ONE expandable base item (subtitle = the member summary);
+    // a plain game and a base with no members stay a leaf. When off, every file lists flat as its own leaf.
+    private async Task<SourceCatalog> ListPlatformAsync(string systemDir, CancellationToken ct)
+    {
         // Load the folder's gamelist.xml ONCE; each ROM's parse+art is memoized by (rom, gamelist mtime),
         // so the meta panel later reuses the same entry. The gamelist path is the cache's shared "nfoPath".
         var list = GamelistStore.Load(systemDir);
@@ -160,23 +189,36 @@ public sealed class RomLibrarySource : IMediaSource
         var items = new List<CatalogItem>();
         var capped = false;
 
-        foreach (var path in Directory.EnumerateFiles(systemDir, "*", TopLevelFiles))
+        var romPaths = Directory.EnumerateFiles(systemDir, "*", TopLevelFiles)
+            .Where(p => IsRom(p) && _files.IsContained(p)).ToList();
+
+        IEnumerable<(string BasePath, int UpdateCount, int DlcCount)> entries;
+        if (_group)
+        {
+            entries = TitleGrouper.Group(romPaths)
+                .Select(g => (g.BasePath, g.Updates.Count, g.Dlc.Count));
+        }
+        else
+        {
+            entries = romPaths.Select(p => (p, 0, 0));   // flat: every file is its own base, no members
+        }
+
+        foreach (var (basePath, updates, dlc) in entries)
         {
             ct.ThrowIfCancellationRequested();
-            if (!IsRom(path)) continue;
-            if (!_files.IsContained(path)) continue; // backstop
             if (items.Count >= MaxItems) { capped = true; break; }
 
-            var meta = await _meta.GetOrComputeAsync<GameMeta>(path, gamelistPath,
-                () => ComputeGameMeta(path, list), ct).ConfigureAwait(false);
+            var meta = await _meta.GetOrComputeAsync<GameMeta>(basePath, gamelistPath,
+                () => ComputeGameMeta(basePath, list), ct).ConfigureAwait(false);
 
+            var hasMembers = updates + dlc > 0;
             items.Add(new CatalogItem(
-                Id: SafeLocalFileServer.EncodeId(path),
-                Title: meta.Name ?? Path.GetFileNameWithoutExtension(path),
-                Subtitle: Path.GetFileName(path),
+                Id: SafeLocalFileServer.EncodeId(basePath),
+                Title: meta.Name ?? Path.GetFileNameWithoutExtension(basePath),
+                Subtitle: hasMembers ? MemberSummary(updates, dlc) : Path.GetFileName(basePath),
                 Kind: MediaTypeNames.Game,
                 ThumbnailUrl: BoxartUrl(meta.BoxartPath),
-                Expandable: false));
+                Expandable: hasMembers));   // a grouped base drills into its members; a plain game is a leaf
         }
 
         var title = RomSystems.Resolve(Path.GetFileName(systemDir))?.Title ?? Path.GetFileName(systemDir);
@@ -184,6 +226,38 @@ public sealed class RomLibrarySource : IMediaSource
         var ordered = items.OrderBy(i => i.Title, StringComparer.OrdinalIgnoreCase).ToList();
         return new SourceCatalog(title, ordered, capped);
     }
+
+    // "1 update", "2 DLC", "1 update · 2 DLC" — the drill-in hint on a grouped base game.
+    private static string MemberSummary(int updates, int dlc)
+    {
+        var parts = new List<string>(2);
+        if (updates > 0) parts.Add(updates == 1 ? "1 update" : $"{updates} updates");
+        if (dlc > 0) parts.Add(dlc == 1 ? "1 DLC" : $"{dlc} DLC");
+        return string.Join(" · ", parts);
+    }
+
+    // The members of one grouped title, as leaf game items: the base first ("Base game"), then each update
+    // (newest first — group.Updates is already ordered — labelled with its version when known), then each DLC.
+    // Each member id is its own file's encoded path, so ResolveAsync/OpenAsync stream it directly.
+    private SourceCatalog MemberCatalog(TitleGroup group, string dir, CancellationToken ct)
+    {
+        var members = new List<CatalogItem>();
+        members.Add(MemberItem(group.BasePath, "Base game"));
+        foreach (var u in group.Updates)
+            members.Add(MemberItem(u.Path, u.Version is { } v ? $"Update v{v}" : "Update"));
+        foreach (var d in group.Dlc)
+            members.Add(MemberItem(d.Path, "DLC"));
+        var title = RomSystems.Resolve(Path.GetFileName(dir))?.Title ?? Path.GetFileName(dir);
+        return new SourceCatalog(title, members);
+    }
+
+    private CatalogItem MemberItem(string path, string role) => new(
+        Id: SafeLocalFileServer.EncodeId(path),
+        Title: role,
+        Subtitle: Path.GetFileName(path),
+        Kind: MediaTypeNames.Game,
+        ThumbnailUrl: null,
+        Expandable: false);   // members are leaves — each streams by its own id
 
     // The meta panel for a single game id: real name, description, boxart, and gamelist facts. A file id
     // (a game) resolves; a platform folder or foreign id yields null. Shares the DetailAsync cache entry.
