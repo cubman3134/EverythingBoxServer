@@ -70,9 +70,9 @@ public sealed class IndexerSearchSource : IMediaSource
     public IReadOnlyList<MediaTypeDescriptor> MediaTypes { get; }
 
     public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
-        => SearchAsyncCore(catalogId, query, ct);
+        => SearchAsyncCore(catalogId, query, ContentLanguage.FromHeaders(ctx.RequestHeaders), ct);
 
-    private async Task<SourceCatalog> SearchAsyncCore(string catalogId, string? query, CancellationToken ct)
+    private async Task<SourceCatalog> SearchAsyncCore(string catalogId, string? query, string? preferredLanguage, CancellationToken ct)
     {
         var descriptor = FindCatalog(catalogId);
         if (descriptor is null)
@@ -87,7 +87,7 @@ public sealed class IndexerSearchSource : IMediaSource
         if (!MediaTypeNames.TryParseProtocol(descriptor.Kind, out var mediaType))
             return SourceCatalog.Empty(descriptor.Name);
 
-        var request = BuildRequest(mediaType, query);
+        var request = BuildRequest(mediaType, query, preferredLanguage);
 
         IReadOnlyList<TorrentResult> results;
         try
@@ -147,10 +147,14 @@ public sealed class IndexerSearchSource : IMediaSource
     /// type. <see cref="MediaTypeNames"/> already did the hard part (protocol string ->
     /// MediaType); this just picks the matching request subclass so the grabber routes
     /// to the right providers and Torznab category.</summary>
-    private static MediaRequest BuildRequest(MediaType type, string query) => type switch
+    // The caller's preferred language steers ONLY movie/TV ranking (this increment's scope). Applying it
+    // to books/music/comics would let a browser's automatic Accept-Language reorder those shelves — and a
+    // tagged non-preferred book scores -100 (a near-filter) the user never asked for. Keep it video-only;
+    // language-preferring the other shelves is a separate, deliberate change with softer semantics.
+    private static MediaRequest BuildRequest(MediaType type, string query, string? preferredLanguage = null) => type switch
     {
-        MediaType.Movie => new MovieRequest { Title = query },
-        MediaType.Tv => new TvRequest { Title = query },
+        MediaType.Movie => new MovieRequest { Title = query, PreferredLanguage = preferredLanguage },
+        MediaType.Tv => new TvRequest { Title = query, PreferredLanguage = preferredLanguage },
         MediaType.Music => new MusicRequest { Title = query },
         MediaType.Audiobook => new AudiobookRequest { Title = query },
         MediaType.Book => new BookRequest { Title = query },

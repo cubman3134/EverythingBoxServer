@@ -24,6 +24,6 @@ public sealed class ComicRequest : MediaRequest
     public string? Format { get; init; }
 
     public override MediaRequest WithTitle(string title) => new ComicRequest
-    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles, PreferredLanguage = PreferredLanguage,
       Author = Author, Volume = Volume, Issue = Issue, Chapter = Chapter, Format = Format };
 }

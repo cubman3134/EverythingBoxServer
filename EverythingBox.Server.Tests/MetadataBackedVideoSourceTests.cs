@@ -225,6 +225,35 @@ public class MetadataBackedVideoSourceTests
         Assert.NotNull(grabber.LastRequest);
     }
 
+    [Fact]
+    public async Task Resolving_stamps_the_callers_Accept_Language_on_the_request()
+    {
+        var grabber = new RecordingGrabber();
+        var source = Source([new StubMetadata("a", ["movie"], Film("Some Film", 2020))], grabber);
+        var item = (await source.SearchAsync("movies", null, Ctx, CancellationToken.None)).Items.Single();
+
+        var ctx = new SourceContext
+        {
+            RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Accept-Language"] = "es" },
+        };
+        await source.ResolveAsync(item.Id, 0, ctx, CancellationToken.None);
+
+        Assert.Equal("Spanish", grabber.LastRequest!.PreferredLanguage);
+    }
+
+    [Fact]
+    public async Task Resolving_with_no_Accept_Language_leaves_the_preferred_language_null()
+    {
+        var grabber = new RecordingGrabber();
+        var source = Source([new StubMetadata("a", ["movie"], Film("Some Film", 2020))], grabber);
+        var item = (await source.SearchAsync("movies", null, Ctx, CancellationToken.None)).Items.Single();
+
+        // Ctx is a bare SourceContext — no forwarded headers at all.
+        await source.ResolveAsync(item.Id, 0, Ctx, CancellationToken.None);
+
+        Assert.Null(grabber.LastRequest!.PreferredLanguage);
+    }
+
     [Theory]
     [InlineData("not-base64url!!")]
     [InlineData("")]

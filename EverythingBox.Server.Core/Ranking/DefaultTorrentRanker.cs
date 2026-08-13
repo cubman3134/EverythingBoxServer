@@ -228,9 +228,9 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
 
         if (info is not null)
         {
-            Add(LanguageScore(info.Languages, options, request.MediaType), "language");
+            Add(LanguageScore(info.Languages, Effective(request.PreferredLanguage, options.PreferredLanguages), request.MediaType), "language");
             if (request.MediaType is MediaType.Movie or MediaType.Tv)
-                Add(SubtitleScore(info.SubtitleLanguages, options), "subtitles");
+                Add(SubtitleScore(info.SubtitleLanguages, Effective(request.PreferredLanguage, options.PreferredSubtitleLanguages)), "subtitles");
             if (info.IsProper) Add(5, "proper");
             if (info.IsRepack) Add(5, "repack");
             Add(ReleaseGroupScore(info.ReleaseGroup, options), $"release group {info.ReleaseGroup}");
@@ -307,21 +307,21 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
         };
     }
 
-    private static double SubtitleScore(IReadOnlyList<string> subtitles, RankingOptions options)
+    private static double SubtitleScore(IReadOnlyList<string> subtitles, IReadOnlyList<string> preferred)
     {
-        if (options.PreferredSubtitleLanguages.Count == 0 || subtitles.Count == 0)
+        if (preferred.Count == 0 || subtitles.Count == 0)
             return 0;
 
         var best = -1;
         foreach (var lang in subtitles)
         {
-            var idx = IndexOfMatch(options.PreferredSubtitleLanguages, lang);
+            var idx = IndexOfMatch(preferred, lang);
             if (idx >= 0 && (best < 0 || idx < best))
                 best = idx;
         }
 
         if (best >= 0)
-            return (options.PreferredSubtitleLanguages.Count - best) * 15;
+            return (preferred.Count - best) * 15;
 
         // A generic multi-subtitle release usually includes the major languages.
         if (subtitles.Any(s => s.Equals("Multi", StringComparison.OrdinalIgnoreCase)))
@@ -331,23 +331,23 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
     }
 
     private static double LanguageScore(
-        IReadOnlyList<string> languages, RankingOptions options, MediaType mediaType)
+        IReadOnlyList<string> languages, IReadOnlyList<string> preferred, MediaType mediaType)
     {
         // No language tag means the default (English) edition - the common case for English releases, which
         // rarely advertise their language. Take no opinion rather than penalise it.
-        if (options.PreferredLanguages.Count == 0 || languages.Count == 0)
+        if (preferred.Count == 0 || languages.Count == 0)
             return 0;
 
         var best = -1;
         foreach (var lang in languages)
         {
-            var idx = IndexOfMatch(options.PreferredLanguages, lang);
+            var idx = IndexOfMatch(preferred, lang);
             if (idx >= 0 && (best < 0 || idx < best))
                 best = idx;
         }
 
         if (best >= 0)
-            return (options.PreferredLanguages.Count - best) * 20;
+            return (preferred.Count - best) * 20;
 
         // A generic multi-language release usually includes the preferred language.
         if (languages.Any(l => l.Equals("Multi", StringComparison.OrdinalIgnoreCase)))
@@ -358,6 +358,19 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
         // the foreign one stays eligible as a last resort. For video it's a milder signal (a dub), so keep
         // the existing small penalty.
         return mediaType is MediaType.Book or MediaType.Audiobook ? -100 : -10;
+    }
+
+    // The per-request language (when set and not already leading) prepended to the configured order,
+    // deduped case-insensitively. Null/blank request language => the configured list unchanged.
+    private static IReadOnlyList<string> Effective(string? requestLanguage, IReadOnlyList<string> configured)
+    {
+        if (string.IsNullOrWhiteSpace(requestLanguage))
+            return configured;
+        var list = new List<string>(configured.Count + 1) { requestLanguage };
+        foreach (var c in configured)
+            if (!string.Equals(c, requestLanguage, StringComparison.OrdinalIgnoreCase))
+                list.Add(c);
+        return list;
     }
 
     private static HashSet<string> Tokenize(string text)

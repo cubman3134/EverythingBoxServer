@@ -156,11 +156,14 @@ public sealed class MetadataBackedVideoSource : IMediaSource
 
         // A bare series id isn't directly resolvable — it has no single release to
         // grab. An episode id (Tv + Season/Episode both present) is; so is a movie.
+        // The caller's Accept-Language (if any) rides onto the request so the ranker
+        // can prefer a release in that language.
+        var preferredLanguage = ContentLanguage.FromHeaders(ctx.RequestHeaders);
         MediaRequest? request = decoded.MediaType switch
         {
-            MediaType.Movie => new MovieRequest { Title = decoded.Title, Year = decoded.Year },
+            MediaType.Movie => new MovieRequest { Title = decoded.Title, Year = decoded.Year, PreferredLanguage = preferredLanguage },
             MediaType.Tv when decoded.Season is { } season && decoded.Episode is { } episode =>
-                new TvRequest { Title = decoded.Title, Season = season, Episode = episode },
+                new TvRequest { Title = decoded.Title, Season = season, Episode = episode, PreferredLanguage = preferredLanguage },
             _ => null,
         };
         if (request is null)

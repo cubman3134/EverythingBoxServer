@@ -36,6 +36,6 @@ public sealed class GeneralRequest : MediaRequest
     public IReadOnlyList<string> FileFilters { get; init; } = [];
 
     public override MediaRequest WithTitle(string title) => new GeneralRequest
-    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles, PreferredLanguage = PreferredLanguage,
       Kind = Kind, FileType = FileType, FileTypes = FileTypes, FileFilters = FileFilters };
 }

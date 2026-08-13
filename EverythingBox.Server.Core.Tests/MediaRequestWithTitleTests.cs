@@ -15,6 +15,7 @@ public class MediaRequestWithTitleTests
             Year = 1982,
             ExternalIds = new Dictionary<string, string> { ["imdb"] = "tt0083658" },
             AdditionalTerms = ["remastered"],
+            PreferredLanguage = "Spanish",
             Edition = "Final Cut",
         };
 
@@ -24,6 +25,7 @@ public class MediaRequestWithTitleTests
         Assert.Same(original.ExternalIds, copy.ExternalIds);
         Assert.Same(original.AdditionalTerms, copy.AdditionalTerms);
         Assert.Same(original.AlternateTitles, copy.AlternateTitles);
+        Assert.Equal("Spanish", copy.PreferredLanguage);
         Assert.Equal(original.Edition, copy.Edition);
     }
 
@@ -38,6 +40,7 @@ public class MediaRequestWithTitleTests
             Episode = 7,
             AbsoluteEpisode = 30,
             FullSeason = true,
+            PreferredLanguage = "Spanish",
         };
 
         var copy = Assert.IsType<TvRequest>(original.WithTitle("X"));
@@ -47,6 +50,7 @@ public class MediaRequestWithTitleTests
         Assert.Equal(original.Episode, copy.Episode);
         Assert.Equal(original.AbsoluteEpisode, copy.AbsoluteEpisode);
         Assert.Equal(original.FullSeason, copy.FullSeason);
+        Assert.Equal("Spanish", copy.PreferredLanguage);
     }
 
     [Fact]

@@ -14,6 +14,6 @@ public sealed class BookRequest : MediaRequest
     public string? Format { get; init; }
 
     public override MediaRequest WithTitle(string title) => new BookRequest
-    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles, PreferredLanguage = PreferredLanguage,
       Author = Author, Format = Format };
 }

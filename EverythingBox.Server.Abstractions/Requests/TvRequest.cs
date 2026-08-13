@@ -22,6 +22,6 @@ public sealed class TvRequest : MediaRequest
     public bool FullSeason { get; init; }
 
     public override MediaRequest WithTitle(string title) => new TvRequest
-    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles,
+    { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles, PreferredLanguage = PreferredLanguage,
       Season = Season, Episode = Episode, AbsoluteEpisode = AbsoluteEpisode, FullSeason = FullSeason };
 }
