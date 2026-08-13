@@ -70,9 +70,9 @@ public sealed class IndexerSearchSource : IMediaSource
     public IReadOnlyList<MediaTypeDescriptor> MediaTypes { get; }
 
     public Task<SourceCatalog> SearchAsync(string catalogId, string? query, SourceContext ctx, CancellationToken ct)
-        => SearchAsyncCore(catalogId, query, ct);
+        => SearchAsyncCore(catalogId, query, ContentLanguage.FromHeaders(ctx.RequestHeaders), ct);
 
-    private async Task<SourceCatalog> SearchAsyncCore(string catalogId, string? query, CancellationToken ct)
+    private async Task<SourceCatalog> SearchAsyncCore(string catalogId, string? query, string? preferredLanguage, CancellationToken ct)
     {
         var descriptor = FindCatalog(catalogId);
         if (descriptor is null)
@@ -87,7 +87,7 @@ public sealed class IndexerSearchSource : IMediaSource
         if (!MediaTypeNames.TryParseProtocol(descriptor.Kind, out var mediaType))
             return SourceCatalog.Empty(descriptor.Name);
 
-        var request = BuildRequest(mediaType, query);
+        var request = BuildRequest(mediaType, query, preferredLanguage);
 
         IReadOnlyList<TorrentResult> results;
         try
@@ -147,15 +147,15 @@ public sealed class IndexerSearchSource : IMediaSource
     /// type. <see cref="MediaTypeNames"/> already did the hard part (protocol string ->
     /// MediaType); this just picks the matching request subclass so the grabber routes
     /// to the right providers and Torznab category.</summary>
-    private static MediaRequest BuildRequest(MediaType type, string query) => type switch
+    private static MediaRequest BuildRequest(MediaType type, string query, string? preferredLanguage = null) => type switch
     {
-        MediaType.Movie => new MovieRequest { Title = query },
-        MediaType.Tv => new TvRequest { Title = query },
-        MediaType.Music => new MusicRequest { Title = query },
-        MediaType.Audiobook => new AudiobookRequest { Title = query },
-        MediaType.Book => new BookRequest { Title = query },
-        MediaType.Comic => new ComicRequest { Title = query },
-        _ => new GeneralRequest { Title = query, Kind = type },
+        MediaType.Movie => new MovieRequest { Title = query, PreferredLanguage = preferredLanguage },
+        MediaType.Tv => new TvRequest { Title = query, PreferredLanguage = preferredLanguage },
+        MediaType.Music => new MusicRequest { Title = query, PreferredLanguage = preferredLanguage },
+        MediaType.Audiobook => new AudiobookRequest { Title = query, PreferredLanguage = preferredLanguage },
+        MediaType.Book => new BookRequest { Title = query, PreferredLanguage = preferredLanguage },
+        MediaType.Comic => new ComicRequest { Title = query, PreferredLanguage = preferredLanguage },
+        _ => new GeneralRequest { Title = query, Kind = type, PreferredLanguage = preferredLanguage },
     };
 
     private static CatalogItem ToItem(TorrentResult result, string mediaType) =>

@@ -206,6 +206,31 @@ public class IndexerSearchSourceTests
     }
 
     [Fact]
+    public async Task Searching_stamps_the_callers_Accept_Language_on_the_request()
+    {
+        var grabber = new RecordingGrabber();
+        var ctx = new SourceContext
+        {
+            RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Accept-Language"] = "es" },
+        };
+
+        await Source(grabber).SearchAsync("movies", "The Matrix", ctx, CancellationToken.None);
+
+        Assert.Equal("Spanish", grabber.LastRequest!.PreferredLanguage);
+    }
+
+    [Fact]
+    public async Task Searching_with_no_Accept_Language_leaves_the_preferred_language_null()
+    {
+        var grabber = new RecordingGrabber();
+
+        // Ctx is a bare SourceContext — no forwarded headers at all.
+        await Source(grabber).SearchAsync("movies", "The Matrix", Ctx, CancellationToken.None);
+
+        Assert.Null(grabber.LastRequest!.PreferredLanguage);
+    }
+
+    [Fact]
     public async Task Each_release_becomes_an_item_carrying_its_title_and_stats()
     {
         var grabber = new RecordingGrabber(Release("Some Release 1080p"));
