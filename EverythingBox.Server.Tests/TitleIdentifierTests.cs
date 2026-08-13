@@ -4,8 +4,10 @@ using Xunit;
 
 namespace EverythingBox.Server.Tests;
 
-public class TitleIdentifierTests
+public class TitleIdentifierTests : IDisposable
 {
+    private readonly List<string> _tempDirs = new();
+
     // ---- Switch: base / update / DLC share the base id, low 3 nibbles set the kind ----
 
     [Fact]
@@ -33,6 +35,21 @@ public class TitleIdentifierTests
         Assert.Equal(new PackageIdentity("0005000012345678", TitleKind.Dlc, null), d);
     }
 
+    // ---- Wii U BASE (high8 00050000): title id is the FULL id VERBATIM, and a base + its real update
+    //      (0005000E + same low 8) group into ONE base program id — NOT mangled by the Switch rule ----
+
+    [Fact]
+    public void WiiU_base_is_verbatim_and_groups_with_its_update()
+    {
+        var b = TitleIdentifier.Identify("Wii U Game [00050000101C9400].wud");
+        Assert.Equal(new PackageIdentity("00050000101C9400", TitleKind.Base, null), b);
+
+        var u = TitleIdentifier.Identify("Wii U Game [0005000E101C9400].wud");
+        // same base program id → the two share a group key
+        Assert.Equal("00050000101C9400", u!.TitleId);
+        Assert.Equal(TitleKind.Update, u.Kind);
+    }
+
     // ---- 3DS: high8 0004000E→update, base id = 00040000 + low8 ----
 
     [Fact]
@@ -41,6 +58,31 @@ public class TitleIdentifierTests
         var u = TitleIdentifier.Identify("Game [0004000E00123400].cia");
         Assert.Equal(new PackageIdentity("0004000000123400", TitleKind.Update, null), u);
     }
+
+    // ---- 3DS BASE (high8 00040000): title id is the FULL id VERBATIM (the low 8 are the unique id, NOT
+    //      zeroed), so three distinct base ids stay three distinct titles instead of collapsing ----
+
+    [Fact]
+    public void ThreeDS_base_is_verbatim_not_low_bits_zeroed()
+    {
+        var b = TitleIdentifier.Identify("3DS Game [0004000000030000].cia");
+        Assert.Equal(new PackageIdentity("0004000000030000", TitleKind.Base, null), b);
+    }
+
+    // ---- Switch: a DLC id ending 2800 must classify as Dlc, not Update (M1: full low-4 "0800" only) ----
+
+    [Fact]
+    public void Switch_dlc_ending_2800_is_dlc_not_update()
+    {
+        var d = TitleIdentifier.Identify("Some Game [0100AAAABBBB2800].nsp");
+        Assert.Equal(new PackageIdentity("0100AAAABBBB0000", TitleKind.Dlc, null), d);
+    }
+
+    // ---- An unrecognized 16-hex chunk (not a Switch/Wii U/3DS shape) is NOT minted into a bogus title id ----
+
+    [Fact]
+    public void Unrecognized_16hex_is_not_a_title_id()
+        => Assert.Null(TitleIdentifier.Identify("Some Game [DEADBEEFCAFEBABE].iso"));
 
     // ---- PS3: the unencrypted .pkg header content-id OVERRIDES a misleading filename ----
 
@@ -128,12 +170,19 @@ public class TitleIdentifierTests
         return buf;
     }
 
-    private static string WritePkg(string fileName, byte[] bytes)
+    private string WritePkg(string fileName, byte[] bytes)
     {
         var dir = Path.Combine(Path.GetTempPath(), "ebs22-pkg-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
+        _tempDirs.Add(dir);
         var path = Path.Combine(dir, fileName);
         File.WriteAllBytes(path, bytes);
         return path;
+    }
+
+    public void Dispose()
+    {
+        foreach (var dir in _tempDirs)
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ }
     }
 }

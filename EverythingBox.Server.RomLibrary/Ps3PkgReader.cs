@@ -16,11 +16,12 @@ internal static partial class Ps3PkgReader
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, useAsync: false);
             Span<byte> magic = stackalloc byte[4];
-            if (fs.Read(magic) != 4 || magic[0] != 0x7F || magic[1] != (byte)'P' || magic[2] != (byte)'K' || magic[3] != (byte)'G')
+            fs.ReadExactly(magic);   // throws on a short read → caught below → null
+            if (magic[0] != 0x7F || magic[1] != (byte)'P' || magic[2] != (byte)'K' || magic[3] != (byte)'G')
                 return null;
             fs.Seek(0x30, SeekOrigin.Begin);
             Span<byte> cid = stackalloc byte[36];
-            if (fs.Read(cid) != 36) return null;
+            fs.ReadExactly(cid);
             var text = Encoding.ASCII.GetString(cid).TrimEnd('\0', ' ');
             var m = GameCode().Match(text);
             return m.Success ? m.Groups[1].Value : null;

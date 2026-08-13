@@ -8,7 +8,7 @@ internal static partial class TitleIdentifier
     [GeneratedRegex(@"\[v(\d+)\]|\bv(\d+)\b", RegexOptions.IgnoreCase)] private static partial Regex Version();
     [GeneratedRegex(@"\b(update|patch|upd)\b", RegexOptions.IgnoreCase)] private static partial Regex UpdateWord();
     [GeneratedRegex(@"\b(dlc|add[- ]?on)\b", RegexOptions.IgnoreCase)] private static partial Regex DlcWord();
-    [GeneratedRegex(@"([A-Z]{4}\d{5})", RegexOptions.IgnoreCase)] private static partial Regex Ps3Code();
+    [GeneratedRegex(@"([A-Z]{4}\d{5})")] private static partial Regex Ps3Code();
     [GeneratedRegex(@"\([^)]*\)|\[[^\]]*\]")] private static partial Regex TagRegion();
 
     /// <summary>Best identity for a file, or null if nothing plausible. Order: a 16-hex Switch/WiiU/3DS
@@ -20,25 +20,38 @@ internal static partial class TitleIdentifier
         var ext = Path.GetExtension(path).ToLowerInvariant();
         var version = ParseVersion(name);
 
-        // 1) 16-hex title id (Switch / Wii U / 3DS). The low bits place the file in its title.
+        // 1) 16-hex title id (Switch / Wii U / 3DS) — ONLY for recognized title-id shapes. Wii U and 3DS
+        // encode the type in the HIGH 8 hex (the unique id is the low 8, never zeroed); Switch encodes it in
+        // the LOW 4. An unrecognized 16-hex chunk (e.g. a hash fragment) is NOT a title id — group nothing
+        // when unsure: fall through to the PS3 + keyword branches rather than mint a bogus id.
         if (Hex16().Match(name) is { Success: true } h)
         {
             var id = h.Groups[1].Value.ToUpperInvariant();
             var high8 = id[..8];
-            // Wii U / 3DS: the high 8 hex are the type; the base swaps them to the app type.
-            if (high8 is "0005000E" or "0005000C")   // Wii U update / DLC
-                return new PackageIdentity("00050000" + id[8..], high8 == "0005000E" ? TitleKind.Update : TitleKind.Dlc, version);
-            if (high8 is "0004000E" or "0004008C")   // 3DS update / DLC
-                return new PackageIdentity("00040000" + id[8..], high8 == "0004000E" ? TitleKind.Update : TitleKind.Dlc, version);
-            // Switch (and Wii U/3DS base): a base application id always has its low 16 bits zero
-            // ("…0000"). Its update is base|0x800 ("…0800"); its DLC is base+0x1000·n ("…1000", "…2000", …),
-            // so the DLC marker sits in the 0x1000-place nibble — the base is the low 4 nibbles zeroed.
-            var baseId = id[..12] + "0000";
-            var last3 = id[13..];   // low 3 hex nibbles
-            var kind = last3 == "800" ? TitleKind.Update
-                     : last3 == "000" && id[12] == '0' ? TitleKind.Base
-                     : TitleKind.Dlc;
-            return new PackageIdentity(baseId, kind, version);
+            switch (high8)
+            {
+                // Wii U: base id = 00050000 + the low 8 hex (a base's own id IS that, verbatim → they group).
+                case "00050000": return new PackageIdentity(id, TitleKind.Base, version);
+                case "0005000E": return new PackageIdentity("00050000" + id[8..], TitleKind.Update, version);
+                case "0005000C": return new PackageIdentity("00050000" + id[8..], TitleKind.Dlc, version);
+                // 3DS: base id = 00040000 + the low 8 hex.
+                case "00040000": return new PackageIdentity(id, TitleKind.Base, version);
+                case "0004000E": return new PackageIdentity("00040000" + id[8..], TitleKind.Update, version);
+                case "0004008C": return new PackageIdentity("00040000" + id[8..], TitleKind.Dlc, version);
+            }
+            // Switch: an 01-prefixed id. The base zeroes the low 4 nibbles; those low 4 set the kind —
+            // "0000" base, "0800" update, anything else DLC (a DLC id ends 1000/1800/2800/…). Requiring the
+            // FULL low-4 "0800" for Update keeps a DLC ending 1800/2800 out of the Update bucket.
+            if (id.StartsWith("01", StringComparison.Ordinal))
+            {
+                var baseId = id[..12] + "0000";
+                var low4 = id[12..];
+                var kind = low4 == "0000" ? TitleKind.Base
+                         : low4 == "0800" ? TitleKind.Update
+                         : TitleKind.Dlc;
+                return new PackageIdentity(baseId, kind, version);
+            }
+            // Any other 16-hex prefix → not a title id; fall through.
         }
 
         // 2) PS3: prefer the .pkg header content-id; else a game code in the name.
@@ -47,8 +60,11 @@ internal static partial class TitleIdentifier
         if (ps3Id is not null)
             return new PackageIdentity(ps3Id.ToUpperInvariant(), KindFromWords(name), version);
 
-        // 3) Generic keyword fallback — only meaningful once a base with the SAME stem exists (the grouper
-        // decides). Group key = the title stem with version/update/DLC markers stripped.
+        // 3) Generic keyword fallback — kind-LABELS an update/DLC-marked file only; it can never FORM a
+        // group on its own. A plain unmarked base returns null (below), so a stem bucket never holds a Base,
+        // and without a title-id or PS3 signal even a marked file ends up a singleton in the grouper. We
+        // deliberately do NOT give unmarked files a stem Base identity — that would over-group unrelated
+        // files that merely share a normalized stem. Group key (for a marked file) = that stripped stem.
         var kindW = KindFromWords(name);
         if (kindW != TitleKind.Base)
             return new PackageIdentity(NormalizeStem(name), kindW, version);

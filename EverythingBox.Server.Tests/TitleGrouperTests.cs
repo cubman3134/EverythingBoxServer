@@ -4,8 +4,10 @@ using Xunit;
 
 namespace EverythingBox.Server.Tests;
 
-public class TitleGrouperTests
+public class TitleGrouperTests : IDisposable
 {
+    private readonly List<string> _tempDirs = new();
+
     // ---- base + update + DLC sharing a title id → ONE group ----
 
     [Fact]
@@ -91,6 +93,29 @@ public class TitleGrouperTests
         finally { File.Delete(basePkg); File.Delete(updatePkg); }
     }
 
+    // ---- two base files sharing a title id → largest heads a group, the OTHER survives as a singleton ----
+
+    [Fact]
+    public void Duplicate_bases_sharing_an_id_keep_largest_and_surface_the_other_as_a_singleton()
+    {
+        // Same Wii U base program id, two dumps of different sizes.
+        var big = WritePkg("Some Game [00050000101C9400] (dump A).wud", new byte[2000]);
+        var small = WritePkg("Some Game [00050000101C9400] (dump B).wud", new byte[10]);
+
+        var groups = TitleGrouper.Group([small, big]);
+
+        // Neither dump silently vanishes: both appear on the shelf.
+        Assert.Equal(2, groups.Count);
+        Assert.All(groups, g => Assert.Equal("00050000101C9400", g.BaseTitleId));
+
+        var head = groups.Single(g => g.BasePath == big);      // largest heads its group
+        var singleton = groups.Single(g => g.BasePath == small); // the loser is its own singleton
+        Assert.Empty(singleton.Updates);
+        Assert.Empty(singleton.Dlc);
+        Assert.Empty(head.Updates);
+        Assert.Empty(head.Dlc);
+    }
+
     // ---- two distinct titles in one folder → two groups ----
 
     [Fact]
@@ -118,12 +143,19 @@ public class TitleGrouperTests
         return buf;
     }
 
-    private static string WritePkg(string fileName, byte[] bytes)
+    private string WritePkg(string fileName, byte[] bytes)
     {
         var dir = Path.Combine(Path.GetTempPath(), "ebs22-grp-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
+        _tempDirs.Add(dir);
         var path = Path.Combine(dir, fileName);
         File.WriteAllBytes(path, bytes);
         return path;
+    }
+
+    public void Dispose()
+    {
+        foreach (var dir in _tempDirs)
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ }
     }
 }

@@ -51,11 +51,16 @@ internal static class TitleGrouper
                 continue;
             }
 
-            // Several bases sharing an id are duplicates: keep the largest file, drop the rest.
-            var basePath = bases
+            // Several bases share this id (e.g. a second dump of the same game). Keep the largest as the
+            // group head — but the losers don't vanish: dropping data silently is worse than a visible
+            // duplicate, so each non-largest base becomes its OWN singleton (itself as base, no members).
+            var orderedBases = bases
                 .OrderByDescending(m => FileLength(m.Path))
                 .ThenBy(m => m.Path, StringComparer.Ordinal)
-                .First().Path;
+                .ToList();
+            var basePath = orderedBases[0].Path;
+            foreach (var loser in orderedBases.Skip(1))
+                groups.Add(new TitleGroup(titleId, loser.Path, [], []));
 
             var updates = members
                 .Where(m => m.Id.Kind == TitleKind.Update)
