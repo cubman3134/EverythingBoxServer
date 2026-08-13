@@ -114,6 +114,24 @@ public class TorrentRankerTests
     }
 
     [Fact]
+    public void PerRequestPreferredLanguageBoostsMatchingReleaseOverAnEqualOne()
+    {
+        var english = Make("The Matrix 1999 English 1080p BluRay x264-A", MediaType.Movie, seeders: 50);
+        var spanish = Make("The Matrix 1999 Spanish 1080p BluRay x264-B", MediaType.Movie, seeders: 10);
+
+        // Caller prefers Spanish -> the Spanish release wins despite fewer seeders.
+        var best = _ranker.SelectBest(
+            new MovieRequest { Title = "The Matrix", PreferredLanguage = "Spanish" },
+            [english, spanish], RankingOptions.Default);
+        Assert.Equal(spanish.Title, best!.Title);
+
+        // No per-request preference -> today's ranking (higher-seeded English) wins, unchanged.
+        var noPref = _ranker.SelectBest(
+            new MovieRequest { Title = "The Matrix" }, [english, spanish], RankingOptions.Default);
+        Assert.Equal(english.Title, noPref!.Title);
+    }
+
+    [Fact]
     public void SubtitlePreferenceIgnoredWithoutAMatch()
     {
         // No subtitle preference set: the higher-seeded release wins as usual.
