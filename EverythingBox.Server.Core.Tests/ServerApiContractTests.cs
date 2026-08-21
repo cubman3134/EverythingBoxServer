@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_17_now_that_plugins_can_register_a_music_library()
+    public void Version_is_1_18_now_that_plugins_can_register_a_romhack_source()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(17, ServerApi.Current.Minor);
+        Assert.Equal(18, ServerApi.Current.Minor);
     }
 
     [Fact]
