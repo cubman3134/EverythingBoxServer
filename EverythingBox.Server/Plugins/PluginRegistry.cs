@@ -11,6 +11,7 @@ public sealed class PluginRegistry : IPluginRegistry
     private readonly List<IMetadataSource> _metadata = [];
     private IProviderPerformanceTracker? _providerTracker;
     private IMusicLibrary? _musicLibrary;
+    private readonly List<IRomhackSource> _romhackSources = new();
 
     public IReadOnlyCollection<IMediaSource> Sources => _sources.Values;
 
@@ -21,6 +22,7 @@ public sealed class PluginRegistry : IPluginRegistry
     /// <summary>The music library this plugin registered, or null if none. Consumed by the
     /// host to back the Subsonic-style API.</summary>
     public IMusicLibrary? MusicLibrary => _musicLibrary;
+    public IReadOnlyList<IRomhackSource> RomhackSources => _romhackSources;
 
     /// <summary>Indexers registered so far. Consumed by the host to feed the pipeline
     /// that backs <see cref="IServerServices.Grabber"/>.</summary>
@@ -102,6 +104,20 @@ public sealed class PluginRegistry : IPluginRegistry
                 "A music library is already registered — at most one applies across the whole server.");
 
         _musicLibrary = music;
+    }
+
+    // Many romhack sources DO apply at once — a game's hacks are fanned out across all of them — so
+    // this appends rather than refusing a second registration. Registering the same instance twice is
+    // still a mistake, and would double every row that source returns.
+    public void AddRomhackSource(IRomhackSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        if (_romhackSources.Contains(source))
+            throw new InvalidOperationException(
+                "That romhack source is already registered — registering it twice would double its rows.");
+
+        _romhackSources.Add(source);
     }
 
     internal static void ValidateKey(string key, string paramName)

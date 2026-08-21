@@ -49,6 +49,12 @@ public interface IPluginRegistry
     /// <summary>Register the music library a Subsonic-style API serves from. At most one applies
     /// across the whole server; a second registration is a configuration mistake and throws.</summary>
     void AddMusicLibrary(IMusicLibrary music);
+
+    /// <summary>Register a source of romhacks for retro games. Unlike the music library, MANY apply:
+    /// the point of the surface is to fan a game's hacks out across whatever sources are installed,
+    /// tagging each row with the source it came from. Registering the same instance twice is a
+    /// mistake and throws; registering different ones is the normal case.</summary>
+    void AddRomhackSource(IRomhackSource source);
 }
 
 public interface IPluginContext

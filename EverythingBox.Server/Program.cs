@@ -69,6 +69,10 @@ if (config.Download.Enabled)
 // first — the same "load plugins once, then read what they registered" shape as the indexer,
 // metadata and provider-tracker readbacks in the factory.
 IMusicLibrary? loadedMusicLibrary = null;
+// Every romhack source every plugin registered. Unlike the music library, MANY apply at once:
+// a game's hacks are fanned out across all of them. Captured here for the DI registration below,
+// for the same reason -- resolving SourceRouter is what forces plugin loading.
+IReadOnlyList<IRomhackSource> loadedRomhackSources = Array.Empty<IRomhackSource>();
 
 builder.Services.AddSingleton(sp =>
 {
@@ -166,6 +170,10 @@ builder.Services.AddSingleton(sp =>
     }
     loadedMusicLibrary = withMusicLibrary.Count > 0 ? withMusicLibrary[0].MusicLibrary : null;
 
+    loadedRomhackSources = plugins
+        .SelectMany(p => p.RomhackSources ?? (IReadOnlyList<IRomhackSource>)Array.Empty<IRomhackSource>())
+        .ToList();
+
     var pluginMetadata = plugins.SelectMany(p => p.MetadataSources).ToList();
     var metadataSource = new MetadataBackedVideoSource(
         pluginMetadata, deferredGrabber, resolver, loggers.CreateLogger<MetadataBackedVideoSource>());
@@ -182,6 +190,15 @@ builder.Services.AddSingleton<IMusicLibrary>(sp =>
 {
     sp.GetRequiredService<SourceRouter>();
     return loadedMusicLibrary!;
+});
+
+// The romhack sources plugins registered, for the romhacks endpoints to fan out over. Resolving
+// SourceRouter first forces plugin loading, exactly as above; with no plugin supplying one this is
+// an empty list, and the endpoints answer "no hacks" rather than failing.
+builder.Services.AddSingleton<IReadOnlyList<IRomhackSource>>(sp =>
+{
+    sp.GetRequiredService<SourceRouter>();
+    return loadedRomhackSources;
 });
 
 var app = builder.Build();
@@ -234,6 +251,7 @@ app.MapGet("/health", () => Results.Json(new { ok = true }));
 app.MapBrowse(prefix);
 app.MapStreams(prefix);
 app.MapFiles(prefix);
+app.MapRomhacks(prefix);
 
 if (config.Sync.Enabled)
     app.MapSync(prefix);
