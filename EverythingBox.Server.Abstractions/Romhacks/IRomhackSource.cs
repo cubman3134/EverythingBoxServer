@@ -1,30 +1,30 @@
 namespace EverythingBox.Server.Abstractions;
 
-/// <summary>A romhack as it appears in a list of what is available for a game.</summary>
-/// <param name="Id">Opaque to the client and to this server: only the plugin that produced it knows
-/// how to resolve it. Treat it as a key, never as a URL.</param>
-/// <param name="Source">Which provider produced this row, for display beside the title.</param>
-/// <param name="Category">"Translation", "Hack", or whatever the provider distinguishes — the first
-/// thing a person filters on.</param>
+/// <summary>A romhack as it appears in a list of what is available for a game.
+///
+/// <c>Id</c> is opaque to the client and to this server: only the plugin that produced it knows how to
+/// resolve it, so treat it as a key and never as a URL. <c>Source</c> names the provider the row came
+/// from, for display beside the title. <c>Category</c> is "Translation", "Hack", or whatever else the
+/// provider distinguishes — the first thing a person filters on.</summary>
 public sealed record RomhackInfo(
     string Id, string Source, string Title, string ReleasedBy, string? Version, string Category,
     string? Language, string? Genre, string? Date);
 
 /// <summary>A fetched romhack: the patch itself plus whatever the provider can say about what it
-/// targets.</summary>
-/// <param name="PatchFormat">What the patch's own magic bytes say it is ("ips", "bps", "ups"), NOT
-/// what any listing claimed. The client decides the same way and would refuse a mislabelled patch.</param>
-/// <param name="TargetNote">The provider's free-text hint about the dump the author built against —
-/// a container description, a readme excerpt, or both. There is no guarantee any of this exists, and
-/// no guarantee it is machine-comparable; it is material for the client to SHOW a person, not to
-/// decide with.</param>
-/// <param name="Patches">One entry per patch in the release. More than one means the hack ships a
-/// patch per ROM revision, and the client must ask which rather than pick.</param>
+/// targets.
+///
+/// <c>TargetNote</c> is the provider's free-text hint about the dump the author built against — a
+/// container description, a readme excerpt, or both. There is no guarantee any of it exists and no
+/// guarantee it is machine-comparable: it is material for the client to SHOW a person, not to decide
+/// with. <c>Patches</c> holds one entry per patch in the release; more than one means the hack ships a
+/// patch per ROM revision, and the client must ask which rather than pick.</summary>
 public sealed record RomhackPatchSet(
     string Id, string? Version, string? TargetNote, IReadOnlyList<RomhackPatch> Patches);
 
-/// <param name="Name">The patch file's own name, which is usually how a multi-patch release tells
-/// its revisions apart.</param>
+/// <summary>One patch file. <c>Name</c> is the file's own name, which is usually how a multi-patch
+/// release tells its revisions apart. <c>PatchFormat</c> is what the patch's own MAGIC BYTES say it is
+/// ("ips", "bps", "ups"), never what a listing claimed — the client decides the same way and would
+/// refuse a mislabelled patch.</summary>
 public sealed record RomhackPatch(string Name, string PatchFormat, byte[] Bytes);
 
 /// <summary>Romhacks available for a retro game, and the patches behind them. Implemented by a
