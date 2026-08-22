@@ -32,10 +32,10 @@ public class MetadataContractTests
     }
 
     [Fact]
-    public void ApiVersion_is_1_19_now_that_a_romhack_patch_can_be_a_finished_rom()
+    public void ApiVersion_is_1_20_now_that_a_romhack_can_state_the_dump_it_targets()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(19, ServerApi.Current.Minor);
+        Assert.Equal(20, ServerApi.Current.Minor);
     }
 
     [Theory]

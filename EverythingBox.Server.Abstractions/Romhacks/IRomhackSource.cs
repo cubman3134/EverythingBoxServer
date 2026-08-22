@@ -19,7 +19,28 @@ public sealed record RomhackInfo(
 /// with. <c>Patches</c> holds one entry per patch in the release; more than one means the hack ships a
 /// patch per ROM revision, and the client must ask which rather than pick.</summary>
 public sealed record RomhackPatchSet(
-    string Id, string? Version, string? TargetNote, IReadOnlyList<RomhackPatch> Patches);
+    string Id, string? Version, string? TargetNote, IReadOnlyList<RomhackPatch> Patches)
+{
+    /// <summary>What the patch was built against, when the source actually states it. Optional because most
+    /// sources do not: the field exists to carry a FACT a source published, never a guess made on its behalf.
+    /// </summary>
+    public RomhackTarget? Target { get; init; }
+}
+
+/// <summary>The dump a patch was built against, as its source stated it. Every field is optional and any of
+/// them may be the only one present.
+///
+/// This is the answer to the question that otherwise cannot be answered. IPS carries no checksum and applies
+/// cleanly to any bytes at all, so a patch built for a different dump of the same game produces a broken game
+/// with nothing to catch it. The usual way that happens is regional: a translation is built against the
+/// release that needed translating — normally the Japanese one — and not the English release most libraries
+/// hold.
+///
+/// <c>Crc32</c> and <c>Sha1</c> are lowercase hex of the ORIGINAL, unpatched ROM, so a client holding the ROM
+/// can check before applying. <c>FileName</c> is the dump's catalogued name ("Final Fantasy V (Japan).sfc"),
+/// which names the release in a form a person recognises even when they cannot hash anything. <c>Region</c>
+/// is a short marker ("J", "U", "E") for sources that identify a release only that far.</summary>
+public sealed record RomhackTarget(string? FileName, string? Crc32, string? Sha1, string? Region);
 
 /// <summary>One patch file. <c>Name</c> is the file's own name, which is usually how a multi-patch
 /// release tells its revisions apart. <c>PatchFormat</c> is what the patch's own MAGIC BYTES say it is
