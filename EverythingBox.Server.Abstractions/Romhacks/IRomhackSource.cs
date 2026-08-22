@@ -24,7 +24,13 @@ public sealed record RomhackPatchSet(
 /// <summary>One patch file. <c>Name</c> is the file's own name, which is usually how a multi-patch
 /// release tells its revisions apart. <c>PatchFormat</c> is what the patch's own MAGIC BYTES say it is
 /// ("ips", "bps", "ups"), never what a listing claimed — the client decides the same way and would
-/// refuse a mislabelled patch.</summary>
+/// refuse a mislabelled patch.
+///
+/// <c>PatchFormat</c> may also be <b>"rom"</b>, which means <c>Bytes</c> is not a patch at all but the
+/// FINISHED game — a hack distributed pre-applied. Some collections are published that way, and the
+/// difference matters to the client: there is nothing to patch, so it needs no copy of the base game,
+/// asks nothing about which dump the author targeted, and installs the bytes as they are. A source that
+/// says "rom" is asserting the bytes are a playable ROM for the system that was asked about.</summary>
 public sealed record RomhackPatch(string Name, string PatchFormat, byte[] Bytes);
 
 /// <summary>Romhacks available for a retro game, and the patches behind them. Implemented by a
