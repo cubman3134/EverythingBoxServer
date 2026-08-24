@@ -12,6 +12,7 @@ public sealed class PluginRegistry : IPluginRegistry
     private IProviderPerformanceTracker? _providerTracker;
     private IMusicLibrary? _musicLibrary;
     private readonly List<IRomhackSource> _romhackSources = new();
+    private readonly List<IHomebrewSource> _homebrewSources = new();
 
     public IReadOnlyCollection<IMediaSource> Sources => _sources.Values;
 
@@ -23,6 +24,7 @@ public sealed class PluginRegistry : IPluginRegistry
     /// host to back the Subsonic-style API.</summary>
     public IMusicLibrary? MusicLibrary => _musicLibrary;
     public IReadOnlyList<IRomhackSource> RomhackSources => _romhackSources;
+    public IReadOnlyList<IHomebrewSource> HomebrewSources => _homebrewSources;
 
     /// <summary>Indexers registered so far. Consumed by the host to feed the pipeline
     /// that backs <see cref="IServerServices.Grabber"/>.</summary>
@@ -118,6 +120,20 @@ public sealed class PluginRegistry : IPluginRegistry
                 "That romhack source is already registered — registering it twice would double its rows.");
 
         _romhackSources.Add(source);
+    }
+
+    // Many homebrew sources DO apply at once — a console's titles are fanned out across all of them —
+    // so this appends rather than refusing a second registration. Registering the same instance twice is
+    // still a mistake, and would double every row that source returns.
+    public void AddHomebrewSource(IHomebrewSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        if (_homebrewSources.Contains(source))
+            throw new InvalidOperationException(
+                "That homebrew source is already registered — registering it twice would double its rows.");
+
+        _homebrewSources.Add(source);
     }
 
     internal static void ValidateKey(string key, string paramName)
