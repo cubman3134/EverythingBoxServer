@@ -73,6 +73,10 @@ IMusicLibrary? loadedMusicLibrary = null;
 // a game's hacks are fanned out across all of them. Captured here for the DI registration below,
 // for the same reason -- resolving SourceRouter is what forces plugin loading.
 IReadOnlyList<IRomhackSource> loadedRomhackSources = Array.Empty<IRomhackSource>();
+// Every homebrew source every plugin registered, for the same reason and read back the same way:
+// a console's homebrew is fanned out across all of them, and resolving SourceRouter is what forces
+// plugin loading.
+IReadOnlyList<IHomebrewSource> loadedHomebrewSources = Array.Empty<IHomebrewSource>();
 
 builder.Services.AddSingleton(sp =>
 {
@@ -174,6 +178,10 @@ builder.Services.AddSingleton(sp =>
         .SelectMany(p => p.RomhackSources ?? (IReadOnlyList<IRomhackSource>)Array.Empty<IRomhackSource>())
         .ToList();
 
+    loadedHomebrewSources = plugins
+        .SelectMany(p => p.HomebrewSources ?? (IReadOnlyList<IHomebrewSource>)Array.Empty<IHomebrewSource>())
+        .ToList();
+
     var pluginMetadata = plugins.SelectMany(p => p.MetadataSources).ToList();
     var metadataSource = new MetadataBackedVideoSource(
         pluginMetadata, deferredGrabber, resolver, loggers.CreateLogger<MetadataBackedVideoSource>());
@@ -199,6 +207,15 @@ builder.Services.AddSingleton<IReadOnlyList<IRomhackSource>>(sp =>
 {
     sp.GetRequiredService<SourceRouter>();
     return loadedRomhackSources;
+});
+
+// The homebrew sources plugins registered, for the homebrew endpoint to fan out over. Resolving
+// SourceRouter first forces plugin loading, exactly as above; with no plugin supplying one this is
+// an empty list, and the endpoint answers "none" rather than failing.
+builder.Services.AddSingleton<IReadOnlyList<IHomebrewSource>>(sp =>
+{
+    sp.GetRequiredService<SourceRouter>();
+    return loadedHomebrewSources;
 });
 
 var app = builder.Build();
@@ -252,6 +269,7 @@ app.MapBrowse(prefix);
 app.MapStreams(prefix);
 app.MapFiles(prefix);
 app.MapRomhacks(prefix);
+app.MapHomebrew(prefix);
 
 if (config.Sync.Enabled)
     app.MapSync(prefix);

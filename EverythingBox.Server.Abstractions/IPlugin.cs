@@ -55,6 +55,12 @@ public interface IPluginRegistry
     /// tagging each row with the source it came from. Registering the same instance twice is a
     /// mistake and throws; registering different ones is the normal case.</summary>
     void AddRomhackSource(IRomhackSource source);
+
+    /// <summary>Register a source of homebrew for retro systems. Like romhacks and unlike the music
+    /// library, MANY apply: a console's homebrew is fanned out across whatever sources are installed.
+    /// Registering the same instance twice is a mistake and throws; registering different ones is the
+    /// normal case.</summary>
+    void AddHomebrewSource(IHomebrewSource source);
 }
 
 public interface IPluginContext
