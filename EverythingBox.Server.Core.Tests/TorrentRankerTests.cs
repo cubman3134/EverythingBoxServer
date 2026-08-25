@@ -290,6 +290,121 @@ public class TorrentRankerTests
         Assert.Equal(comic, only.Result);
     }
 
+    // --- a web rip is a film, except where a web tag means something else --------------
+    // Every release title below is verbatim from a live indexer.
+
+    [Fact]
+    public void AudiobookSearchExcludesAWebRipCarryingNoOtherVideoMarker()
+    {
+        // The film rip has no resolution and no codec in its name, so the rip tag is the only
+        // video signal there is - and it out-seeds every real audiobook of the same book.
+        var filmRip = Make("Project Hail Mary [2026] WEBrip YG", MediaType.Audiobook, seeders: 281);
+        var audiobook = Make("Andy Weir - Project Hail Mary", MediaType.Audiobook, seeders: 222);
+
+        var ranked = _ranker.Rank(
+            new AudiobookRequest { Title = "Project Hail Mary" }, [filmRip, audiobook], RankingOptions.Default);
+
+        var only = Assert.Single(ranked);
+        Assert.Equal(audiobook, only.Result);
+    }
+
+    [Fact]
+    public void BookSearchExcludesAWebRipCarryingNoOtherVideoMarker()
+    {
+        var filmRip = Make("Project Hail Mary [2026] WEBrip YG", MediaType.Book, seeders: 281);
+        var ebook = Make("Project Hail Mary by Andy Weir EPUB", MediaType.Book, seeders: 271);
+
+        var ranked = _ranker.Rank(
+            new BookRequest { Title = "Project Hail Mary" }, [filmRip, ebook], RankingOptions.Default);
+
+        Assert.DoesNotContain(ranked, s => s.Result == filmRip);
+        Assert.Contains(ranked, s => s.Result == ebook);
+    }
+
+    [Fact]
+    public void AWorkWhoseOwnTitleContainsTheWordWebStillAnswersABookOrAudiobookSearch()
+    {
+        // The parser reaches ReleaseSource.WebDl from the bare word "web", so these two both look
+        // web-sourced. Neither is a rip, and both are exactly what was asked for.
+        var narrated = Make("E B White - Charlotte's Web - Meryl Streep", MediaType.Audiobook);
+        var ebook = Make("Charlotte's Web (Full Color) - E. B. White [Epub & PDF]", MediaType.Book);
+
+        var audiobooks = _ranker.Rank(
+            new AudiobookRequest { Title = "Charlotte's Web" }, [narrated], RankingOptions.Default);
+        var books = _ranker.Rank(
+            new BookRequest { Title = "Charlotte's Web" }, [ebook], RankingOptions.Default);
+
+        Assert.Equal(narrated, Assert.Single(audiobooks).Result);
+        Assert.Equal(ebook, Assert.Single(books).Result);
+    }
+
+    [Fact]
+    public void AnAudiobookOrEbookTaggedAsAWebRipSurvivesOnItsOwnMarker()
+    {
+        // The rip tag is a *conflicting* marker, so a release that also carries its own definite
+        // marker keeps the benefit of the doubt rather than being dropped by provenance alone.
+        var audiobook = Make("Andy Weir - Project Hail Mary (Unabridged) WEB-DL M4B", MediaType.Audiobook);
+        var ebook = Make("Andy Weir - Project Hail Mary WEBRip EPUB", MediaType.Book);
+
+        var audiobooks = _ranker.Rank(
+            new AudiobookRequest { Title = "Project Hail Mary" }, [audiobook], RankingOptions.Default);
+        var books = _ranker.Rank(
+            new BookRequest { Title = "Project Hail Mary" }, [ebook], RankingOptions.Default);
+
+        Assert.Equal(audiobook, Assert.Single(audiobooks).Result);
+        Assert.Equal(ebook, Assert.Single(books).Result);
+    }
+
+    [Fact]
+    public void MusicSearchStillAcceptsAWebSourcedAlbum()
+    {
+        // A music release tagged WEB was bought from a store, not ripped from a stream. This is the
+        // case the global web exclusion exists for, and it is unchanged.
+        var bareWeb = Make("Charlotte Sands - can we start over - 2024 - WEB FLAC 16BITS 44.1KHZ-EICHBAUM",
+            MediaType.Music);
+        var hyphenated = Make("Kendrick Lamar - untitled unmastered. {WEB-FLAC} (2016)", MediaType.Music);
+
+        Assert.Single(_ranker.Rank(
+            new MusicRequest { Title = "can we start over", Artist = "Charlotte Sands" },
+            [bareWeb], RankingOptions.Default));
+        Assert.Single(_ranker.Rank(
+            new MusicRequest { Title = "untitled unmastered", Artist = "Kendrick Lamar" },
+            [hyphenated], RankingOptions.Default));
+    }
+
+    [Fact]
+    public void ComicSearchStillAcceptsAScanTaggedAsAWebRip()
+    {
+        // Scanned comics are themselves tagged "(webrip)" - the tag means the scan came off a
+        // digital storefront. Reading it as video here would empty the shelf.
+        var scan = Make("Friends of Spirou (Europe Comics 2023) (webrip) (MagicMan-DCP).cbr", MediaType.Comic);
+
+        // The same, in the very common form that names no file format at all, so nothing but the
+        // request type is left to keep it. Title and scan-group convention are both real; the two
+        // are combined here because the reachable indexers carry few comics.
+        var unlabelled = Make("Absolute Green Lantern 013 (2026) (Digital) (webrip) (Pyrate-DCP)", MediaType.Comic);
+
+        var ranked = _ranker.Rank(
+            new ComicRequest { Title = "Friends of Spirou" }, [scan], RankingOptions.Default);
+        var unlabelledRanked = _ranker.Rank(
+            new ComicRequest { Title = "Absolute Green Lantern" }, [unlabelled], RankingOptions.Default);
+
+        Assert.Equal(scan, Assert.Single(ranked).Result);
+        Assert.Equal(unlabelled, Assert.Single(unlabelledRanked).Result);
+    }
+
+    [Fact]
+    public void MovieSearchStillRejectsASoundtrackTaggedAsAWebRelease()
+    {
+        // Movie/Tv read "video" the other way round - as an excuse for an audio-format tag - so the
+        // rip rule must not reach them, or an album would start answering a film search.
+        var soundtrack = Make("Dune Original Motion Picture Soundtrack WEB-DL FLAC", MediaType.Movie);
+
+        var ranked = _ranker.Rank(new MovieRequest { Title = "Dune" }, [soundtrack], RankingOptions.Default);
+
+        Assert.Empty(ranked);
+    }
+
     [Fact]
     public void MovieSearchExcludesEbooks()
     {

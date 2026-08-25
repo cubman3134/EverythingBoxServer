@@ -163,6 +163,16 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
         new(@"\b(cbr|cbz|cb7|cbt|manga|comics?|webtoons?)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
+    /// An explicit web <i>rip</i> designation — <c>WEBRip</c>, <c>WEB-DL</c>, <c>WEB-DLRip</c>.
+    /// Deliberately narrower than <see cref="ReleaseSource.WebDl"/>: the parser reaches that source
+    /// from the bare provenance word <c>WEB</c> too, and a bare <c>WEB</c> is what a music release
+    /// uses to mean "bought from a store" — and what an ordinary work title can simply contain
+    /// ("Charlotte's Web"). A rip designation carries neither of those readings.
+    /// </summary>
+    private static readonly Regex WebRipMarker =
+        new(@"\bweb[ ._-]?(?:dl)?[ ._-]?rip\b|\bweb[ ._-]?dl\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
     /// Conservative cross-type filter: drop a release only when it has a *definite*
     /// marker that conflicts with the requested media type (so an audiobook search
     /// won't surface EPUBs, a music search won't surface the same-named movie, etc.).
@@ -175,11 +185,24 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
         var ebook = EbookMarker.IsMatch(r.Title);
         var audiobook = AudiobookMarker.IsMatch(r.Title);
         var comic = ComicMarker.IsMatch(r.Title);
-        var video = info is not null
-            && (info.Resolution is not (null or VideoResolution.Unknown)
-                || info.VideoCodec is not null
-                || info.Episodes.Count > 0
-                || IsVideoSource(info.Source));
+
+        // Written and spoken-word requests get one extra video marker: an explicit rip designation.
+        // Nobody ships a prose book or an audiobook as a "WEBRip", so for those two requests the tag
+        // is definite where ReleaseSource.WebDl is not (see IsVideoSource). It stays out of the way
+        // of Music (a WEB tag there is a store download, not a rip), of Comic (scene comic scans are
+        // themselves tagged "(webrip)") and of Movie/Tv (where "video" only ever excuses a release,
+        // never drops one). It also stands down when the release carries its own definite audiobook
+        // or ebook marker, so a genuine one that happens to be tagged this way still survives.
+        var webRip = requested is MediaType.Audiobook or MediaType.Book
+            && !(audiobook || ebook)
+            && WebRipMarker.IsMatch(r.Title);
+
+        var video = webRip
+            || (info is not null
+                && (info.Resolution is not (null or VideoResolution.Unknown)
+                    || info.VideoCodec is not null
+                    || info.Episodes.Count > 0
+                    || IsVideoSource(info.Source)));
         var audio = info is not null && info.AudioFormat is not (null or AudioFormat.Unknown);
 
         return requested switch
@@ -193,7 +216,11 @@ public sealed class DefaultTorrentRanker : ITorrentRanker
         };
     }
 
-    // "web" sources are ambiguous for music releases, so they don't count as video.
+    // The "web" sources stay out of this list because they are genuinely ambiguous: a music release
+    // tagged WEB is a store download, and the parser reaches ReleaseSource.WebDl from the bare word
+    // "web" as well as from "WEB-DL", so an ordinary title that merely contains that word lands here
+    // too. Where a web tag *is* decisive — an explicit rip designation on a book or audiobook
+    // request — see WebRipMarker in MediaTypeMatches, rather than widening this list for everyone.
     private static bool IsVideoSource(ReleaseSource? source) => source is
         ReleaseSource.Cam or ReleaseSource.Telesync or ReleaseSource.Dvd
         or ReleaseSource.Hdtv or ReleaseSource.BluRay or ReleaseSource.Remux;
