@@ -47,8 +47,12 @@ public sealed record RomhackTarget(string? FileName, string? Crc32, string? Sha1
 /// Embedding the file put a measured 5,286 MB into the server for one ROM and offered no Range, so no
 /// resume either — a dropped connection meant starting over.
 ///
-/// <para><c>PatchFormat</c> still comes from the source, never from the bytes: a source that says
-/// "rom" is asserting the file is a playable ROM, and nothing sniffed can assert that.</para></summary>
+/// <para><c>PatchFormat</c> is read from the file's own magic for a patch — IPS, BPS, UPS all announce
+/// themselves in their first bytes — with ONE exception that cannot be sniffed at all: a source that
+/// declares a FINISHED rom asserts <c>"rom"</c>, because a playable rom has no marker saying "I am the
+/// result", and the only side that knows is the one that fetched it. Reading the magic needs a HEADER,
+/// never the whole file: pulling a gigabyte to identify a five-byte signature is the cost this record
+/// was reshaped to remove.</para></summary>
 public sealed record RomhackPatch(string Name, string PatchFormat, string Url);
 
 /// <summary>Romhacks available for a retro game, and the patches behind them. Implemented by a
