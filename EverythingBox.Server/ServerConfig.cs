@@ -17,6 +17,16 @@ public sealed class ServerConfig
     /// <summary>Where generated files are cached and served from.</summary>
     public string? FilesCacheDir { get; set; }
 
+    /// <summary>Where a fetched romhack file waits until the client collects it. One fixed root,
+    /// with a per-fetch subdirectory inside it, because the file server's roots are fixed at
+    /// construction. Defaults to a "romhack-staging" folder under the files cache.</summary>
+    public string? RomhackStagingDir { get; set; }
+
+    /// <summary>How long a staged romhack file is kept before the sweep may remove it. Age-based
+    /// because nothing in the protocol reports a successful install, so there is no other moment to
+    /// delete on; a client that waits longer than this gets a 404, by design.</summary>
+    public double RomhackRetentionHours { get; set; } = 6;
+
     public ManifestConfig Manifest { get; set; } = new();
 
     /// <summary>One opaque section per plugin, keyed by plugin key.</summary>
@@ -57,6 +67,11 @@ public sealed class ServerConfig
         Environment.GetEnvironmentVariable("EBS_FILES_DIR") is { Length: > 0 } fromEnv ? fromEnv
         : !string.IsNullOrWhiteSpace(FilesCacheDir) ? FilesCacheDir!
         : Path.Combine(AppContext.BaseDirectory, "files");
+
+    public string ResolvedRomhackStagingDir =>
+        Environment.GetEnvironmentVariable("EBS_ROMHACK_STAGING_DIR") is { Length: > 0 } fromEnv ? fromEnv
+        : !string.IsNullOrWhiteSpace(RomhackStagingDir) ? RomhackStagingDir!
+        : Path.Combine(ResolvedFilesCacheDir, "romhack-staging");
 
     public static string ConfigPath =>
         Environment.GetEnvironmentVariable("EBS_CONFIG") is { Length: > 0 } fromEnv
