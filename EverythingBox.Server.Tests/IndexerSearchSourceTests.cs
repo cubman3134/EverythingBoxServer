@@ -292,7 +292,7 @@ public class IndexerSearchSourceTests
     }
 
     [Fact]
-    public async Task Detail_is_empty_because_a_release_does_not_expand()
+    public async Task Detail_of_a_film_release_is_empty_because_it_does_not_expand()
     {
         var grabber = new RecordingGrabber(Release("Something"));
         var source = Source(grabber);
@@ -373,5 +373,162 @@ public class IndexerSearchSourceTests
 
         Assert.DoesNotContain("super-secret-key", item.Id);
         Assert.DoesNotContain("indexer.example.test", item.Id);
+    }
+    // ---- #214: an audiobook release is its parts ---------------------------------------
+
+    private static IndexerSearchSource AudiobookSource(params DebridLink[] links) =>
+        Source(new RecordingGrabber(Release("A Tale of Two Cities Charles Dickens Audiobook MP3")),
+               new FixedLinksDebrid(links));
+
+    private static async Task<string> AudiobookReleaseIdAsync(IndexerSearchSource source) =>
+        (await source.SearchAsync("audiobooks", "a tale of two cities", Ctx, CancellationToken.None)).Items.Single().Id;
+
+    private static readonly DebridLink[] ThreePartBook =
+    [
+        new("Part 01.mp3", new Uri("https://example.test/p1"), 40_000_000),
+        new("Part 02.mp3", new Uri("https://example.test/p2"), 41_000_000),
+        new("cover.jpg",   new Uri("https://example.test/cover"), 90_000),
+    ];
+
+    [Fact]
+    public async Task An_audiobook_release_expands_into_the_files_it_is_made_of()
+    {
+        // The defect: a release of many parts resolved to whichever file the narrowing
+        // ranked first, so a fifteen-hour book started at a 43-minute middle chapter.
+        var source = AudiobookSource(ThreePartBook);
+        var releaseId = await AudiobookReleaseIdAsync(source);
+
+        var detail = await source.DetailAsync(releaseId, Ctx, CancellationToken.None);
+
+        Assert.Equal(3, detail.Items.Count);
+        Assert.Equal(["Part 01.mp3", "Part 02.mp3", "cover.jpg"], detail.Items.Select(i => i.Title));
+    }
+
+    [Fact]
+    public async Task Every_file_is_listed_including_the_ones_that_are_not_audio()
+    {
+        // Which files can be PLAYED is a judgement about a name, and the client owns it -
+        // one rule, applied the same way whatever answered. A server that filtered here
+        // would be a second copy of that rule, free to disagree.
+        var source = AudiobookSource(ThreePartBook);
+        var detail = await source.DetailAsync(await AudiobookReleaseIdAsync(source), Ctx, CancellationToken.None);
+
+        Assert.Contains(detail.Items, i => i.Title == "cover.jpg");
+    }
+
+    [Fact]
+    public async Task A_part_carries_no_link_only_a_name()
+    {
+        // The rule the #200-#204 chain established: a signed link is never an identity.
+        // Nothing about a part row may be a url - it is minted when the part is reached.
+        var source = AudiobookSource(ThreePartBook);
+        var detail = await source.DetailAsync(await AudiobookReleaseIdAsync(source), Ctx, CancellationToken.None);
+
+        foreach (var item in detail.Items)
+        {
+            Assert.DoesNotContain("https://", item.Id);
+            Assert.DoesNotContain("example.test", item.Id);
+            Assert.DoesNotContain("https://", item.Subtitle);
+        }
+    }
+
+    [Fact]
+    public async Task A_part_id_resolves_to_that_part_and_not_to_the_first_file()
+    {
+        var source = AudiobookSource(ThreePartBook);
+        var detail = await source.DetailAsync(await AudiobookReleaseIdAsync(source), Ctx, CancellationToken.None);
+        var secondPart = detail.Items[1].Id;
+
+        var stream = await source.ResolveAsync(secondPart, 0, Ctx, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/p2", stream!.Url);
+        Assert.Equal("audio/mpeg", stream.Mime);
+    }
+
+    [Fact]
+    public async Task A_parts_link_does_not_depend_on_the_index_it_was_listed_at()
+    {
+        // `index` selects the N-th best SOURCE for a request; a part has no alternates.
+        // Reading it here would make a part's link depend on a number the client has no
+        // reason to send, and on debrid listing the release the same way twice.
+        var source = AudiobookSource(ThreePartBook);
+        var detail = await source.DetailAsync(await AudiobookReleaseIdAsync(source), Ctx, CancellationToken.None);
+        var secondPart = detail.Items[1].Id;
+
+        var atZero = await source.ResolveAsync(secondPart, 0, Ctx, CancellationToken.None);
+        var atSeven = await source.ResolveAsync(secondPart, 7, Ctx, CancellationToken.None);
+
+        Assert.Equal(atZero!.Url, atSeven!.Url);
+    }
+
+    [Fact]
+    public async Task A_part_that_is_no_longer_in_the_release_resolves_to_nothing()
+    {
+        // A release re-listed without that file: the honest answer is "no link", which the
+        // client turns into a sentence, rather than a different part played silently.
+        var source = AudiobookSource(ThreePartBook);
+        var releaseId = await AudiobookReleaseIdAsync(source);
+
+        var missing = ReleasePartId.Encode(releaseId, "Part 99.mp3");
+        var stream = await source.ResolveAsync(missing, 0, Ctx, CancellationToken.None);
+
+        Assert.Null(stream);
+    }
+
+    [Fact]
+    public async Task The_whole_release_id_still_resolves_to_a_single_link()
+    {
+        // The single-file path, unchanged: an id that is not a part id resolves exactly as
+        // it did before any of this existed.
+        var source = AudiobookSource(new DebridLink("Whole Book.m4b", new Uri("https://example.test/whole"), 900_000_000));
+        var releaseId = await AudiobookReleaseIdAsync(source);
+
+        var stream = await source.ResolveAsync(releaseId, 0, Ctx, CancellationToken.None);
+
+        Assert.NotNull(stream);
+        Assert.Equal("https://example.test/whole", stream!.Url);
+    }
+
+    [Fact]
+    public async Task A_single_file_release_expands_into_exactly_one_part()
+    {
+        var source = AudiobookSource(new DebridLink("Whole Book.m4b", new Uri("https://example.test/whole"), 900_000_000));
+
+        var detail = await source.DetailAsync(await AudiobookReleaseIdAsync(source), Ctx, CancellationToken.None);
+
+        Assert.Equal("Whole Book.m4b", Assert.Single(detail.Items).Title);
+    }
+
+    [Fact]
+    public async Task With_no_debrid_an_audiobook_release_enumerates_nothing()
+    {
+        // Nothing to walk into - and the caller falls back to the ordinary resolve, which
+        // behaves exactly as it does today. Enumeration must never be the thing that turns
+        // a working "no source" message into a broken screen.
+        var source = Source(new RecordingGrabber(Release("Some Book Audiobook")));
+        var releaseId = (await source.SearchAsync("audiobooks", "some", Ctx, CancellationToken.None)).Items.Single().Id;
+
+        Assert.Empty((await source.DetailAsync(releaseId, Ctx, CancellationToken.None)).Items);
+    }
+
+    [Fact]
+    public async Task A_release_from_another_shelf_still_does_not_expand()
+    {
+        // Only the audiobook shape has "many files, none of them the work". A film release
+        // is many files exactly one of which is the film, and the narrowing picking it is
+        // right - expanding it would offer a listener a sample clip as a choice.
+        var source = Source(new RecordingGrabber(Release("Some Film 1080p")), new FixedLinksDebrid(ThreePartBook));
+        var releaseId = (await source.SearchAsync("movies", "some", Ctx, CancellationToken.None)).Items.Single().Id;
+
+        Assert.Empty((await source.DetailAsync(releaseId, Ctx, CancellationToken.None)).Items);
+    }
+
+    [Fact]
+    public async Task A_garbled_part_id_resolves_to_nothing_rather_than_throwing()
+    {
+        var source = AudiobookSource(ThreePartBook);
+
+        Assert.Null(await source.ResolveAsync("not-a-real-id~AAAA", 0, Ctx, CancellationToken.None));
     }
 }

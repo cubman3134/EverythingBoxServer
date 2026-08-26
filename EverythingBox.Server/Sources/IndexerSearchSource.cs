@@ -112,13 +112,80 @@ public sealed class IndexerSearchSource : IMediaSource
         return new SourceCatalog(descriptor.Name, items);
     }
 
-    // A release does not expand into anything further — there is no season/episode
-    // structure or table of contents to reveal here, only a single downloadable thing.
-    public Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
-        => Task.FromResult(SourceCatalog.Empty("Release"));
+    /// <summary>
+    /// An AUDIOBOOK release expands into the files it is made of; every other release is a
+    /// single downloadable thing with no structure to reveal, and answers empty exactly as
+    /// it always has.
+    /// <para>
+    /// WHY AUDIOBOOKS AND NOT EVERYTHING. A recording is normally many files — a folder of
+    /// numbered parts — and there is no way to pick "the" one, because none of them is the
+    /// work: each is a slice of it. Resolving such a release to one link therefore played
+    /// whichever file the narrowing ranked first, which is a middle chapter as often as the
+    /// beginning. A film release is the opposite shape: many files, exactly one of which is
+    /// the film, and the narrowing picking it is right. Season packs and albums are shapes
+    /// in between and are deliberately left alone here — an episode and a track are already
+    /// selected by the request itself, one level up.
+    /// </para>
+    /// <para>
+    /// EXPANDING IS NOT THE SAME AS BEING EXPANDABLE. <see cref="CatalogItem.Expandable"/>
+    /// answers "what does pressing this row do" — and for a release the answer must stay
+    /// "play the book", not "show me a list of files". So these items are not flagged, and
+    /// a client that wants the parts asks for them; nothing in the host gates this route on
+    /// the flag.
+    /// </para>
+    /// <para>
+    /// Every file is listed, including a cover image or a text file sitting beside the
+    /// audio. Which of them can be played is a judgement about a file NAME, and the client
+    /// is where that judgement lives — one rule, applied the same way whatever answered.
+    /// </para>
+    /// </summary>
+    public async Task<SourceCatalog> DetailAsync(string itemId, SourceContext ctx, CancellationToken ct)
+    {
+        if (DecodeRelease(itemId) is not { } decoded || decoded.MediaType != MediaType.Audiobook)
+            return SourceCatalog.Empty("Release");
+
+        var request = BuildRequest(MediaType.Audiobook, decoded.Release.Title);
+        var files = await _resolver.ListFilesAsync(decoded.Release, request, ct);
+        if (files.Count == 0)
+        {
+            // Nothing to enumerate — no debrid, a failed call, or a release still caching.
+            // An empty catalog is what a client falls back from to the ordinary single-link
+            // resolve, which still answers the caching notice, so this costs nothing.
+            _logger.LogInformation("detail '{Title}': the release enumerated no files", decoded.Release.Title);
+            return SourceCatalog.Empty(decoded.Release.Title);
+        }
+
+        var items = files
+            .Select(file => new CatalogItem(
+                Id: ReleasePartId.Encode(itemId, file.FileName),
+                Title: file.FileName,
+                Subtitle: file.SizeBytes is { } size ? FormatSize(size) : string.Empty,
+                Kind: MediaTypeNames.Audiobook))
+            .Where(item => !string.IsNullOrEmpty(item.Id))
+            .ToList();
+
+        _logger.LogInformation("detail '{Title}': {Count} file(s)", decoded.Release.Title, items.Count);
+        return new SourceCatalog(decoded.Release.Title, items);
+    }
 
     public async Task<SourceStream?> ResolveAsync(string itemId, int index, SourceContext ctx, CancellationToken ct)
     {
+        // ONE FILE OF A RELEASE, named by the enumeration above. The link is minted here,
+        // at the moment the client reached the file — never at enumeration time, because a
+        // signed link is spent long before a listener arrives at the fortieth part of a
+        // fifteen-hour recording. `index` is not read: it selects the N-th best SOURCE for
+        // a request, and a part has no alternates — there is no other copy of this file in
+        // this release.
+        if (ReleasePartId.TryDecode(itemId, out var releaseId, out var fileName))
+        {
+            if (DecodeRelease(releaseId) is not { } part)
+                return null;
+            var partRequest = part.MediaType is { } partType
+                ? BuildRequest(partType, part.Release.Title)
+                : new UnknownMediaTypeRequest { Title = part.Release.Title };
+            return await _resolver.ResolveFileAsync(part.Release, partRequest, fileName, ct);
+        }
+
         if (DecodeRelease(itemId) is not { } decoded)
             return null;
 
