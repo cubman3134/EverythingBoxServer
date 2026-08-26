@@ -46,16 +46,41 @@ public static class RomhackEndpoints
 
         // GET {prefix}/romhack/{id} — id is opaque and may contain ':' and '/', so it is a catch-all.
         app.MapGet($"{prefix}/romhack/{{*id}}",
-            async (string id, IReadOnlyList<IRomhackSource> sources, ILoggerFactory loggers,
-                   CancellationToken ct) =>
+            async (string id, IReadOnlyList<IRomhackSource> sources, RomhackStaging staging,
+                   ILoggerFactory loggers, CancellationToken ct) =>
             {
                 var log = loggers.CreateLogger("Romhacks");
+
+                // Sweep here, where files are about to be created, rather than on a timer. This call
+                // site is self-limiting — it runs only when the feature is used — needs no background
+                // service, and cleans at exactly the moment new files arrive. The consequence, worth
+                // stating rather than hiding: if nobody fetches, nothing is swept. Nothing is being
+                // created either, so the cost is only that a previous session's files linger until
+                // the next fetch.
+                //
+                // Housekeeping never fails a request. A staging root that cannot be read costs a
+                // sweep, not the patch set the caller asked for.
+                try
+                {
+                    var removed = staging.Sweep(DateTimeOffset.UtcNow);
+                    if (removed > 0) log.LogInformation("Swept {Count} expired romhack staging directories", removed);
+                }
+                catch (Exception ex)
+                {
+                    log.LogWarning(ex, "Sweeping the romhack staging root failed; continuing with the fetch");
+                }
 
                 foreach (var source in sources)
                 {
                     try
                     {
-                        var set = await source.FetchAsync(id, ct).ConfigureAwait(false);
+                        // A fresh directory per source, not per request: two sources shipping a patch
+                        // under the same name would otherwise land on the same path, and the second
+                        // would silently rewrite bytes the first had already minted a url for. A
+                        // source that does not own the id leaves its directory empty, which the sweep
+                        // takes in its own time.
+                        var set = await source.FetchAsync(id, staging.NewFetchDirectory(), ct)
+                                              .ConfigureAwait(false);
                         if (set is not null) return Results.Json(set);   // first source to claim it wins
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested)
