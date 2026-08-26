@@ -73,6 +73,19 @@ public interface IRomhackSource
     Task<IReadOnlyList<RomhackInfo>> ListAsync(string systemId, string title, CancellationToken ct);
 
     /// <summary>The patches behind one hack, by the id a <see cref="RomhackInfo"/> carried. Null when
-    /// the id is unknown to every registered source, or the source is unreachable.</summary>
-    Task<RomhackPatchSet?> FetchAsync(string id, CancellationToken ct);
+    /// the id is unknown to every registered source, or the source is unreachable.
+    ///
+    /// <para><paramref name="stagingDirectory"/> is an existing, empty directory the source writes its
+    /// files into, and the <see cref="RomhackPatch.Url"/>s it hands back must name files inside it.
+    /// The host supplies it rather than the source choosing one, because only the host knows the one
+    /// place files are served from — a directory the source invented could not be served at all. This
+    /// mirrors the layer beneath, where a fetch is already given the directory to unpack into, so the
+    /// information flows the same way at both levels instead of one of them reaching sideways for it.
+    /// </para>
+    ///
+    /// <para>The directory is the source's for the duration of the call and the files in it outlive
+    /// the response — that is the whole point of answering with a url. Deleting them is the host's
+    /// job, on age, and a source that cleans up after itself deletes exactly the files it just
+    /// promised.</para></summary>
+    Task<RomhackPatchSet?> FetchAsync(string id, string stagingDirectory, CancellationToken ct);
 }
