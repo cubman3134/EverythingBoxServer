@@ -53,9 +53,69 @@ public class ReleaseParserTests
     [InlineData("Show WEB-DL", ReleaseSource.WebDl)]
     [InlineData("Show WEBRip", ReleaseSource.WebRip)]
     [InlineData("Show HDTV", ReleaseSource.Hdtv)]
+    [InlineData("Show DVDRip", ReleaseSource.Dvd)]
+    [InlineData("Show TELESYNC", ReleaseSource.Telesync)]
+    [InlineData("Show HDTS", ReleaseSource.Telesync)]
+    [InlineData("Show HDCAM", ReleaseSource.Cam)]
     [InlineData("Show CAM", ReleaseSource.Cam)]
     public void ParsesSource(string release, ReleaseSource expected)
         => Assert.Equal(expected, _parser.Parse(release, MediaType.Movie).Source);
+
+    // --- a tag that designates the rip beats a bare word that merely appears ----------
+    // The source table is consulted in order and the first match wins, so a bare word that
+    // can also be part of a work's own name is held back until every real tag has had its
+    // turn. Every release title below is verbatim from a live indexer.
+
+    [Theory]
+    [InlineData(@"Charlotte\'s Web[2006]DvDrip[Eng]-aXXo", ReleaseSource.Dvd)]
+    [InlineData("Bionicle 3 - Web of Shadows [2005] DVDRip [DXO]", ReleaseSource.Dvd)]
+    [InlineData("Charlotte's Web 1973 720p HDTV x264-DON", ReleaseSource.Hdtv)]
+    [InlineData("BBC Horizon 2014 Inside the Dark Web 720p x264 AAC HDTV", ReleaseSource.Hdtv)]
+    public void ARipTagBeatsTheWordWebInTheWorksOwnTitle(string release, ReleaseSource expected)
+        => Assert.Equal(expected, _parser.Parse(release, MediaType.Movie).Source);
+
+    [Theory]
+    // A release that advertises two sources is reported as the one that promises least, so the
+    // quality score never claims more than the worst part of the pack.
+    [InlineData("Bondi Rescue Season 1-14 S01-S14 DVDRip WEB", ReleaseSource.Dvd)]
+    [InlineData("Shark Tank S09 Complete Season 9 WEB+HDTV x264 - DeepGuy", ReleaseSource.Hdtv)]
+    // ...unless the web tag is itself a rip designation, which outranks both.
+    [InlineData("The Penguins of Madagascar Season 3 WEB-DL HDTV XviD - DiGrX", ReleaseSource.WebDl)]
+    public void AMixedSourcePackIsReportedAsItsWeakerSource(string release, ReleaseSource expected)
+        => Assert.Equal(expected, _parser.Parse(release, MediaType.Movie).Source);
+
+    [Theory]
+    // Nothing else in the title names a source, so the bare word is all there is to go on and
+    // it still counts. The first two are a narrated book and a store-bought album, where the
+    // word means neither a rip nor a stream - see the ranker for how those are kept.
+    [InlineData("E B White - Charlotte's Web - Meryl Streep", ReleaseSource.WebDl)]
+    [InlineData("Sabrina Carpenter - Discography (2011-2024) [FLAC 24] [WEB, CD]", ReleaseSource.WebDl)]
+    [InlineData("Lilo y Stitch (2025) TS-HQ LAT.mp4", ReleaseSource.Telesync)]
+    [InlineData("Pathaan 2023 Hindi 1080p Cam No Watermark x264", ReleaseSource.Cam)]
+    public void ABareWordStillNamesTheSourceWhenNoTagDoes(string release, ReleaseSource expected)
+        => Assert.Equal(expected, _parser.Parse(release, MediaType.Movie).Source);
+
+    [Fact]
+    public void TheBareWordsKeepThePrecedenceTheyHadAmongThemselves()
+    {
+        // Constructed rather than scraped: it combines two conventions that are each real - a
+        // bracketed [TS] that labels an edition rather than a telesync, and a bare WEB provenance
+        // tag - to pin a case the reachable indexers do not happen to carry. When the bare words
+        // shared one list with the tags, "web" was reached before "ts"; holding them in that same
+        // order is what keeps this change to the one verdict it set out to move.
+        Assert.Equal(ReleaseSource.WebDl,
+            _parser.Parse("Some Show S01 [TS] 1080p WEB x264", MediaType.Tv).Source);
+    }
+
+    [Fact]
+    public void ARipTagBeatsABareWordThatIsNotAboutTheSourceAtAll()
+    {
+        // "Cam" here labels the Hindi audio track, not the picture. The rip tag says what the
+        // release is; the bare word is only reached when no tag has spoken.
+        Assert.Equal(ReleaseSource.WebRip, _parser.Parse(
+            "Tiger Nageswara Rao (2023) 1080p WEBRip x265 AAC [ Hin ( Cam ), Tel, Tam ] ESub.mkv",
+            MediaType.Movie).Source);
+    }
 
     [Fact]
     public void ParsesVideoCodec()
