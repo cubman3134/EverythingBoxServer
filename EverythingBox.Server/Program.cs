@@ -209,6 +209,12 @@ builder.Services.AddSingleton<IReadOnlyList<IRomhackSource>>(sp =>
     return loadedRomhackSources;
 });
 
+// Where a fetched romhack file waits until the client collects it, and how long it waits. One fixed
+// root for the whole server, because the file server's roots are fixed at construction and a
+// per-fetch directory somewhere else could never be served; the per-fetch directories live inside it.
+builder.Services.AddSingleton(new RomhackStaging(
+    config.ResolvedRomhackStagingDir, TimeSpan.FromHours(config.RomhackRetentionHours)));
+
 // The homebrew sources plugins registered, for the homebrew endpoint to fan out over. Resolving
 // SourceRouter first forces plugin loading, exactly as above; with no plugin supplying one this is
 // an empty list, and the endpoint answers "none" rather than failing.
