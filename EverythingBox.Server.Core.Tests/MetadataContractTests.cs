@@ -32,10 +32,10 @@ public class MetadataContractTests
     }
 
     [Fact]
-    public void ApiVersion_is_1_21_now_that_a_server_can_offer_homebrew_for_a_system()
+    public void ApiVersion_is_1_22_now_that_a_romhack_file_is_fetched_by_url()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(21, ServerApi.Current.Minor);
+        Assert.Equal(22, ServerApi.Current.Minor);
     }
 
     [Theory]
