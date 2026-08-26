@@ -36,17 +36,31 @@ public sealed class DefaultReleaseParser : IReleaseParser
     private static readonly Regex AudioFormatToken = new(@"\b(flac|alac|mp3|aac|m4a|ogg|vorbis|wav)\b", Opts);
     private static readonly Regex Mp3Bitrate = new(@"\b(320|256|224|192|160|128)\b", RegexOptions.Compiled);
 
+    // Tags that name a source outright. Most specific first: the first match wins, so a
+    // release carrying two of them is reported as the more specific one.
     private static readonly (Regex Rx, ReleaseSource Source)[] Sources =
     [
         (new(@"\bremux\b", Opts), ReleaseSource.Remux),
         (new(@"\b(?:blu-?ray|bd-?rip|br-?rip|bd(?:25|50)?)\b", Opts), ReleaseSource.BluRay),
         (new(@"\bweb-?dl\b", Opts), ReleaseSource.WebDl),
         (new(@"\bweb-?rip\b", Opts), ReleaseSource.WebRip),
-        (new(@"\bweb\b", Opts), ReleaseSource.WebDl),
         (new(@"\b(?:hdtv|pdtv|sdtv|dsr)\b", Opts), ReleaseSource.Hdtv),
         (new(@"\b(?:dvd-?rip|dvd-?r|dvd)\b", Opts), ReleaseSource.Dvd),
-        (new(@"\b(?:telesync|hd-?ts|ts)\b", Opts), ReleaseSource.Telesync),
-        (new(@"\b(?:hd-?cam|cam)\b", Opts), ReleaseSource.Cam),
+        (new(@"\b(?:telesync|hd-?ts)\b", Opts), ReleaseSource.Telesync),
+        (new(@"\bhd-?cam\b", Opts), ReleaseSource.Cam),
+    ];
+
+    // Bare words that can name a source but also turn up innocently: a film can be called
+    // "Charlotte's Web", a store-bought album is tagged WEB, and "ts" and "cam" are everyday
+    // abbreviations. These are consulted only when nothing above matched, so a word that
+    // merely appears in a title never outranks a tag that designates the rip -- which is why
+    // "Charlotte's Web[2006]DvDrip" reports as a DVD rip rather than as a web release. Their
+    // order among themselves is the order they held in the single list they came from.
+    private static readonly (Regex Rx, ReleaseSource Source)[] AmbiguousSources =
+    [
+        (new(@"\bweb\b", Opts), ReleaseSource.WebDl),
+        (new(@"\bts\b", Opts), ReleaseSource.Telesync),
+        (new(@"\bcam\b", Opts), ReleaseSource.Cam),
     ];
 
     private static readonly (Regex Rx, string Label)[] AudioCodecs =
@@ -169,6 +183,9 @@ public sealed class DefaultReleaseParser : IReleaseParser
     private static ReleaseSource? ParseSource(string spaced)
     {
         foreach (var (rx, source) in Sources)
+            if (rx.IsMatch(spaced))
+                return source;
+        foreach (var (rx, source) in AmbiguousSources)
             if (rx.IsMatch(spaced))
                 return source;
         return null;

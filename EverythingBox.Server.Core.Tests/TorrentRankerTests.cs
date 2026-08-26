@@ -394,6 +394,53 @@ public class TorrentRankerTests
     }
 
     [Fact]
+    public void AFilmWhoseOwnTitleContainsTheWordWebIsScoredAsTheRipItIs()
+    {
+        // The source table used to answer with the bare word before it reached the rip tags, so
+        // this DVD rip was scored as a WEB-DL - a better file than the one being offered.
+        var dvdRip = Make(@"Charlotte\'s Web[2006]DvDrip[Eng]-aXXo", MediaType.Movie, seeders: 3);
+
+        var scored = Assert.Single(_ranker.Rank(
+            new MovieRequest { Title = "Charlotte's Web" }, [dvdRip], RankingOptions.Default));
+
+        Assert.Contains(scored.Reasons, r => r.Contains("source Dvd", StringComparison.Ordinal));
+        Assert.DoesNotContain(scored.Reasons, r => r.Contains("source WebDl", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AFilmWhoseOwnTitleContainsTheWordWebNoLongerOutranksAPlainerRipOfTheSameKind()
+    {
+        // Both are DVD rips from the same group, and the other one has six times the seeders.
+        var titled = Make(@"Charlotte\'s Web[2006]DvDrip[Eng]-aXXo", MediaType.Movie, seeders: 3);
+        var plain = Make("Hoodwinked[2005]DvDrip.AC3[Eng]-aXXo", MediaType.Movie, seeders: 17);
+
+        var ranked = _ranker.Rank(
+            new MovieRequest { Title = "aXXo" }, [titled, plain], RankingOptions.Default);
+
+        Assert.Equal(2, ranked.Count);
+        Assert.Equal(plain, ranked[0].Result);
+    }
+
+    [Fact]
+    public void AFilmWhoseOwnTitleContainsTheWordWebNoLongerAnswersABookOrAudiobookSearch()
+    {
+        // Falling out to the bare word also cost this release its video verdict, because the web
+        // sources are deliberately not video (see IsVideoSource). Read as the DVD rip it is, it
+        // stops answering a search for the book it is named after - while the narrated book,
+        // which carries no rip tag at all, is untouched.
+        var dvdRip = Make(@"Charlotte\'s Web[2006]DvDrip[Eng]-aXXo", MediaType.Book, seeders: 3);
+        var narrated = Make("E B White - Charlotte's Web - Meryl Streep", MediaType.Audiobook);
+
+        var books = _ranker.Rank(
+            new BookRequest { Title = "Charlotte's Web" }, [dvdRip], RankingOptions.Default);
+        var audiobooks = _ranker.Rank(
+            new AudiobookRequest { Title = "Charlotte's Web" }, [dvdRip, narrated], RankingOptions.Default);
+
+        Assert.Empty(books);
+        Assert.Equal(narrated, Assert.Single(audiobooks).Result);
+    }
+
+    [Fact]
     public void MovieSearchStillRejectsASoundtrackTaggedAsAWebRelease()
     {
         // Movie/Tv read "video" the other way round - as an excuse for an audio-format tag - so the
