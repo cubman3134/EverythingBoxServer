@@ -42,17 +42,14 @@ public sealed record RomhackPatchSet(
 /// is a short marker ("J", "U", "E") for sources that identify a release only that far.</summary>
 public sealed record RomhackTarget(string? FileName, string? Crc32, string? Sha1, string? Region);
 
-/// <summary>One patch file. <c>Name</c> is the file's own name, which is usually how a multi-patch
-/// release tells its revisions apart. <c>PatchFormat</c> is what the patch's own MAGIC BYTES say it is
-/// ("ips", "bps", "ups"), never what a listing claimed — the client decides the same way and would
-/// refuse a mislabelled patch.
+/// <summary>One file in a release. <c>Url</c> is where to fetch it, NOT the bytes: a patch may be a
+/// 14-byte IPS or a 1.4 GB pre-applied disc image, and the same response shape has to carry both.
+/// Embedding the file put a measured 5,286 MB into the server for one ROM and offered no Range, so no
+/// resume either — a dropped connection meant starting over.
 ///
-/// <c>PatchFormat</c> may also be <b>"rom"</b>, which means <c>Bytes</c> is not a patch at all but the
-/// FINISHED game — a hack distributed pre-applied. Some collections are published that way, and the
-/// difference matters to the client: there is nothing to patch, so it needs no copy of the base game,
-/// asks nothing about which dump the author targeted, and installs the bytes as they are. A source that
-/// says "rom" is asserting the bytes are a playable ROM for the system that was asked about.</summary>
-public sealed record RomhackPatch(string Name, string PatchFormat, byte[] Bytes);
+/// <para><c>PatchFormat</c> still comes from the source, never from the bytes: a source that says
+/// "rom" is asserting the file is a playable ROM, and nothing sniffed can assert that.</para></summary>
+public sealed record RomhackPatch(string Name, string PatchFormat, string Url);
 
 /// <summary>Romhacks available for a retro game, and the patches behind them. Implemented by a
 /// plugin and registered via <see cref="IPluginRegistry.AddRomhackSource"/>.
