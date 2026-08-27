@@ -27,6 +27,12 @@ internal sealed class UnknownMediaTypeRequest : MediaRequest
     { Title = title, Year = Year, ExternalIds = ExternalIds, AdditionalTerms = AdditionalTerms, AlternateTitles = AlternateTitles };
 }
 
+/// <summary>One file inside a release, as a source may describe it to a client: its name,
+/// the mime that name implies, and its size when debrid reported one. Deliberately carries
+/// NO url — see <see cref="ReleaseStreamResolver.ListFilesAsync"/> and
+/// <see cref="ReleasePartId"/> for why a file is named rather than linked.</summary>
+public sealed record ReleaseFile(string FileName, string Mime, long? SizeBytes);
+
 /// <summary>
 /// Turns a chosen <see cref="TorrentResult"/> into something the client can play, via
 /// whatever <see cref="IDebridService"/> the host was configured with. When debrid
@@ -225,6 +231,92 @@ public sealed class ReleaseStreamResolver
             default: // Resolved
                 return outcome.Narrowed.Select(link => new SourceStream(link.Url.ToString(), MimeFor(link.FileName))).ToList();
         }
+    }
+
+    /// <summary>
+    /// The FILES a release contains, named — and nothing else. No urls: this is what a
+    /// source hands a client that is about to walk a multi-file release, and a link handed
+    /// out before it is needed is a link that will have expired by the time it is used.
+    /// The client asks for one file's link when it reaches that file, through
+    /// <see cref="ResolveFileAsync"/>.
+    /// <para>
+    /// The order is <see cref="ResolveAsync"/>'s: the narrowed list, whole-torrent archives
+    /// and sample clips already pushed to the back. It is deliberately NOT a play order —
+    /// debrid lists a release's files in whatever order it likes, and putting "part 10"
+    /// before "part 2" is exactly the kind of ordering that must be done by a rule someone
+    /// can read rather than inherited from a third party. The client owns that.
+    /// </para>
+    /// <para>
+    /// EMPTY MEANS "NOTHING TO WALK", for every reason it can: no debrid, a thrown call, a
+    /// failed resolution — and also a still-caching release, which has no per-file identity
+    /// to hand out at all. Every one of those leaves a caller free to fall back to
+    /// <see cref="ResolveAsync"/>, which still answers the caching notice exactly as it
+    /// does today, so a release that cannot be enumerated behaves as it always has.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<ReleaseFile>> ListFilesAsync(TorrentResult release, MediaRequest request, CancellationToken cancellationToken)
+    {
+        var outcome = await ResolveOutcomeAsync(release, request, cancellationToken);
+        if (outcome.Outcome != ResolutionOutcome.Resolved)
+            return [];
+
+        return outcome.Narrowed
+            .Select(link => new ReleaseFile(link.FileName, MimeFor(link.FileName), link.SizeBytes))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Resolves ONE NAMED FILE of a release to a playable stream — the other half of
+    /// <see cref="ListFilesAsync"/>, and the call that mints a link at the moment the file
+    /// is reached.
+    /// <para>
+    /// It matches on the NAME debrid reported, because that is what the enumeration handed
+    /// out and it is the only thing about a file that is stable: an index would be a
+    /// promise that a second debrid round trip lists the same release in the same order,
+    /// which nothing guarantees, and a link would be an identity with an expiry date. Exact
+    /// first, then case-insensitively — some services normalise the case of a path segment
+    /// between calls — and then, only when it is UNAMBIGUOUS, on the last path segment, so
+    /// a release whose listing gained or lost a folder prefix still resolves. Ambiguity is
+    /// refused rather than guessed: two files called <c>01.mp3</c> in different folders are
+    /// two different files, and playing the wrong one is the defect this whole path exists
+    /// to remove.
+    /// </para>
+    /// <para>
+    /// Null when the file is not in the release any more. A still-caching release answers
+    /// with its notice, exactly as <see cref="ResolveAsync"/> does — deliberately without
+    /// the self-download fallback, which produces files this method has no names for and so
+    /// could only match by luck.
+    /// </para>
+    /// </summary>
+    public async Task<SourceStream?> ResolveFileAsync(TorrentResult release, MediaRequest request, string fileName, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(fileName))
+            return null;
+
+        var outcome = await ResolveOutcomeAsync(release, request, cancellationToken);
+
+        switch (outcome.Outcome)
+        {
+            case ResolutionOutcome.Failed:
+                return null;
+
+            case ResolutionOutcome.Pending:
+                return SourceStream.FromNotice(outcome.Notice!);
+
+            default: // Resolved
+                var link = FindByName(outcome.Narrowed, fileName);
+                return link is null ? null : new SourceStream(link.Url.ToString(), MimeFor(link.FileName));
+        }
+    }
+
+    // The matching rule itself lives on ReleasePartId, beside the id it is matching back:
+    // every source that hands out part ids has to match them the same way, and two copies of
+    // "exact, then case-insensitively, then unambiguously by leaf" would be two chances to
+    // resolve a listener into the wrong chapter.
+    private static DebridLink? FindByName(IReadOnlyList<DebridLink> links, string fileName)
+    {
+        var matched = ReleasePartId.MatchFileName(links.Select(l => l.FileName), fileName);
+        return matched is null ? null : links.First(l => string.Equals(l.FileName, matched, StringComparison.Ordinal));
     }
 
     /// <summary>

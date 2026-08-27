@@ -223,6 +223,29 @@ result becomes one `CatalogItem` whose id opaquely encodes the underlying
 `TorrentResult` (title, provider, hash, magnet/download URL, size, seeders), so it
 round-trips through the client without any server-side state.
 
+### An audiobook release is its parts
+
+A release is normally many files, and for a recording none of them is the work — each
+is a slice of it. Resolving such a release to one link therefore played whichever file
+the narrowing ranked first, which is a middle chapter as often as the beginning. So an
+audiobook release EXPANDS: `DetailAsync` asks `ReleaseStreamResolver.ListFilesAsync` for
+the files the release contains and returns one item per file, named by `ReleasePartId`
+(`<releaseId>~<base64url(fileName)>`).
+
+Two properties of that id are the point of it. It carries **no url** — a resolved link is
+signed and short-lived, and a listener reaches the fortieth part days after the first was
+signed, so a part is identified by its release and its file, and the link is minted when
+the client reaches it (`ResolveFileAsync`, matching on the name debrid reported). And it
+is **not a rank**: `?n=` selects the N-th best source for a request, and a part has no
+alternates, so resolving a part id ignores the index entirely.
+
+Only the audiobook shelf expands. A film release is many files exactly one of which is
+the film, and the narrowing picking it is right; an episode and a track are already
+selected by the request one level up. Every file is listed, including a cover image or a
+text file — which of them can be played is a judgement about a name, and the client owns
+that rule so there is only one copy of it. Expanding is separate from `Expandable`, which
+answers "what does pressing this row do": for a release that stays "play it".
+
 `Sources/ReleaseStreamResolver.cs` resolves a chosen item: it calls the configured
 `IDebridService.ResolveAsync` and maps the result — `Resolved` becomes a playable
 `{ url, mime }`, `Pending` becomes a notice-only stream (`{ streams: [], notice }`,
@@ -323,7 +346,7 @@ All routes below except `/` and `/health` are mounted under an optional token pr
 | `GET /manifest.json` | Built by `ManifestBuilder` from every loaded source |
 | `GET /catalog/{catalogId}.json` | `SourceRouter.TryResolve` → `IMediaSource.SearchAsync` |
 | `GET /catalog/{catalogId}/{extra}.json` | Same, with `search=...` parsed out of `{extra}` |
-| `GET /detail/{type}/{id}.json` | `IMediaSource.DetailAsync` — for `meta:`, expands a series into its episodes |
+| `GET /detail/{type}/{id}.json` | `IMediaSource.DetailAsync` — for `meta:`, expands a series into its episodes; for `idx:`, an audiobook release into the files it is made of |
 | `GET /meta/{type}/{id}.json` | Always an empty object — unrelated to `IMetadataSource`/the `meta:` catalogs above; no source populates a rich detail panel here yet |
 | `GET /stream/{type}/{id}.json?n=&dl=` | `IMediaSource.ResolveAsync`, then `SafeUrlGuard` |
 | `GET /proxy/{sourceKey}/{id}/{name}` | `IMediaSource.OpenAsync`, relayed with range support |

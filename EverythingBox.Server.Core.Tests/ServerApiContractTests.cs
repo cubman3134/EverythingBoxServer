@@ -10,10 +10,10 @@ namespace EverythingBox.Server.Core.Tests;
 public class ServerApiContractTests
 {
     [Fact]
-    public void Version_is_1_22_now_that_a_romhack_file_is_fetched_by_url()
+    public void Version_is_1_23_now_that_a_release_expands_into_its_parts()
     {
         Assert.Equal(1, ServerApi.Current.Major);
-        Assert.Equal(22, ServerApi.Current.Minor);
+        Assert.Equal(23, ServerApi.Current.Minor);
     }
 
     [Fact]
