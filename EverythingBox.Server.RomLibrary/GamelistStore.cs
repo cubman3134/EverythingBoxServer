@@ -17,7 +17,11 @@ internal sealed class GamelistIndex
     private readonly IReadOnlyDictionary<string, GameEntry> _byFileName;
     public GamelistIndex(IReadOnlyDictionary<string, GameEntry> byFileName) => _byFileName = byFileName;
 
-    /// <summary>The entry for a ROM, matched by its file name (case-insensitive), or null.</summary>
+    /// <summary>The entry for a ROM, matched by its file name (case-insensitive), or null. The
+    /// argument is a LOCAL path, so it is split on the running platform's separator only; the
+    /// gamelist's own &lt;path&gt; is portable data and is normalised where the index is built
+    /// instead. Do not collapse that asymmetry -- a backslash is a legal file-name character on
+    /// Linux.</summary>
     public GameEntry? ForRom(string romPath)
         => _byFileName.TryGetValue(Path.GetFileName(romPath), out var e) ? e : null;
 }
