@@ -2,6 +2,10 @@ using EverythingBox.Server.RomLibrary;
 
 namespace EverythingBox.Server.Tests;
 
+// ForRom is handed LOCAL filesystem paths -- the platform's own separator, straight from
+// Directory.EnumerateFiles / ResolveSafeFile -- so every ROM path below is built with Path.Combine.
+// A hard-coded @"C:\roms\..." literal is not a path at all on Linux, it is one long file name, and
+// that is why these two cases used to fail there while the gamelist parsing beside them passed.
 public class GamelistStoreTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "ebs-gamelist-" + Guid.NewGuid().ToString("N"));
@@ -26,7 +30,7 @@ public class GamelistStoreTests : IDisposable
             "</game></gameList>");
 
         var idx = GamelistStore.Load(_dir);
-        var e = idx.ForRom(@"C:\roms\nes\Super Mario Bros.nes");
+        var e = idx.ForRom(Path.Combine(_dir, "Super Mario Bros.nes"));
         Assert.NotNull(e);
         Assert.Equal("Super Mario Bros.", e!.Name);
         Assert.Equal("A plumber's adventure.", e.Desc);
@@ -44,11 +48,15 @@ public class GamelistStoreTests : IDisposable
             "<gameList>" +
             "<game><path>./root.nes</path><name>Root</name></game>" +
             "<game><path>subdir/nested.nes</path><name>Nested</name></game>" +
+            "<game><path>.\\winsub\\written-on-windows.nes</path><name>Windows</name></game>" +
             "</gameList>");
 
         var idx = GamelistStore.Load(_dir);
-        Assert.Equal("Root", idx.ForRom(@"D:\any\root.nes")!.Name);
-        Assert.Equal("Nested", idx.ForRom(@"D:\any\nested.nes")!.Name);
+        Assert.Equal("Root", idx.ForRom(Path.Combine(_dir, "root.nes"))!.Name);
+        Assert.Equal("Nested", idx.ForRom(Path.Combine(_dir, "nested.nes"))!.Name);
+        // A gamelist written by a Windows tool but read by a Linux install: a <path> separator is data,
+        // not a local path, so the index normalises it whatever platform is doing the reading.
+        Assert.Equal("Windows", idx.ForRom(Path.Combine(_dir, "written-on-windows.nes"))!.Name);
     }
 
     [Fact]
